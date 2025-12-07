@@ -7,6 +7,8 @@ export interface Contact {
   type: ContactType;
   balance: number; // For RENT: Amount Saved. For Others: Amount Owed/Due
   targetAmount?: number; // Only used for RENT
+  startDate?: string; // ISO date string YYYY-MM-DD
+  endDate?: string;   // ISO date string YYYY-MM-DD
   lastUpdated: string;
 }
 

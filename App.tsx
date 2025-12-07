@@ -34,7 +34,8 @@ import {
   ImageIcon,
   Target,
   PiggyBank,
-  Building
+  Building,
+  RefreshCw
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
@@ -159,6 +160,8 @@ function App() {
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
   const [newContactTarget, setNewContactTarget] = useState('');
+  const [newContactStartDate, setNewContactStartDate] = useState('');
+  const [newContactEndDate, setNewContactEndDate] = useState('');
 
   // Helpers
   const theme = THEMES[appTheme];
@@ -180,12 +183,14 @@ function App() {
 
       // Map snake_case DB to camelCase Types
       const mappedContacts: Contact[] = (contactsData || []).map(c => ({
-        id: String(c.id), // Force string ID to ensure click handling works
+        id: String(c.id),
         name: c.name,
         phone: c.phone,
         type: c.type as ContactType,
         balance: c.balance,
         targetAmount: c.target_amount || 0,
+        startDate: c.start_date,
+        endDate: c.end_date,
         lastUpdated: c.last_updated
       }));
       
@@ -201,7 +206,7 @@ function App() {
 
       const mappedTransactions: Transaction[] = (transData || []).map(t => ({
         id: String(t.id),
-        contactId: String(t.contact_id), // Force string ID
+        contactId: String(t.contact_id), 
         date: t.date,
         description: t.description,
         amount: t.amount,
@@ -260,9 +265,27 @@ function App() {
 
   const currentTransactions = useMemo(() => {
     if (!selectedContactId) return [];
-    // Only filter the transactions we already fetched and sorted
-    return transactions.filter(t => t.contactId === selectedContactId);
-  }, [transactions, selectedContactId]);
+    
+    // For RENT type, filter transactions based on start/end dates
+    const contact = contacts.find(c => c.id === selectedContactId);
+    let relevantTransactions = transactions.filter(t => t.contactId === selectedContactId);
+
+    if (contact?.type === 'RENT' && contact.startDate && contact.endDate) {
+        const start = new Date(contact.startDate);
+        const end = new Date(contact.endDate);
+        // Include the end date fully by setting time to end of day if needed, but simple string comparison works for ISO dates yyyy-mm-dd
+        relevantTransactions = relevantTransactions.filter(t => {
+            const tDate = new Date(t.date); // t.date is likely YYYY-MM-DD or readable string. 
+            // If readable '6th Dec 2025', parsing might be tricky. 
+            // The app saves as ISO string YYYY-MM-DD now based on transDate state.
+            // If old data is formatted '6th Dec', this check might fail. 
+            // Assuming we use ISO for comparison:
+            return t.date >= contact.startDate! && t.date <= contact.endDate!;
+        });
+    }
+
+    return relevantTransactions;
+  }, [transactions, selectedContactId, contacts]);
 
   // Actions
   const handleContactClick = (id: string) => {
@@ -306,6 +329,14 @@ function App() {
     setNewContactName('');
     setNewContactPhone('');
     setNewContactTarget('');
+    
+    // Default to current month start/end
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    setNewContactStartDate(firstDay.toISOString().split('T')[0]);
+    setNewContactEndDate(lastDay.toISOString().split('T')[0]);
+    
     setShowAddContactModal(true);
   };
 
@@ -314,6 +345,8 @@ function App() {
     setNewContactName(selectedContact.name);
     setNewContactPhone(selectedContact.phone);
     setNewContactTarget(selectedContact.targetAmount?.toString() || '');
+    setNewContactStartDate(selectedContact.startDate || '');
+    setNewContactEndDate(selectedContact.endDate || '');
     setCurrentView('EDIT_CONTACT'); 
   };
 
@@ -334,6 +367,8 @@ function App() {
       // Only add target_amount for RENT type to prevent errors if column missing for regular contacts
       if (activeTab === 'RENT') {
           newContact.target_amount = parseFloat(newContactTarget) || 0;
+          newContact.start_date = newContactStartDate || null;
+          newContact.end_date = newContactEndDate || null;
       }
 
       const { error } = await supabase.from('contacts').insert([newContact]);
@@ -347,6 +382,8 @@ function App() {
         type: activeTab,
         balance: 0,
         targetAmount: newContact.target_amount || 0,
+        startDate: newContact.start_date,
+        endDate: newContact.end_date,
         lastUpdated: newContact.last_updated
       };
       
@@ -368,6 +405,8 @@ function App() {
       const updates: any = { name: newContactName, phone: newContactPhone };
       if (selectedContact.type === 'RENT') {
           updates.target_amount = parseFloat(newContactTarget) || 0;
+          updates.start_date = newContactStartDate || null;
+          updates.end_date = newContactEndDate || null;
       }
 
       const { error } = await supabase
@@ -379,7 +418,14 @@ function App() {
 
       setContacts(contacts.map(c => 
           c.id === selectedContact.id 
-            ? { ...c, name: newContactName, phone: newContactPhone, targetAmount: updates.target_amount ?? c.targetAmount }
+            ? { 
+                ...c, 
+                name: newContactName, 
+                phone: newContactPhone, 
+                targetAmount: updates.target_amount ?? c.targetAmount,
+                startDate: updates.start_date ?? c.startDate,
+                endDate: updates.end_date ?? c.endDate
+              }
             : c
       ));
 
@@ -387,6 +433,70 @@ function App() {
     } catch (error) {
       console.error('Error updating contact:', error);
       alert('Failed to update contact');
+    }
+  };
+
+  const handleStartNewMonth = async () => {
+    if (!selectedContact || selectedContact.type !== 'RENT') return;
+    
+    if (!confirm(`Are you sure you want to finish the current target and start a new month? \n\nThis will reset the saved balance to 0 and advance the dates to next month.`)) {
+        return;
+    }
+
+    try {
+        // Calculate next month dates
+        let nextStart = new Date();
+        let nextEnd = new Date();
+
+        if (selectedContact.endDate) {
+            const currentEnd = new Date(selectedContact.endDate);
+            nextStart = new Date(currentEnd);
+            nextStart.setDate(nextStart.getDate() + 1); // Day after current end
+            
+            // Set next end to end of that month
+            nextEnd = new Date(nextStart.getFullYear(), nextStart.getMonth() + 1, 0);
+        } else {
+            // Fallback if no dates set
+            const now = new Date();
+            nextStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            nextEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+        }
+
+        const nextStartStr = nextStart.toISOString().split('T')[0];
+        const nextEndStr = nextEnd.toISOString().split('T')[0];
+
+        const updates = {
+            balance: 0,
+            start_date: nextStartStr,
+            end_date: nextEndStr,
+            last_updated: new Date().toISOString().split('T')[0]
+        };
+
+        const { error } = await supabase
+            .from('contacts')
+            .update(updates)
+            .eq('id', selectedContact.id);
+
+        if (error) throw error;
+
+        // Update local state
+        setContacts(contacts.map(c => 
+            c.id === selectedContact.id 
+              ? { 
+                  ...c, 
+                  balance: 0, 
+                  startDate: nextStartStr, 
+                  endDate: nextEndStr, 
+                  lastUpdated: updates.last_updated 
+                }
+              : c
+        ));
+        
+        // Note: We don't delete old transactions, they just get filtered out by the new date range in currentTransactions
+        
+    } catch (error) {
+        console.error("Error starting new month", error);
+        alert("Failed to start new month");
     }
   };
 
@@ -526,7 +636,8 @@ function App() {
 
     let newBalance = selectedContact.balance;
     const dateObj = new Date(transDate);
-    const dateStr = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    // Use ISO string for Date Storage to ensure correct filtering
+    const dateStr = dateObj.toISOString().split('T')[0];
     
     let finalDesc = transDesc;
     if (transType === 'PAYMENT' && paymentMode === 'BANK') {
@@ -1005,16 +1116,38 @@ function App() {
                 </div>
 
                 {selectedContact.type === 'RENT' && (
-                    <div className="flex flex-col gap-2">
-                        <label className="text-sm font-semibold text-slate-600">Target Amount</label>
-                        <input 
-                            type="number" 
-                            value={newContactTarget}
-                            onChange={(e) => setNewContactTarget(e.target.value)}
-                            className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
-                            placeholder="Target Amount (e.g. 30000)"
-                        />
-                    </div>
+                    <>
+                        <div className="flex flex-col gap-2">
+                            <label className="text-sm font-semibold text-slate-600">Target Amount</label>
+                            <input 
+                                type="number" 
+                                value={newContactTarget}
+                                onChange={(e) => setNewContactTarget(e.target.value)}
+                                className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
+                                placeholder="Target Amount (e.g. 30000)"
+                            />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-semibold text-slate-600">Start Date</label>
+                                <input 
+                                    type="date" 
+                                    value={newContactStartDate}
+                                    onChange={(e) => setNewContactStartDate(e.target.value)}
+                                    className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} outline-none transition-all`}
+                                />
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-sm font-semibold text-slate-600">End Date</label>
+                                <input 
+                                    type="date" 
+                                    value={newContactEndDate}
+                                    onChange={(e) => setNewContactEndDate(e.target.value)}
+                                    className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} outline-none transition-all`}
+                                />
+                            </div>
+                        </div>
+                    </>
                 )}
             </div>
 
@@ -1262,6 +1395,9 @@ function App() {
     const rentRemaining = Math.max(0, rentTarget - selectedContact.balance);
     const progressPercent = rentTarget > 0 ? Math.min(100, (selectedContact.balance / rentTarget) * 100) : 0;
     
+    const formattedStartDate = selectedContact.startDate ? getFormattedDate(selectedContact.startDate) : 'N/A';
+    const formattedEndDate = selectedContact.endDate ? getFormattedDate(selectedContact.endDate) : 'N/A';
+
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 relative">
         {/* Header */}
@@ -1332,6 +1468,20 @@ function App() {
                              <p className="text-lg font-bold text-red-600">Rs. {rentRemaining.toLocaleString()}</p>
                          </div>
                      </div>
+                     
+                     <div className="mt-4 pt-4 border-t border-gray-200 flex flex-col items-center gap-3">
+                        <div className="flex items-center gap-2 text-sm text-gray-600 bg-gray-100 px-3 py-1.5 rounded-full">
+                            <Calendar size={14} />
+                            <span>{formattedStartDate} - {formattedEndDate}</span>
+                        </div>
+                        <button 
+                            onClick={handleStartNewMonth}
+                            className="flex items-center gap-2 text-xs font-bold text-blue-600 hover:bg-blue-50 px-3 py-2 rounded-lg transition-colors"
+                        >
+                            <RefreshCw size={14} />
+                            Finish & Start New Month
+                        </button>
+                     </div>
                  </div>
              ) : (
                 <>
@@ -1357,7 +1507,10 @@ function App() {
                 />
              ))
           ) : (
-            <div className="p-8 text-center text-gray-400">No transactions found</div>
+            <div className="p-8 text-center text-gray-400">
+                <p>No transactions found</p>
+                {isRent && <p className="text-xs mt-2 text-gray-300">for this period</p>}
+            </div>
           )}
         </div>
 
@@ -1511,6 +1664,10 @@ function App() {
                 const percent = target > 0 ? (contact.balance / target) * 100 : 0;
                 const remaining = Math.max(0, target - contact.balance);
 
+                const dateRange = (contact.startDate && contact.endDate) 
+                    ? `${getFormattedDate(contact.startDate)} - ${getFormattedDate(contact.endDate)}` 
+                    : '';
+
                 return (
                   <div 
                     key={contact.id} 
@@ -1524,7 +1681,10 @@ function App() {
                           </div>
                           <div>
                             <h3 className="text-sm font-semibold text-slate-800">{contact.name}</h3>
-                            <p className="text-xs text-gray-400 mt-0.5">Target: {target.toLocaleString()}</p>
+                            <div className="flex flex-col">
+                                <p className="text-xs text-gray-400 mt-0.5">Target: {target.toLocaleString()}</p>
+                                {dateRange && <p className="text-[10px] text-gray-400 mt-0.5 bg-gray-50 px-1 rounded inline-block w-max">{dateRange}</p>}
+                            </div>
                           </div>
                         </div>
                         <div className="text-right">
@@ -1624,16 +1784,38 @@ function App() {
               </div>
               
               {activeTab === 'RENT' && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-semibold text-gray-500">Target Amount</label>
-                    <input 
-                      type="number" 
-                      value={newContactTarget}
-                      onChange={(e) => setNewContactTarget(e.target.value)}
-                      className="border border-gray-300 rounded-lg p-3 text-sm"
-                      placeholder="e.g. 30000"
-                    />
-                  </div>
+                  <>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-gray-500">Target Amount</label>
+                        <input 
+                        type="number" 
+                        value={newContactTarget}
+                        onChange={(e) => setNewContactTarget(e.target.value)}
+                        className="border border-gray-300 rounded-lg p-3 text-sm"
+                        placeholder="e.g. 30000"
+                        />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-semibold text-gray-500">Start Date</label>
+                            <input 
+                                type="date" 
+                                value={newContactStartDate}
+                                onChange={(e) => setNewContactStartDate(e.target.value)}
+                                className="border border-gray-300 rounded-lg p-3 text-sm"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-semibold text-gray-500">End Date</label>
+                            <input 
+                                type="date" 
+                                value={newContactEndDate}
+                                onChange={(e) => setNewContactEndDate(e.target.value)}
+                                className="border border-gray-300 rounded-lg p-3 text-sm"
+                            />
+                        </div>
+                    </div>
+                  </>
               )}
 
               <button 
