@@ -35,12 +35,15 @@ import {
   Target,
   PiggyBank,
   Building,
-  RefreshCw
+  RefreshCw,
+  TrendingUp
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { supabase } from './supabaseClient';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT' | 'PROFILE' | 'REMINDERS';
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
@@ -119,6 +122,94 @@ const THEMES: Record<ThemeColor, {
     bgIndicator: 'bg-slate-800'
   }
 };
+
+// --- CHART COMPONENT ---
+const TrendChart = ({ transactions, type }: { transactions: Transaction[], type: ContactType }) => {
+    // 1. Group by Date
+    const groupedData = useMemo(() => {
+        const groups: Record<string, { credit: number, payment: number, date: string }> = {};
+        
+        transactions.forEach(t => {
+            const dateKey = t.date; // Assuming YYYY-MM-DD
+            if (!groups[dateKey]) {
+                groups[dateKey] = { credit: 0, payment: 0, date: dateKey };
+            }
+            if (t.type === 'CREDIT') groups[dateKey].credit += t.amount;
+            else groups[dateKey].payment += t.amount;
+        });
+
+        // Convert to array and sort by date ascending
+        const sorted = Object.values(groups).sort((a, b) => a.date.localeCompare(b.date));
+        
+        // Take last 7 entries to fit screen comfortably
+        return sorted.slice(-7);
+    }, [transactions]);
+
+    if (groupedData.length === 0) return null;
+
+    // Find max value for scaling
+    const maxValue = Math.max(
+        ...groupedData.map(d => Math.max(d.credit, d.payment)),
+        1 // prevent division by zero
+    );
+
+    const isRent = type === 'RENT';
+
+    return (
+        <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm mb-4">
+             <div className="flex items-center gap-2 mb-4">
+                <TrendingUp size={18} className="text-gray-400" />
+                <h3 className="text-sm font-bold text-slate-700">Activity Trend (Last 7 Days)</h3>
+            </div>
+            
+            <div className="flex items-end justify-between h-40 gap-2 pt-2 pb-6 px-2 relative">
+                {/* Grid Lines (Optional visual guide) */}
+                <div className="absolute inset-0 border-b border-gray-100 pointer-events-none"></div>
+
+                {groupedData.map((item, idx) => {
+                    const creditHeight = (item.credit / maxValue) * 100;
+                    const paymentHeight = (item.payment / maxValue) * 100;
+                    // Format date: 2025-12-06 -> 06/12
+                    const dateLabel = item.date.split('-').slice(1).reverse().join('/');
+
+                    return (
+                        <div key={idx} className="flex flex-col items-center justify-end h-full flex-1 gap-1">
+                            <div className="flex items-end gap-1 w-full justify-center h-full relative group">
+                                {/* Credit Bar */}
+                                {item.credit > 0 && (
+                                    <div 
+                                        className={`w-3 rounded-t-sm ${isRent ? 'bg-orange-400' : 'bg-red-400'} transition-all hover:opacity-80`}
+                                        style={{ height: `${Math.max(creditHeight, 5)}%` }}
+                                        title={`${isRent ? 'Withdraw' : 'Credit'}: ${item.credit}`}
+                                    ></div>
+                                )}
+                                {/* Payment Bar */}
+                                {item.payment > 0 && (
+                                    <div 
+                                        className={`w-3 rounded-t-sm ${isRent ? 'bg-blue-400' : 'bg-green-400'} transition-all hover:opacity-80`}
+                                        style={{ height: `${Math.max(paymentHeight, 5)}%` }}
+                                        title={`${isRent ? 'Saved' : 'Paid'}: ${item.payment}`}
+                                    ></div>
+                                )}
+                            </div>
+                            <span className="text-[10px] text-gray-400 font-medium absolute -bottom-0">{dateLabel}</span>
+                        </div>
+                    )
+                })}
+            </div>
+             <div className="flex justify-center gap-4 mt-2">
+                <div className="flex items-center gap-1.5">
+                    <div className={`w-3 h-3 rounded-full ${isRent ? 'bg-orange-400' : 'bg-red-400'}`}></div>
+                    <span className="text-xs text-gray-500">{isRent ? 'Withdraw' : 'Credit'}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <div className={`w-3 h-3 rounded-full ${isRent ? 'bg-blue-400' : 'bg-green-400'}`}></div>
+                    <span className="text-xs text-gray-500">{isRent ? 'Saved' : 'Paid'}</span>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function App() {
   // Core Data State
@@ -273,13 +364,8 @@ function App() {
     if (contact?.type === 'RENT' && contact.startDate && contact.endDate) {
         const start = new Date(contact.startDate);
         const end = new Date(contact.endDate);
-        // Include the end date fully by setting time to end of day if needed, but simple string comparison works for ISO dates yyyy-mm-dd
         relevantTransactions = relevantTransactions.filter(t => {
-            const tDate = new Date(t.date); // t.date is likely YYYY-MM-DD or readable string. 
-            // If readable '6th Dec 2025', parsing might be tricky. 
-            // The app saves as ISO string YYYY-MM-DD now based on transDate state.
-            // If old data is formatted '6th Dec', this check might fail. 
-            // Assuming we use ISO for comparison:
+            const tDate = new Date(t.date); 
             return t.date >= contact.startDate! && t.date <= contact.endDate!;
         });
     }
@@ -294,7 +380,6 @@ function App() {
   };
 
   const handleNavigate = (view: ViewState) => {
-    // If going to dashboard, clear selection
     if (view === 'DASHBOARD') {
         setSelectedContactId(null);
     }
@@ -330,7 +415,6 @@ function App() {
     setNewContactPhone('');
     setNewContactTarget('');
     
-    // Default to current month start/end
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -364,7 +448,6 @@ function App() {
         last_updated: new Date().toISOString().split('T')[0]
       };
 
-      // Only add target_amount for RENT type to prevent errors if column missing for regular contacts
       if (activeTab === 'RENT') {
           newContact.target_amount = parseFloat(newContactTarget) || 0;
           newContact.start_date = newContactStartDate || null;
@@ -374,7 +457,6 @@ function App() {
       const { error } = await supabase.from('contacts').insert([newContact]);
       if (error) throw error;
 
-      // Update local state
       const mappedNewContact: Contact = {
         id: newContactId,
         name: newContactName,
@@ -444,19 +526,15 @@ function App() {
     }
 
     try {
-        // Calculate next month dates
         let nextStart = new Date();
         let nextEnd = new Date();
 
         if (selectedContact.endDate) {
             const currentEnd = new Date(selectedContact.endDate);
             nextStart = new Date(currentEnd);
-            nextStart.setDate(nextStart.getDate() + 1); // Day after current end
-            
-            // Set next end to end of that month
+            nextStart.setDate(nextStart.getDate() + 1);
             nextEnd = new Date(nextStart.getFullYear(), nextStart.getMonth() + 1, 0);
         } else {
-            // Fallback if no dates set
             const now = new Date();
             nextStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
             nextEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0);
@@ -479,7 +557,6 @@ function App() {
 
         if (error) throw error;
 
-        // Update local state
         setContacts(contacts.map(c => 
             c.id === selectedContact.id 
               ? { 
@@ -491,8 +568,6 @@ function App() {
                 }
               : c
         ));
-        
-        // Note: We don't delete old transactions, they just get filtered out by the new date range in currentTransactions
         
     } catch (error) {
         console.error("Error starting new month", error);
@@ -518,6 +593,107 @@ function App() {
         alert('Failed to delete contact');
       }
     }
+  };
+
+  // --- PDF GENERATION ---
+  const handleDownloadReport = () => {
+      if (!selectedContact) return;
+
+      const doc = new jsPDF();
+      
+      // Header
+      doc.setFontSize(18);
+      doc.setTextColor(40, 40, 40);
+      doc.text(shopName, 14, 22);
+      
+      doc.setFontSize(10);
+      doc.setTextColor(100, 100, 100);
+      if (shopPhone) doc.text(`Phone: ${shopPhone}`, 14, 28);
+      
+      // Title
+      doc.setFontSize(14);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Statement of Account", 14, 40);
+      
+      // Contact Details
+      doc.setFontSize(11);
+      doc.text(`Account: ${selectedContact.name}`, 14, 48);
+      if (selectedContact.phone) doc.text(`Mobile: ${selectedContact.phone}`, 14, 54);
+      
+      const now = new Date();
+      doc.text(`Date Generated: ${now.toLocaleDateString()}`, 14, 60);
+
+      // Summary
+      let totalCredit = 0;
+      let totalPayment = 0;
+      
+      currentTransactions.forEach(t => {
+          if (t.type === 'CREDIT') totalCredit += t.amount;
+          else totalPayment += t.amount;
+      });
+
+      const isRent = selectedContact.type === 'RENT';
+      const labelCredit = isRent ? 'Total Withdrawal' : 'Total Credit';
+      const labelPayment = isRent ? 'Total Savings' : 'Total Paid';
+      const labelBalance = isRent ? 'Current Balance' : 'Net Balance';
+
+      doc.setFillColor(245, 245, 245);
+      doc.rect(14, 65, 180, 25, 'F');
+      
+      doc.setFontSize(10);
+      doc.setTextColor(100, 100, 100);
+      
+      doc.text(labelCredit, 20, 72);
+      doc.text(labelPayment, 80, 72);
+      doc.text(labelBalance, 140, 72);
+      
+      doc.setFontSize(12);
+      doc.setTextColor(200, 0, 0); // Red
+      doc.text(`Rs. ${totalCredit.toLocaleString()}`, 20, 80);
+      
+      doc.setTextColor(0, 150, 0); // Green
+      doc.text(`Rs. ${totalPayment.toLocaleString()}`, 80, 80);
+      
+      doc.setTextColor(0, 0, 0);
+      doc.text(`Rs. ${selectedContact.balance.toLocaleString()}`, 140, 80);
+
+      // Table
+      const tableColumn = ["Date", "Description", isRent ? "Withdraw" : "Credit", isRent ? "Deposit" : "Payment", "Balance"];
+      const tableRows: any[] = [];
+
+      // Sort by date old to new for the running balance in report usually, but app shows new to old.
+      // Let's keep app order or reverse? Usually reports are Old -> New.
+      // Let's stick to the current view order (New -> Old) for simplicity or reverse it.
+      // Let's reverse to show chronological order
+      const sortedTrans = [...currentTransactions].sort((a, b) => a.date.localeCompare(b.date));
+      
+      let runningBalance = 0; // This is tricky if we don't have starting balance.
+      // For simplicity, we just list amounts.
+      
+      sortedTrans.forEach(t => {
+          const credit = t.type === 'CREDIT' ? t.amount.toLocaleString() : "-";
+          const payment = t.type === 'PAYMENT' ? t.amount.toLocaleString() : "-";
+          
+          const rowData = [
+              t.date,
+              t.description || "-",
+              credit,
+              payment,
+              t.balanceAfter.toLocaleString()
+          ];
+          tableRows.push(rowData);
+      });
+
+      autoTable(doc, {
+          head: [tableColumn],
+          body: tableRows,
+          startY: 95,
+          theme: 'grid',
+          styles: { fontSize: 9 },
+          headStyles: { fillColor: [66, 66, 66] }
+      });
+
+      doc.save(`Statement_${selectedContact.name}_${now.toISOString().split('T')[0]}.pdf`);
   };
 
   const handleEditTransaction = (transaction: Transaction) => {
@@ -556,11 +732,8 @@ function App() {
 
           let reversionAmount = 0;
           if (selectedContact.type === 'RENT') {
-              // For rent: Payment adds to balance (savings), Credit reduces it (withdrawal)
-              // Reversing means doing opposite
               reversionAmount = transToDelete.type === 'PAYMENT' ? -transToDelete.amount : transToDelete.amount;
           } else {
-              // For Cust/Supp: Credit increases balance (Debt), Payment reduces it
               reversionAmount = transToDelete.type === 'CREDIT' ? -transToDelete.amount : transToDelete.amount;
           }
           
@@ -623,9 +796,6 @@ function App() {
     const amountVal = parseFloat(transAmount);
     if (isNaN(amountVal)) return;
 
-    // Logic: 
-    // For RENT: PAYMENT = Adding Savings (+), CREDIT = Removing Savings (-)
-    // For OTHERS: CREDIT = Adding Debt (+), PAYMENT = Paying Debt (-)
     const getBalanceEffect = (type: TransactionType, amount: number, contactType: ContactType) => {
         if (contactType === 'RENT') {
             return type === 'PAYMENT' ? amount : -amount;
@@ -636,7 +806,6 @@ function App() {
 
     let newBalance = selectedContact.balance;
     const dateObj = new Date(transDate);
-    // Use ISO string for Date Storage to ensure correct filtering
     const dateStr = dateObj.toISOString().split('T')[0];
     
     let finalDesc = transDesc;
@@ -1015,6 +1184,9 @@ function App() {
                     <ChevronDown size={16} className="text-gray-400" />
                 </div>
 
+                {/* GRAPH SECTION */}
+                <TrendChart transactions={currentTransactions} type={selectedContact.type} />
+
                 {/* Stats */}
                 <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
                     <div className="flex border-b border-gray-100">
@@ -1072,7 +1244,10 @@ function App() {
             </div>
 
             <div className="p-4 mt-auto">
-                <button className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}>
+                <button 
+                    onClick={handleDownloadReport}
+                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}
+                >
                     <Download size={18} />
                     Download PDF Report
                 </button>
@@ -1174,8 +1349,6 @@ function App() {
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isCredit = transType === 'CREDIT';
     const isRent = selectedContact.type === 'RENT';
-    // For Rent: Payment (Saving) is Green/Good. Credit (Withdrawal) is Red/Bad.
-    // For Normal: Payment (Paying Debt) is Green. Credit (Taking Debt) is Red.
     const themeColor = isCredit ? 'text-red-700' : 'text-green-700';
     const btnColor = isCredit ? 'bg-red-800' : 'bg-green-800';
     
@@ -1188,7 +1361,6 @@ function App() {
     
     return (
       <div className="min-h-screen bg-white flex flex-col relative">
-        {/* Header */}
         <header className="bg-white px-4 py-4 flex items-center justify-between shadow-sm">
             <div className="flex items-center gap-4">
                 <button onClick={handleBack}>
@@ -1207,7 +1379,6 @@ function App() {
         </header>
 
         <div className="flex-1 p-4 flex flex-col">
-          {/* Amount Input */}
           <div className="mt-2">
             <label className="text-sm font-medium text-slate-800 block mb-1">Amount</label>
             <div className="flex items-center border-b border-gray-300 py-2">
@@ -1226,7 +1397,6 @@ function App() {
             </div>
           </div>
 
-          {/* Date Selector */}
           <div className="flex justify-end mt-2 mb-6">
             <div className={`flex items-center gap-2 ${theme.text} bg-white py-1 px-2 rounded hover:bg-gray-50 cursor-pointer relative`}>
                <input 
@@ -1240,7 +1410,6 @@ function App() {
             </div>
           </div>
 
-          {/* Payment Mode */}
           {!isCredit && (
              <div className="mb-6">
                <label className="text-sm font-medium text-slate-800 block mb-4">Payment Mode</label>
@@ -1263,7 +1432,6 @@ function App() {
              </div>
           )}
 
-          {/* Notes Input */}
           {!isCredit && (
             <div className="mb-6">
               <textarea
@@ -1278,7 +1446,6 @@ function App() {
             </div>
           )}
 
-          {/* More Options Header */}
           <div>
             <button 
               onClick={() => setShowMoreOptions(!showMoreOptions)}
@@ -1288,7 +1455,6 @@ function App() {
               {showMoreOptions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
 
-            {/* Expanded Options */}
             {showMoreOptions && (
               <div className="flex flex-col gap-3 animate-in slide-in-from-top-2 duration-200">
                 {isCredit && (
@@ -1308,7 +1474,6 @@ function App() {
                   </div>
                 )}
                 
-                {/* Hidden File Input */}
                 <input 
                     type="file" 
                     ref={fileInputRef} 
@@ -1317,7 +1482,6 @@ function App() {
                     onChange={handleFileSelect}
                 />
 
-                {/* Attach Bills Button */}
                 <div 
                     onClick={() => {
                         if (!attachmentUrl && !isUploading) {
@@ -1371,7 +1535,6 @@ function App() {
           </div>
         </div>
 
-        {/* Save Button Footer */}
         <div className="p-4 border-t border-gray-100">
           <button 
             onClick={handleSaveTransaction}
@@ -1390,7 +1553,6 @@ function App() {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
     
-    // For Rent: Remaining calculation
     const rentTarget = selectedContact.targetAmount || 0;
     const rentRemaining = Math.max(0, rentTarget - selectedContact.balance);
     const progressPercent = rentTarget > 0 ? Math.min(100, (selectedContact.balance / rentTarget) * 100) : 0;
@@ -1400,7 +1562,6 @@ function App() {
 
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 relative">
-        {/* Header */}
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1419,7 +1580,6 @@ function App() {
             </button>
           </div>
           
-          {/* Actions Bar next to name */}
           <div className="flex gap-2 pl-12">
             <button 
                 onClick={openEditContact} 
@@ -1445,7 +1605,6 @@ function App() {
           </div>
         </header>
 
-        {/* Balance Summary */}
         <div className="p-4 bg-white mb-2">
           <div className="bg-gray-50 rounded-lg p-6 flex flex-col items-center justify-center">
              {isRent ? (
@@ -1496,7 +1655,6 @@ function App() {
           </div>
         </div>
 
-        {/* Transactions List */}
         <div className="flex-1">
           {currentTransactions.length > 0 ? (
              currentTransactions.map(t => (
@@ -1514,7 +1672,6 @@ function App() {
           )}
         </div>
 
-        {/* Sticky Action Buttons */}
         <div className="fixed bottom-0 left-0 right-0 bg-white p-4 flex gap-4 border-t border-gray-200 z-40">
           <button 
             onClick={() => startTransaction('CREDIT')}
@@ -1538,7 +1695,6 @@ function App() {
   // --- RENDER: DASHBOARD VIEW ---
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
-      {/* Top Bar */}
       <header className="bg-white px-4 py-3 pb-0">
         <div className="flex justify-between items-start mb-4">
           <div>
@@ -1560,7 +1716,6 @@ function App() {
           </div>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-b border-slate-200 overflow-x-auto no-scrollbar">
           <button 
             className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative min-w-[100px] ${activeTab === 'CUSTOMER' ? 'text-slate-800' : 'text-slate-500'}`}
@@ -1595,7 +1750,6 @@ function App() {
         </div>
       </header>
 
-      {/* Summary Cards */}
       <div className="p-4 flex gap-3">
         {activeTab === 'SUPPLIER' ? (
           <>
@@ -1614,7 +1768,6 @@ function App() {
               <p className="text-xs text-slate-600 mb-1">To Collect</p>
               <p className="text-lg font-bold text-green-700">Rs. {totalToCollect.toLocaleString()}</p>
             </div>
-             {/* Placeholder for symmetry */}
              <div className="flex-1"></div>
           </>
         ) : (
@@ -1631,7 +1784,6 @@ function App() {
         )}
       </div>
 
-      {/* Search */}
       <div className="px-4 mb-2">
         <div className="bg-white border border-gray-200 rounded-lg flex items-center px-3 py-2.5">
           <Search size={18} className="text-gray-400 mr-2" />
@@ -1648,7 +1800,6 @@ function App() {
         </div>
       </div>
 
-      {/* List Header */}
       <div className="px-4 py-2 flex justify-between items-center">
         <span className="text-xs font-medium text-gray-400 uppercase">
           {filteredContacts.length} {activeTab === 'SUPPLIER' ? 'Suppliers' : activeTab === 'RENT' ? 'Targets' : 'Customers'}
@@ -1656,7 +1807,6 @@ function App() {
         <span className="text-xs font-medium text-gray-400 uppercase">{activeTab === 'RENT' ? 'Savings' : 'Amount (Rs.)'}</span>
       </div>
 
-      {/* List */}
       <div className="flex-1 px-4 flex flex-col gap-2">
         {filteredContacts.map(contact => {
             if (contact.type === 'RENT') {
@@ -1692,7 +1842,6 @@ function App() {
                           <p className="font-bold text-blue-700">{contact.balance.toLocaleString()}</p>
                         </div>
                     </div>
-                    {/* Progress Bar */}
                     <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, percent)}%` }}></div>
                     </div>
@@ -1703,7 +1852,6 @@ function App() {
                   </div>
                 );
             }
-            // Standard View for Customer/Supplier
             return (
               <div 
                 key={contact.id} 
@@ -1738,7 +1886,6 @@ function App() {
         )}
       </div>
 
-      {/* Add Button */}
       <div className="px-4 mt-4">
         <button 
           onClick={openAddContact}
@@ -1748,7 +1895,6 @@ function App() {
         </button>
       </div>
 
-      {/* Add Contact Modal */}
       {showAddContactModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in duration-200">
@@ -1829,7 +1975,6 @@ function App() {
         </div>
       )}
       
-      {/* Spacer for Bottom Nav */}
       <div className="h-4"></div>
 
       <BottomNav 
