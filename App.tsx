@@ -124,7 +124,7 @@ const THEMES: Record<ThemeColor, {
 };
 
 // --- CHART COMPONENT ---
-const TrendChart = ({ transactions, type }: { transactions: Transaction[], type: ContactType }) => {
+const TrendChart = ({ transactions, type, monthLabel }: { transactions: Transaction[], type: ContactType, monthLabel: string }) => {
     // 1. Group by Date
     const groupedData = useMemo(() => {
         const groups: Record<string, { credit: number, payment: number, date: string }> = {};
@@ -141,11 +141,16 @@ const TrendChart = ({ transactions, type }: { transactions: Transaction[], type:
         // Convert to array and sort by date ascending
         const sorted = Object.values(groups).sort((a, b) => a.date.localeCompare(b.date));
         
-        // Take last 7 entries to fit screen comfortably
-        return sorted.slice(-7);
+        // Take last 7 entries to fit screen comfortably or show more if needed
+        // For monthly report, showing last 7 active days is usually cleaner on mobile than squeezing 30 bars
+        return sorted.slice(-10); 
     }, [transactions]);
 
-    if (groupedData.length === 0) return null;
+    if (groupedData.length === 0) return (
+        <div className="bg-white p-6 rounded-xl border border-gray-100 shadow-sm mb-4 text-center text-gray-400 text-sm">
+            No activity to chart for {monthLabel}
+        </div>
+    );
 
     // Find max value for scaling
     const maxValue = Math.max(
@@ -159,7 +164,7 @@ const TrendChart = ({ transactions, type }: { transactions: Transaction[], type:
         <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm mb-4">
              <div className="flex items-center gap-2 mb-4">
                 <TrendingUp size={18} className="text-gray-400" />
-                <h3 className="text-sm font-bold text-slate-700">Activity Trend (Last 7 Days)</h3>
+                <h3 className="text-sm font-bold text-slate-700">Activity Trend</h3>
             </div>
             
             <div className="flex items-end justify-between h-40 gap-2 pt-2 pb-6 px-2 relative">
@@ -192,7 +197,7 @@ const TrendChart = ({ transactions, type }: { transactions: Transaction[], type:
                                     ></div>
                                 )}
                             </div>
-                            <span className="text-[10px] text-gray-400 font-medium absolute -bottom-0">{dateLabel}</span>
+                            <span className="text-[10px] text-gray-400 font-medium absolute -bottom-0 whitespace-nowrap">{dateLabel}</span>
                         </div>
                     )
                 })}
@@ -226,6 +231,9 @@ function App() {
   const [activeTab, setActiveTab] = useState<ContactType>('SUPPLIER');
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // Report State
+  const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   
   // Navigation State
   const [currentView, setCurrentView] = useState<ViewState>('DASHBOARD');
@@ -354,6 +362,7 @@ function App() {
       .reduce((sum, c) => sum + Math.max(0, (c.targetAmount || 0) - c.balance), 0);
   }, [contacts]);
 
+  // For Detail View (Restricted by Target Dates for Rent)
   const currentTransactions = useMemo(() => {
     if (!selectedContactId) return [];
     
@@ -372,6 +381,29 @@ function App() {
 
     return relevantTransactions;
   }, [transactions, selectedContactId, contacts]);
+
+  // For Report View (Restricted by Selected Month)
+  const reportTransactions = useMemo(() => {
+    if (!selectedContactId) return [];
+    
+    // Base transactions for contact (get all history)
+    let relevant = transactions.filter(t => t.contactId === selectedContactId);
+    
+    // Filter by Report Month
+    if (reportMonth) {
+        relevant = relevant.filter(t => t.date.startsWith(reportMonth));
+    }
+    
+    // Sort Newest First for List
+    return relevant.sort((a, b) => b.date.localeCompare(a.date));
+  }, [transactions, selectedContactId, reportMonth]);
+
+  const formattedReportMonth = useMemo(() => {
+      if (!reportMonth) return 'All Time';
+      const [y, m] = reportMonth.split('-');
+      const date = new Date(parseInt(y), parseInt(m)-1, 1);
+      return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }, [reportMonth]);
 
   // Actions
   const handleContactClick = (id: string) => {
@@ -614,6 +646,7 @@ function App() {
       doc.setFontSize(14);
       doc.setTextColor(0, 0, 0);
       doc.text("Statement of Account", 14, 40);
+      doc.text(formattedReportMonth, 160, 40, { align: 'right' }); // Show selected month
       
       // Contact Details
       doc.setFontSize(11);
@@ -621,13 +654,13 @@ function App() {
       if (selectedContact.phone) doc.text(`Mobile: ${selectedContact.phone}`, 14, 54);
       
       const now = new Date();
-      doc.text(`Date Generated: ${now.toLocaleDateString()}`, 14, 60);
+      doc.text(`Generated: ${now.toLocaleDateString()}`, 14, 60);
 
-      // Summary
+      // Summary (Using REPORT filtered transactions)
       let totalCredit = 0;
       let totalPayment = 0;
       
-      currentTransactions.forEach(t => {
+      reportTransactions.forEach(t => {
           if (t.type === 'CREDIT') totalCredit += t.amount;
           else totalPayment += t.amount;
       });
@@ -635,8 +668,13 @@ function App() {
       const isRent = selectedContact.type === 'RENT';
       const labelCredit = isRent ? 'Total Withdrawal' : 'Total Credit';
       const labelPayment = isRent ? 'Total Savings' : 'Total Paid';
-      const labelBalance = isRent ? 'Current Balance' : 'Net Balance';
+      const labelBalance = isRent ? 'Ending Balance' : 'Net Balance';
 
+      // We use current balance for simplicity, or we should calculate historical balance?
+      // For a statement, showing current balance is standard, but if viewing old month, it might be confusing.
+      // Let's show "Net Change" for that month if filtering? Or just show global balance.
+      // Standard practice: Show balance as of now, but summary of transactions for period.
+      
       doc.setFillColor(245, 245, 245);
       doc.rect(14, 65, 180, 25, 'F');
       
@@ -645,8 +683,8 @@ function App() {
       
       doc.text(labelCredit, 20, 72);
       doc.text(labelPayment, 80, 72);
-      doc.text(labelBalance, 140, 72);
       
+      // Show Period Totals
       doc.setFontSize(12);
       doc.setTextColor(200, 0, 0); // Red
       doc.text(`Rs. ${totalCredit.toLocaleString()}`, 20, 80);
@@ -654,21 +692,20 @@ function App() {
       doc.setTextColor(0, 150, 0); // Green
       doc.text(`Rs. ${totalPayment.toLocaleString()}`, 80, 80);
       
+      // Balance (Note: this is Current Total Balance, not Period Closing Balance)
+      doc.setTextColor(100, 100, 100);
+      doc.setFontSize(10);
+      doc.text("Current Balance", 140, 72);
       doc.setTextColor(0, 0, 0);
+      doc.setFontSize(12);
       doc.text(`Rs. ${selectedContact.balance.toLocaleString()}`, 140, 80);
 
       // Table
       const tableColumn = ["Date", "Description", isRent ? "Withdraw" : "Credit", isRent ? "Deposit" : "Payment", "Balance"];
       const tableRows: any[] = [];
 
-      // Sort by date old to new for the running balance in report usually, but app shows new to old.
-      // Let's keep app order or reverse? Usually reports are Old -> New.
-      // Let's stick to the current view order (New -> Old) for simplicity or reverse it.
-      // Let's reverse to show chronological order
-      const sortedTrans = [...currentTransactions].sort((a, b) => a.date.localeCompare(b.date));
-      
-      let runningBalance = 0; // This is tricky if we don't have starting balance.
-      // For simplicity, we just list amounts.
+      // Sort Old -> New for report
+      const sortedTrans = [...reportTransactions].sort((a, b) => a.date.localeCompare(b.date));
       
       sortedTrans.forEach(t => {
           const credit = t.type === 'CREDIT' ? t.amount.toLocaleString() : "-";
@@ -693,8 +730,133 @@ function App() {
           headStyles: { fillColor: [66, 66, 66] }
       });
 
-      doc.save(`Statement_${selectedContact.name}_${now.toISOString().split('T')[0]}.pdf`);
+      doc.save(`Statement_${selectedContact.name}_${reportMonth || 'All'}.pdf`);
   };
+  
+  // ... (handleEditTransaction, handleDeleteTransaction, handleFileSelect, handleSaveTransaction remain same)
+
+  // ... (getFormattedDate, getDaysAgo, handleSendReminder remain same)
+
+  // ... (Loading Check)
+
+  // ... (REMINDERS View, PROFILE View remain same)
+
+  // --- RENDER: REPORT VIEW ---
+  if (currentView === 'REPORT' && selectedContact) {
+    const totalCredit = reportTransactions
+        .filter(t => t.type === 'CREDIT')
+        .reduce((sum, t) => sum + t.amount, 0);
+    const totalPayment = reportTransactions
+        .filter(t => t.type === 'PAYMENT')
+        .reduce((sum, t) => sum + t.amount, 0);
+
+    return (
+        <div className="min-h-screen bg-gray-50 flex flex-col">
+            <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm sticky top-0 z-10">
+                <button onClick={handleBack}>
+                    <ChevronLeft size={24} className="text-slate-800" />
+                </button>
+                <div className="flex-1">
+                    <h1 className="text-lg font-bold text-slate-800">Report</h1>
+                    <p className="text-xs text-gray-500">{selectedContact.name}</p>
+                </div>
+                <button className={theme.text}>
+                    <Share2 size={20} />
+                </button>
+            </header>
+
+            <div className="p-4">
+                {/* Date Filter */}
+                <div className="relative">
+                    <div className="bg-white rounded-lg p-3 flex items-center justify-between shadow-sm mb-4 border border-gray-100">
+                        <div className="flex items-center gap-2 text-slate-600">
+                            <Calendar size={18} />
+                            <span className="text-sm font-medium">{formattedReportMonth}</span>
+                        </div>
+                        <ChevronDown size={16} className="text-gray-400" />
+                    </div>
+                    {/* Invisible Month Input Overlay */}
+                    <input 
+                        type="month" 
+                        value={reportMonth}
+                        onChange={(e) => setReportMonth(e.target.value)}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                    />
+                </div>
+
+                {/* GRAPH SECTION */}
+                <TrendChart transactions={reportTransactions} type={selectedContact.type} monthLabel={formattedReportMonth} />
+
+                {/* Stats */}
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
+                    <div className="flex border-b border-gray-100">
+                        <div className="flex-1 p-4 border-r border-gray-100 text-center">
+                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Withdrawn' : 'Credit'}</p>
+                            <p className="text-lg font-bold text-red-600">Rs. {totalCredit.toLocaleString()}</p>
+                        </div>
+                        <div className="flex-1 p-4 text-center">
+                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Saved' : 'Paid'}</p>
+                            <p className="text-lg font-bold text-green-600">Rs. {totalPayment.toLocaleString()}</p>
+                        </div>
+                    </div>
+                    <div className="p-4 text-center bg-gray-50">
+                        <p className="text-xs text-gray-500 mb-1">
+                            {selectedContact.type === 'RENT' ? 'Current Savings Balance' : 'Net Balance'}
+                        </p>
+                        <p className={`text-xl font-bold ${selectedContact.type === 'RENT' ? 'text-blue-700' : selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                             Rs. {selectedContact.balance.toLocaleString()}
+                             <span className="text-xs font-normal text-gray-500 ml-1">
+                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : selectedContact.type === 'RENT' ? '(Saved)' : '(To Collect)'}
+                             </span>
+                        </p>
+                    </div>
+                </div>
+
+                {/* Transaction List */}
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
+                    <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between">
+                        <span className="text-xs font-bold text-gray-500">DATE</span>
+                        <div className="flex gap-8">
+                             <span className="text-xs font-bold text-gray-500 w-16 text-right">CREDIT</span>
+                             <span className="text-xs font-bold text-gray-500 w-16 text-right">{selectedContact.type === 'RENT' ? 'DEPOSIT' : 'DEBIT'}</span>
+                        </div>
+                    </div>
+                    {reportTransactions.map(t => (
+                        <div key={t.id} className="p-3 border-b border-gray-100 flex justify-between text-sm">
+                            <div className="flex flex-col">
+                                <span className="font-medium text-slate-700">{t.date}</span>
+                                <span className="text-[10px] text-gray-400 max-w-[100px] truncate">{t.description || '-'}</span>
+                            </div>
+                            <div className="flex gap-8">
+                                <span className="w-16 text-right font-medium text-red-600">
+                                    {t.type === 'CREDIT' ? t.amount.toLocaleString() : '-'}
+                                </span>
+                                <span className="w-16 text-right font-medium text-green-600">
+                                    {t.type === 'PAYMENT' ? t.amount.toLocaleString() : '-'}
+                                </span>
+                            </div>
+                        </div>
+                    ))}
+                    {reportTransactions.length === 0 && (
+                        <div className="p-6 text-center text-gray-400 text-sm">No transactions in {formattedReportMonth}</div>
+                    )}
+                </div>
+            </div>
+
+            <div className="p-4 mt-auto">
+                <button 
+                    onClick={handleDownloadReport}
+                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}
+                >
+                    <Download size={18} />
+                    Download PDF Report
+                </button>
+            </div>
+        </div>
+    );
+  }
+
+  // ... (Rest of component methods like handleEditTransaction, render Edit Contact, Transaction Form, Detail View, Dashboard remain unchanged but must be included to complete the file)
 
   const handleEditTransaction = (transaction: Transaction) => {
     setEditingTransactionId(transaction.id);
@@ -1148,112 +1310,6 @@ function App() {
             />
         </div>
       );
-  }
-
-  // --- RENDER: REPORT VIEW ---
-  if (currentView === 'REPORT' && selectedContact) {
-    const totalCredit = currentTransactions
-        .filter(t => t.type === 'CREDIT')
-        .reduce((sum, t) => sum + t.amount, 0);
-    const totalPayment = currentTransactions
-        .filter(t => t.type === 'PAYMENT')
-        .reduce((sum, t) => sum + t.amount, 0);
-
-    return (
-        <div className="min-h-screen bg-gray-50 flex flex-col">
-            <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm sticky top-0 z-10">
-                <button onClick={handleBack}>
-                    <ChevronLeft size={24} className="text-slate-800" />
-                </button>
-                <div className="flex-1">
-                    <h1 className="text-lg font-bold text-slate-800">Report</h1>
-                    <p className="text-xs text-gray-500">{selectedContact.name}</p>
-                </div>
-                <button className={theme.text}>
-                    <Share2 size={20} />
-                </button>
-            </header>
-
-            <div className="p-4">
-                {/* Date Filter Mock */}
-                <div className="bg-white rounded-lg p-3 flex items-center justify-between shadow-sm mb-4 border border-gray-100">
-                    <div className="flex items-center gap-2 text-slate-600">
-                        <Calendar size={18} />
-                        <span className="text-sm font-medium">This Month</span>
-                    </div>
-                    <ChevronDown size={16} className="text-gray-400" />
-                </div>
-
-                {/* GRAPH SECTION */}
-                <TrendChart transactions={currentTransactions} type={selectedContact.type} />
-
-                {/* Stats */}
-                <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
-                    <div className="flex border-b border-gray-100">
-                        <div className="flex-1 p-4 border-r border-gray-100 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Withdrawn' : 'Credit'}</p>
-                            <p className="text-lg font-bold text-red-600">Rs. {totalCredit.toLocaleString()}</p>
-                        </div>
-                        <div className="flex-1 p-4 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Saved' : 'Paid'}</p>
-                            <p className="text-lg font-bold text-green-600">Rs. {totalPayment.toLocaleString()}</p>
-                        </div>
-                    </div>
-                    <div className="p-4 text-center bg-gray-50">
-                        <p className="text-xs text-gray-500 mb-1">
-                            {selectedContact.type === 'RENT' ? 'Current Savings Balance' : 'Net Balance'}
-                        </p>
-                        <p className={`text-xl font-bold ${selectedContact.type === 'RENT' ? 'text-blue-700' : selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
-                             Rs. {selectedContact.balance.toLocaleString()}
-                             <span className="text-xs font-normal text-gray-500 ml-1">
-                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : selectedContact.type === 'RENT' ? '(Saved)' : '(To Collect)'}
-                             </span>
-                        </p>
-                    </div>
-                </div>
-
-                {/* Transaction List */}
-                <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                    <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between">
-                        <span className="text-xs font-bold text-gray-500">DATE</span>
-                        <div className="flex gap-8">
-                             <span className="text-xs font-bold text-gray-500 w-16 text-right">CREDIT</span>
-                             <span className="text-xs font-bold text-gray-500 w-16 text-right">{selectedContact.type === 'RENT' ? 'DEPOSIT' : 'DEBIT'}</span>
-                        </div>
-                    </div>
-                    {currentTransactions.map(t => (
-                        <div key={t.id} className="p-3 border-b border-gray-100 flex justify-between text-sm">
-                            <div className="flex flex-col">
-                                <span className="font-medium text-slate-700">{t.date}</span>
-                                <span className="text-[10px] text-gray-400 max-w-[100px] truncate">{t.description || '-'}</span>
-                            </div>
-                            <div className="flex gap-8">
-                                <span className="w-16 text-right font-medium text-red-600">
-                                    {t.type === 'CREDIT' ? t.amount.toLocaleString() : '-'}
-                                </span>
-                                <span className="w-16 text-right font-medium text-green-600">
-                                    {t.type === 'PAYMENT' ? t.amount.toLocaleString() : '-'}
-                                </span>
-                            </div>
-                        </div>
-                    ))}
-                    {currentTransactions.length === 0 && (
-                        <div className="p-6 text-center text-gray-400 text-sm">No transactions in this period</div>
-                    )}
-                </div>
-            </div>
-
-            <div className="p-4 mt-auto">
-                <button 
-                    onClick={handleDownloadReport}
-                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}
-                >
-                    <Download size={18} />
-                    Download PDF Report
-                </button>
-            </div>
-        </div>
-    );
   }
 
   // --- RENDER: EDIT CONTACT VIEW ---
