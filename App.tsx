@@ -16,8 +16,7 @@ import {
   ChevronDown,
   ChevronRight,
   Camera,
-  FilePlus,
-  Calendar
+  FilePlus
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
