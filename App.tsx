@@ -706,7 +706,7 @@ function App() {
             className="flex-1 bg-green-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-green-800 transition-colors"
           >
             <ArrowUp size={18} />
-            {isSupplier ? 'Pay Cash' : 'Receive Payment'}
+            {isSupplier ? 'Pay Cash / Bank' : 'Receive Cash / Bank'}
           </button>
         </div>
       </div>
