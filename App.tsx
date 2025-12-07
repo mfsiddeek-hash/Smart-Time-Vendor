@@ -7,7 +7,6 @@ import {
   ChevronLeft, 
   MoreVertical, 
   Pencil, 
-  PlayCircle,
   CalendarClock,
   ArrowDown,
   ArrowUp,
@@ -27,14 +26,16 @@ import {
   Palette,
   Languages,
   LogOut,
-  Check
+  Check,
+  MessageCircle,
+  Clock
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { MOCK_CONTACTS, MOCK_TRANSACTIONS } from './constants';
 
-type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT' | 'PROFILE';
+type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT' | 'PROFILE' | 'REMINDERS';
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
 
 // Theme Configuration
@@ -200,7 +201,7 @@ function App() {
     } else if (currentView === 'DETAIL') {
       setSelectedContactId(null);
       setCurrentView('DASHBOARD');
-    } else if (currentView === 'PROFILE') {
+    } else if (currentView === 'PROFILE' || currentView === 'REMINDERS') {
       setCurrentView('DASHBOARD');
     }
   };
@@ -397,6 +398,123 @@ function App() {
     if (isNaN(d.getTime())) return isoString; 
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   };
+  
+  const getDaysAgo = (dateString: string) => {
+      const today = new Date();
+      const last = new Date(dateString);
+      if (isNaN(last.getTime())) return 0;
+      
+      const diffTime = Math.abs(today.getTime() - last.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+      return diffDays;
+  };
+
+  const handleSendReminder = (contact: Contact) => {
+      alert(`Reminder sent to ${contact.name} (${contact.phone}) for Rs. ${contact.balance.toLocaleString()}`);
+  };
+
+  // --- RENDER: REMINDERS VIEW ---
+  if (currentView === 'REMINDERS') {
+      const reminderContacts = contacts.filter(c => c.type === activeTab && c.balance > 0);
+      const totalPending = reminderContacts.reduce((sum, c) => sum + c.balance, 0);
+      
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col">
+            <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm sticky top-0 z-10">
+                <button onClick={handleBack}>
+                    <ChevronLeft size={24} className="text-slate-800" />
+                </button>
+                <div className="flex-1">
+                    <h1 className="text-lg font-bold text-slate-800">Payment Reminders</h1>
+                    <p className="text-xs text-gray-500">Manage pending payments</p>
+                </div>
+            </header>
+
+            {/* Toggle Tabs (Customers/Suppliers) */}
+             <div className="bg-white px-4 pt-2 pb-0 mb-2 border-b border-slate-100">
+                <div className="flex">
+                  <button 
+                    className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'CUSTOMER' ? theme.textDark : 'text-slate-500'}`}
+                    onClick={() => setActiveTab('CUSTOMER')}
+                  >
+                    <Users size={18} />
+                    To Collect
+                    {activeTab === 'CUSTOMER' && (
+                      <div className={`absolute bottom-0 left-0 right-0 h-0.5 ${theme.bgIndicator}`}></div>
+                    )}
+                  </button>
+                  <button 
+                    className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'SUPPLIER' ? theme.textDark : 'text-slate-500'}`}
+                    onClick={() => setActiveTab('SUPPLIER')}
+                  >
+                    <Truck size={18} />
+                    To Pay
+                    {activeTab === 'SUPPLIER' && (
+                      <div className={`absolute bottom-0 left-0 right-0 h-0.5 ${theme.bgIndicator}`}></div>
+                    )}
+                  </button>
+                </div>
+            </div>
+
+            {/* Summary Banner */}
+            <div className="px-4 py-2">
+                <div className={`${activeTab === 'CUSTOMER' ? 'bg-green-50 border-green-100 text-green-800' : 'bg-red-50 border-red-100 text-red-800'} border rounded-lg p-4 flex justify-between items-center`}>
+                    <span className="text-sm font-medium">{activeTab === 'CUSTOMER' ? 'Total To Collect' : 'Total To Pay'}</span>
+                    <span className="text-xl font-bold">Rs. {totalPending.toLocaleString()}</span>
+                </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 px-4 py-2 flex flex-col gap-3 pb-safe">
+                {reminderContacts.length > 0 ? (
+                    reminderContacts.map(contact => {
+                        const daysAgo = getDaysAgo(contact.lastUpdated);
+                        return (
+                            <div key={contact.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-3">
+                                <div className="flex justify-between items-start">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center font-bold text-gray-500">
+                                            {contact.name.substring(0, 1)}
+                                        </div>
+                                        <div>
+                                            <h3 className="font-bold text-slate-800">{contact.name}</h3>
+                                            <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
+                                                <Clock size={12} />
+                                                <span>{daysAgo} days ago</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className={`font-bold text-lg ${activeTab === 'CUSTOMER' ? 'text-green-700' : 'text-red-700'}`}>
+                                            Rs. {contact.balance.toLocaleString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                {activeTab === 'CUSTOMER' && (
+                                    <div className="pt-2 border-t border-gray-50 flex gap-3">
+                                        <button 
+                                            onClick={() => handleSendReminder(contact)}
+                                            className="flex-1 bg-green-50 text-green-700 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 active:bg-green-100 transition-colors"
+                                        >
+                                            <MessageCircle size={16} />
+                                            Remind via WhatsApp
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })
+                ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                        <Check size={48} className="mb-2 opacity-20" />
+                        <p>No pending payments</p>
+                    </div>
+                )}
+            </div>
+        </div>
+      );
+  }
 
   // --- RENDER: PROFILE VIEW ---
   if (currentView === 'PROFILE') {
@@ -929,14 +1047,13 @@ function App() {
             {shopPhone && <div className="text-xs text-slate-400 mt-0.5">{shopPhone}</div>}
           </div>
           <div className="flex gap-4">
-            <div className="flex flex-col items-center gap-0.5">
-              <PlayCircle className={theme.text} size={22} />
-              <span className={`text-[10px] font-medium ${theme.text}`}>Demo</span>
-            </div>
-            <div className="flex flex-col items-center gap-0.5">
+            <button 
+                onClick={() => setCurrentView('REMINDERS')}
+                className="flex flex-col items-center gap-0.5"
+            >
               <CalendarClock className={theme.text} size={22} />
               <span className={`text-[10px] font-medium ${theme.text}`}>Reminders</span>
-            </div>
+            </button>
           </div>
         </div>
 
