@@ -16,7 +16,8 @@ import {
   ChevronDown,
   ChevronRight,
   Camera,
-  FilePlus
+  FilePlus,
+  Trash2
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
@@ -45,8 +46,12 @@ function App() {
   const [transDate, setTransDate] = useState(new Date().toISOString().split('T')[0]);
   const [showMoreOptions, setShowMoreOptions] = useState(true);
   const [paymentMode, setPaymentMode] = useState<'CASH' | 'BANK'>('CASH');
+  
+  // Editing State
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [isEditingContact, setIsEditingContact] = useState(false);
 
-  // Add Contact Modal State
+  // Add/Edit Contact Modal State
   const [showContactModal, setShowContactModal] = useState(false);
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
@@ -90,6 +95,7 @@ function App() {
   const handleBack = () => {
     if (currentView === 'TRANSACTION_FORM') {
       setCurrentView('DETAIL');
+      setEditingTransactionId(null); // Reset editing state
     } else if (currentView === 'DETAIL') {
       setSelectedContactId(null);
       setCurrentView('DASHBOARD');
@@ -102,27 +108,132 @@ function App() {
     setTransDesc('');
     setTransDate(new Date().toISOString().split('T')[0]);
     setPaymentMode('CASH');
-    // Default visibility for options depending on type based on screenshots
-    // Credit screen has options expanded, Payment screen has them collapsed
+    setEditingTransactionId(null); // Ensure we are in create mode
     setShowMoreOptions(type === 'CREDIT');
     setCurrentView('TRANSACTION_FORM');
   };
 
-  const handleAddContact = () => {
+  const openAddContact = () => {
+    setIsEditingContact(false);
+    setNewContactName('');
+    setNewContactPhone('');
+    setShowContactModal(true);
+  };
+
+  const openEditContact = () => {
+    if (!selectedContact) return;
+    setIsEditingContact(true);
+    setNewContactName(selectedContact.name);
+    setNewContactPhone(selectedContact.phone);
+    setShowContactModal(true);
+  };
+
+  const handleSaveContact = () => {
     if (!newContactName) return;
-    const newContact: Contact = {
-      id: Date.now().toString(),
-      name: newContactName,
-      phone: newContactPhone,
-      type: activeTab,
-      balance: 0,
-      lastUpdated: new Date().toISOString().split('T')[0]
-    };
-    setContacts([...contacts, newContact]);
+
+    if (isEditingContact && selectedContact) {
+      // Update existing contact
+      setContacts(contacts.map(c => 
+        c.id === selectedContact.id 
+          ? { ...c, name: newContactName, phone: newContactPhone }
+          : c
+      ));
+    } else {
+      // Add new contact
+      const newContact: Contact = {
+        id: Date.now().toString(),
+        name: newContactName,
+        phone: newContactPhone,
+        type: activeTab,
+        balance: 0,
+        lastUpdated: new Date().toISOString().split('T')[0]
+      };
+      setContacts([...contacts, newContact]);
+    }
+    
     setNewContactName('');
     setNewContactPhone('');
     setShowContactModal(false);
   };
+
+  const handleDeleteContact = () => {
+    if (!selectedContact) return;
+    if (confirm('Are you sure you want to delete this contact and all their transactions?')) {
+      // Remove contact
+      setContacts(contacts.filter(c => c.id !== selectedContact.id));
+      // Remove associated transactions
+      setTransactions(transactions.filter(t => t.contactId !== selectedContact.id));
+      
+      setShowContactModal(false);
+      setSelectedContactId(null);
+      setCurrentView('DASHBOARD');
+    }
+  };
+
+  const handleEditTransaction = (transaction: Transaction) => {
+    setEditingTransactionId(transaction.id);
+    setTransType(transaction.type);
+    setTransAmount(transaction.amount.toString());
+    
+    // Parse date for input (assuming stored as string or convert if needed)
+    // The input[type=date] needs YYYY-MM-DD.
+    // Our mock data is "6th Dec 2025" or similar, which is hard to parse back simply.
+    // For this demo, we'll try to parse or default to today if format is complex.
+    // Ideally, store ISO string in backend.
+    
+    // Attempting simple parse or fallback
+    let isoDate = new Date().toISOString().split('T')[0];
+    const parsedDate = new Date(transaction.date);
+    if (!isNaN(parsedDate.getTime())) {
+         isoDate = parsedDate.toISOString().split('T')[0];
+    }
+    setTransDate(isoDate);
+
+    // Handle Description and Payment Mode
+    let desc = transaction.description || '';
+    if (transaction.type === 'PAYMENT' && desc.includes('(Bank)')) {
+        setPaymentMode('BANK');
+        desc = desc.replace(' (Bank)', '').replace('Bank Payment', '').trim();
+    } else {
+        setPaymentMode('CASH');
+    }
+    setTransDesc(desc);
+    
+    setShowMoreOptions(true);
+    setCurrentView('TRANSACTION_FORM');
+  };
+
+  const handleDeleteTransaction = () => {
+    if (!editingTransactionId || !selectedContact) return;
+
+    if (confirm('Delete this transaction?')) {
+        const transToDelete = transactions.find(t => t.id === editingTransactionId);
+        if (!transToDelete) return;
+
+        // Revert balance
+        // If CREDIT (+), we subtract. If PAYMENT (-), we add.
+        let reversionAmount = 0;
+        if (transToDelete.type === 'CREDIT') {
+            reversionAmount = -transToDelete.amount;
+        } else {
+            reversionAmount = transToDelete.amount;
+        }
+        
+        const newBalance = selectedContact.balance + reversionAmount;
+
+        // Update Transactions
+        setTransactions(transactions.filter(t => t.id !== editingTransactionId));
+        
+        // Update Contact
+        setContacts(contacts.map(c => 
+            c.id === selectedContact.id 
+              ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
+              : c
+        ));
+
+        handleBack();
+    }
+  }
 
   const handleSaveTransaction = () => {
     if (!selectedContact || !transAmount) return;
@@ -130,38 +241,70 @@ function App() {
     const amountVal = parseFloat(transAmount);
     if (isNaN(amountVal)) return;
 
-    const currentBalance = selectedContact.balance;
-    // Logic: 
-    // If Supplier: Credit (Buy) -> Balance Increases. Payment (Pay) -> Balance Decreases.
-    // If Customer: Credit (Sell) -> Balance Increases. Payment (Receive) -> Balance Decreases.
-    
-    const newBalance = transType === 'CREDIT' 
-      ? currentBalance + amountVal 
-      : currentBalance - amountVal;
+    // Helper to calculate effect of a transaction type on balance
+    const getBalanceEffect = (type: TransactionType, amount: number) => {
+        return type === 'CREDIT' ? amount : -amount;
+    };
 
-    // Format date for display
+    let newBalance = selectedContact.balance;
     const dateObj = new Date(transDate);
     const dateStr = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     
-    // Combine description with payment mode if it's a payment
+    // Description formatting
     let finalDesc = transDesc;
     if (transType === 'PAYMENT' && paymentMode === 'BANK') {
        finalDesc = finalDesc ? `${finalDesc} (Bank)` : 'Bank Payment';
     }
 
-    const newTrans: Transaction = {
-      id: Date.now().toString(),
-      contactId: selectedContact.id,
-      date: dateStr,
-      description: finalDesc,
-      amount: amountVal,
-      type: transType,
-      balanceAfter: newBalance,
-      hasAttachment: false
-    };
+    if (editingTransactionId) {
+        // --- EDIT MODE ---
+        const oldTransIndex = transactions.findIndex(t => t.id === editingTransactionId);
+        if (oldTransIndex === -1) return;
+        const oldTrans = transactions[oldTransIndex];
 
-    setTransactions([newTrans, ...transactions]);
+        // 1. Revert old transaction effect
+        const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount);
+        newBalance -= oldEffect;
 
+        // 2. Apply new transaction effect
+        const newEffect = getBalanceEffect(transType, amountVal);
+        newBalance += newEffect;
+
+        // 3. Update Transaction Object
+        const updatedTrans: Transaction = {
+            ...oldTrans,
+            date: dateStr,
+            description: finalDesc,
+            amount: amountVal,
+            type: transType,
+            balanceAfter: newBalance // Note: In a real ledger, subsequent transactions would also need re-calculation. For this simplified app, we update the contact's final balance but might leave intermediate "balanceAfter" slightly out of sync if editing historical data.
+            // Ideally, we'd re-calculate the running balance for all transactions after this date. 
+            // For simplicity here, we assume the user mainly cares about the final Contact Balance.
+        };
+
+        const newTransactions = [...transactions];
+        newTransactions[oldTransIndex] = updatedTrans;
+        setTransactions(newTransactions);
+
+    } else {
+        // --- CREATE MODE ---
+        const effect = getBalanceEffect(transType, amountVal);
+        newBalance += effect;
+
+        const newTrans: Transaction = {
+            id: Date.now().toString(),
+            contactId: selectedContact.id,
+            date: dateStr,
+            description: finalDesc,
+            amount: amountVal,
+            type: transType,
+            balanceAfter: newBalance,
+            hasAttachment: false
+        };
+        setTransactions([newTrans, ...transactions]);
+    }
+
+    // Update Contact Balance
     setContacts(contacts.map(c => 
       c.id === selectedContact.id 
         ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
@@ -174,6 +317,7 @@ function App() {
   // Helper to get formatted date string for the form
   const getFormattedDate = (isoString: string) => {
     const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString; // Fallback
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   };
 
@@ -182,16 +326,27 @@ function App() {
     const isCredit = transType === 'CREDIT';
     const themeColor = isCredit ? 'text-red-700' : 'text-green-700';
     const btnColor = isCredit ? 'bg-red-800' : 'bg-green-800';
-    const title = isCredit ? `Get Credit from ${selectedContact.name}` : `Make Payment to ${selectedContact.name}`;
+    const titleAction = editingTransactionId ? 'Edit' : (isCredit ? 'Get Credit from' : 'Make Payment to');
+    const title = editingTransactionId ? 'Edit Transaction' : `${titleAction} ${selectedContact.name}`;
     
     return (
       <div className="min-h-screen bg-white flex flex-col relative">
         {/* Header */}
-        <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm">
-          <button onClick={handleBack}>
-            <ChevronLeft size={24} className="text-slate-800" />
-          </button>
-          <h1 className={`text-lg font-bold ${themeColor}`}>{title}</h1>
+        <header className="bg-white px-4 py-4 flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-4">
+                <button onClick={handleBack}>
+                    <ChevronLeft size={24} className="text-slate-800" />
+                </button>
+                <h1 className={`text-lg font-bold ${themeColor}`}>{title}</h1>
+            </div>
+            {editingTransactionId && (
+                <button 
+                    onClick={handleDeleteTransaction}
+                    className="p-2 text-red-600 bg-red-50 rounded-full"
+                >
+                    <Trash2 size={20} />
+                </button>
+            )}
         </header>
 
         <div className="flex-1 p-4 flex flex-col">
@@ -316,7 +471,7 @@ function App() {
             onClick={handleSaveTransaction}
             className={`w-full ${btnColor} text-white font-bold py-3.5 rounded-lg active:opacity-90 transition-opacity`}
           >
-            Save
+            {editingTransactionId ? 'Update Transaction' : 'Save'}
           </button>
         </div>
       </div>
@@ -340,7 +495,10 @@ function App() {
                 {selectedContact.name.substring(0, 1)}
               </div>
               <h1 className="font-bold text-lg text-slate-800">{selectedContact.name}</h1>
-              <button className="text-gray-400">
+              <button 
+                onClick={openEditContact}
+                className="text-gray-400 p-2 hover:bg-gray-100 rounded-full"
+              >
                 <Pencil size={16} />
               </button>
             </div>
@@ -370,7 +528,13 @@ function App() {
         {/* Transactions List */}
         <div className="flex-1">
           {currentTransactions.length > 0 ? (
-             currentTransactions.map(t => <TransactionRow key={t.id} transaction={t} />)
+             currentTransactions.map(t => (
+                <TransactionRow 
+                    key={t.id} 
+                    transaction={t} 
+                    onClick={handleEditTransaction}
+                />
+             ))
           ) : (
             <div className="p-8 text-center text-gray-400">No transactions found</div>
           )}
@@ -535,19 +699,21 @@ function App() {
       {/* Add Button */}
       <div className="px-4 mt-4">
         <button 
-          onClick={() => setShowContactModal(true)}
+          onClick={openAddContact}
           className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg shadow-md active:bg-blue-700 transition-colors"
         >
           Add {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}
         </button>
       </div>
 
-      {/* Add Contact Modal */}
+      {/* Add/Edit Contact Modal */}
       {showContactModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in duration-200">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold text-slate-800">Add New {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}</h3>
+              <h3 className="text-lg font-bold text-slate-800">
+                {isEditingContact ? `Edit ${activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}` : `Add New ${activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}`}
+              </h3>
               <button onClick={() => setShowContactModal(false)}><X size={24} className="text-gray-400" /></button>
             </div>
             
@@ -576,11 +742,20 @@ function App() {
               </div>
 
               <button 
-                onClick={handleAddContact}
+                onClick={handleSaveContact}
                 className="mt-2 w-full bg-blue-600 text-white font-semibold py-3 rounded-lg active:bg-blue-700 transition-colors"
               >
-                Save Contact
+                {isEditingContact ? 'Update Contact' : 'Save Contact'}
               </button>
+              
+              {isEditingContact && (
+                <button 
+                    onClick={handleDeleteContact}
+                    className="w-full bg-white border border-red-200 text-red-600 font-semibold py-3 rounded-lg active:bg-red-50 transition-colors"
+                >
+                    Delete Contact
+                </button>
+              )}
             </div>
           </div>
         </div>

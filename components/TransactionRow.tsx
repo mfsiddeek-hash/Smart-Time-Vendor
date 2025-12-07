@@ -4,16 +4,20 @@ import { Transaction } from '../types';
 
 interface TransactionRowProps {
   transaction: Transaction;
+  onClick?: (transaction: Transaction) => void;
 }
 
-export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction }) => {
+export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onClick }) => {
   // Logic to determine color based on transaction type relative to a Supplier perspective
   // Payment reduces balance (Good/Green), Credit increases balance (Debt/Red)
   
   const isPayment = transaction.type === 'PAYMENT';
   
   return (
-    <div className="bg-white p-4 border-b border-gray-100 flex flex-col gap-2">
+    <div 
+      onClick={() => onClick?.(transaction)}
+      className="bg-white p-4 border-b border-gray-100 flex flex-col gap-2 active:bg-gray-50 transition-colors cursor-pointer"
+    >
       <div className="flex justify-between items-start">
         <span className="font-semibold text-sm text-slate-800">{transaction.date}</span>
         <span className={`font-bold text-sm ${isPayment ? 'text-green-700' : 'text-red-600'}`}>
