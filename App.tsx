@@ -316,15 +316,19 @@ function App() {
     
     try {
       const newContactId = Date.now().toString(); 
-      const newContact = {
+      const newContact: any = {
         id: newContactId,
         name: newContactName,
         phone: newContactPhone,
         type: activeTab,
         balance: 0,
-        target_amount: activeTab === 'RENT' ? (parseFloat(newContactTarget) || 0) : 0,
         last_updated: new Date().toISOString().split('T')[0]
       };
+
+      // Only add target_amount for RENT type to prevent errors if column missing for regular contacts
+      if (activeTab === 'RENT') {
+          newContact.target_amount = parseFloat(newContactTarget) || 0;
+      }
 
       const { error } = await supabase.from('contacts').insert([newContact]);
       if (error) throw error;
@@ -336,7 +340,7 @@ function App() {
         phone: newContactPhone,
         type: activeTab,
         balance: 0,
-        targetAmount: newContact.target_amount,
+        targetAmount: newContact.target_amount || 0,
         lastUpdated: newContact.last_updated
       };
       
@@ -345,9 +349,9 @@ function App() {
       setNewContactPhone('');
       setNewContactTarget('');
       setShowAddContactModal(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error adding contact:', error);
-      alert('Failed to add contact');
+      alert(`Failed to add contact: ${error.message || 'Unknown error. Check database columns.'}`);
     }
   };
 
