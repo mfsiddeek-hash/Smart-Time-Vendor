@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Users, 
   Truck, 
@@ -28,12 +28,13 @@ import {
   LogOut,
   Check,
   MessageCircle,
-  Clock
+  Clock,
+  Loader2
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
-import { MOCK_CONTACTS, MOCK_TRANSACTIONS } from './constants';
+import { supabase } from './supabaseClient';
 
 type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT' | 'PROFILE' | 'REMINDERS';
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
@@ -115,8 +116,9 @@ const THEMES: Record<ThemeColor, {
 
 function App() {
   // Core Data State
-  const [contacts, setContacts] = useState<Contact[]>(MOCK_CONTACTS);
-  const [transactions, setTransactions] = useState<Transaction[]>(MOCK_TRANSACTIONS);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   // App Settings State
   const [shopName, setShopName] = useState('Smart Time');
@@ -150,6 +152,62 @@ function App() {
   // Helpers
   const theme = THEMES[appTheme];
 
+  // --- SUPABASE DATA FETCHING ---
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setIsLoading(true);
+    try {
+      // Fetch Contacts
+      const { data: contactsData, error: contactsError } = await supabase
+        .from('contacts')
+        .select('*');
+      
+      if (contactsError) throw contactsError;
+
+      // Map snake_case DB to camelCase Types
+      const mappedContacts: Contact[] = (contactsData || []).map(c => ({
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        type: c.type as ContactType,
+        balance: c.balance,
+        lastUpdated: c.last_updated
+      }));
+      
+      setContacts(mappedContacts);
+
+      // Fetch Transactions
+      const { data: transData, error: transError } = await supabase
+        .from('transactions')
+        .select('*')
+        .order('date', { ascending: false });
+        
+      if (transError) throw transError;
+
+      const mappedTransactions: Transaction[] = (transData || []).map(t => ({
+        id: t.id,
+        contactId: t.contact_id,
+        date: t.date,
+        description: t.description,
+        amount: t.amount,
+        type: t.type as TransactionType,
+        balanceAfter: t.balance_after,
+        hasAttachment: t.has_attachment
+      }));
+
+      setTransactions(mappedTransactions);
+
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      alert('Failed to load data from database.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Derived Data
   const selectedContact = useMemo(() => 
     contacts.find(c => c.id === selectedContactId) || null
@@ -177,6 +235,7 @@ function App() {
 
   const currentTransactions = useMemo(() => {
     if (!selectedContactId) return [];
+    // Only filter the transactions we already fetched and sorted
     return transactions.filter(t => t.contactId === selectedContactId);
   }, [transactions, selectedContactId]);
 
@@ -230,44 +289,87 @@ function App() {
     setCurrentView('EDIT_CONTACT'); 
   };
 
-  const handleSaveNewContact = () => {
+  const handleSaveNewContact = async () => {
     if (!newContactName) return;
     
-    const newContact: Contact = {
-      id: Date.now().toString(),
-      name: newContactName,
-      phone: newContactPhone,
-      type: activeTab,
-      balance: 0,
-      lastUpdated: new Date().toISOString().split('T')[0]
-    };
-    setContacts([...contacts, newContact]);
-    
-    setNewContactName('');
-    setNewContactPhone('');
-    setShowAddContactModal(false);
+    try {
+      const newContactId = Date.now().toString(); // Or use crypto.randomUUID()
+      const newContact = {
+        id: newContactId,
+        name: newContactName,
+        phone: newContactPhone,
+        type: activeTab,
+        balance: 0,
+        last_updated: new Date().toISOString().split('T')[0]
+      };
+
+      const { error } = await supabase.from('contacts').insert([newContact]);
+      if (error) throw error;
+
+      // Update local state
+      const mappedNewContact: Contact = {
+        id: newContactId,
+        name: newContactName,
+        phone: newContactPhone,
+        type: activeTab,
+        balance: 0,
+        lastUpdated: newContact.last_updated
+      };
+      
+      setContacts([...contacts, mappedNewContact]);
+      setNewContactName('');
+      setNewContactPhone('');
+      setShowAddContactModal(false);
+    } catch (error) {
+      console.error('Error adding contact:', error);
+      alert('Failed to add contact');
+    }
   };
 
-  const handleUpdateContact = () => {
+  const handleUpdateContact = async () => {
     if (!selectedContact || !newContactName) return;
 
-    setContacts(contacts.map(c => 
-        c.id === selectedContact.id 
-          ? { ...c, name: newContactName, phone: newContactPhone }
-          : c
-    ));
+    try {
+      const { error } = await supabase
+        .from('contacts')
+        .update({ name: newContactName, phone: newContactPhone })
+        .eq('id', selectedContact.id);
 
-    setCurrentView('DETAIL'); 
+      if (error) throw error;
+
+      setContacts(contacts.map(c => 
+          c.id === selectedContact.id 
+            ? { ...c, name: newContactName, phone: newContactPhone }
+            : c
+      ));
+
+      setCurrentView('DETAIL'); 
+    } catch (error) {
+      console.error('Error updating contact:', error);
+      alert('Failed to update contact');
+    }
   };
 
-  const handleDeleteContact = () => {
+  const handleDeleteContact = async () => {
     if (!selectedContact) return;
     if (confirm('Are you sure you want to delete this contact and all their transactions?')) {
-      setContacts(contacts.filter(c => c.id !== selectedContact.id));
-      setTransactions(transactions.filter(t => t.contactId !== selectedContact.id));
-      
-      setSelectedContactId(null);
-      setCurrentView('DASHBOARD');
+      try {
+        // Delete transactions first (manual cascade just in case)
+        await supabase.from('transactions').delete().eq('contact_id', selectedContact.id);
+        
+        // Delete contact
+        const { error } = await supabase.from('contacts').delete().eq('id', selectedContact.id);
+        if (error) throw error;
+
+        setContacts(contacts.filter(c => c.id !== selectedContact.id));
+        setTransactions(transactions.filter(t => t.contactId !== selectedContact.id));
+        
+        setSelectedContactId(null);
+        setCurrentView('DASHBOARD');
+      } catch (error) {
+        console.error('Error deleting contact:', error);
+        alert('Failed to delete contact');
+      }
     }
   };
 
@@ -296,35 +398,47 @@ function App() {
     setCurrentView('TRANSACTION_FORM');
   };
 
-  const handleDeleteTransaction = () => {
+  const handleDeleteTransaction = async () => {
     if (!editingTransactionId || !selectedContact) return;
 
     if (confirm('Delete this transaction?')) {
-        const transToDelete = transactions.find(t => t.id === editingTransactionId);
-        if (!transToDelete) return;
+        try {
+          const transToDelete = transactions.find(t => t.id === editingTransactionId);
+          if (!transToDelete) return;
 
-        let reversionAmount = 0;
-        if (transToDelete.type === 'CREDIT') {
-            reversionAmount = -transToDelete.amount;
-        } else {
-            reversionAmount = transToDelete.amount;
+          let reversionAmount = 0;
+          if (transToDelete.type === 'CREDIT') {
+              reversionAmount = -transToDelete.amount;
+          } else {
+              reversionAmount = transToDelete.amount;
+          }
+          
+          const newBalance = selectedContact.balance + reversionAmount;
+
+          // DB Updates
+          await supabase.from('transactions').delete().eq('id', editingTransactionId);
+          await supabase.from('contacts').update({
+             balance: newBalance,
+             last_updated: new Date().toISOString().split('T')[0]
+          }).eq('id', selectedContact.id);
+
+          // State Updates
+          setTransactions(transactions.filter(t => t.id !== editingTransactionId));
+          setContacts(contacts.map(c => 
+              c.id === selectedContact.id 
+                ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
+                : c
+          ));
+
+          handleBack();
+        } catch (error) {
+          console.error("Error deleting transaction", error);
+          alert("Failed to delete transaction");
         }
-        
-        const newBalance = selectedContact.balance + reversionAmount;
-
-        setTransactions(transactions.filter(t => t.id !== editingTransactionId));
-        
-        setContacts(contacts.map(c => 
-            c.id === selectedContact.id 
-              ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
-              : c
-        ));
-
-        handleBack();
     }
   }
 
-  const handleSaveTransaction = () => {
+  const handleSaveTransaction = async () => {
     if (!selectedContact || !transAmount) return;
     
     const amountVal = parseFloat(transAmount);
@@ -343,54 +457,93 @@ function App() {
        finalDesc = finalDesc ? `${finalDesc} (Bank)` : 'Bank Payment';
     }
 
-    if (editingTransactionId) {
-        const oldTransIndex = transactions.findIndex(t => t.id === editingTransactionId);
-        if (oldTransIndex === -1) return;
-        const oldTrans = transactions[oldTransIndex];
+    try {
+      if (editingTransactionId) {
+          const oldTransIndex = transactions.findIndex(t => t.id === editingTransactionId);
+          if (oldTransIndex === -1) return;
+          const oldTrans = transactions[oldTransIndex];
 
-        const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount);
-        newBalance -= oldEffect;
+          const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount);
+          newBalance -= oldEffect;
 
-        const newEffect = getBalanceEffect(transType, amountVal);
-        newBalance += newEffect;
+          const newEffect = getBalanceEffect(transType, amountVal);
+          newBalance += newEffect;
 
-        const updatedTrans: Transaction = {
-            ...oldTrans,
-            date: dateStr,
-            description: finalDesc,
-            amount: amountVal,
-            type: transType,
-            balanceAfter: newBalance
-        };
+          const updatedTransDb = {
+              date: dateStr,
+              description: finalDesc,
+              amount: amountVal,
+              type: transType,
+              balance_after: newBalance
+          };
 
-        const newTransactions = [...transactions];
-        newTransactions[oldTransIndex] = updatedTrans;
-        setTransactions(newTransactions);
+          await supabase.from('transactions').update(updatedTransDb).eq('id', editingTransactionId);
+          await supabase.from('contacts').update({
+             balance: newBalance,
+             last_updated: new Date().toISOString().split('T')[0]
+          }).eq('id', selectedContact.id);
 
-    } else {
-        const effect = getBalanceEffect(transType, amountVal);
-        newBalance += effect;
+          // Local update
+          const updatedTrans: Transaction = {
+              ...oldTrans,
+              date: dateStr,
+              description: finalDesc,
+              amount: amountVal,
+              type: transType,
+              balanceAfter: newBalance
+          };
 
-        const newTrans: Transaction = {
-            id: Date.now().toString(),
-            contactId: selectedContact.id,
-            date: dateStr,
-            description: finalDesc,
-            amount: amountVal,
-            type: transType,
-            balanceAfter: newBalance,
-            hasAttachment: false
-        };
-        setTransactions([newTrans, ...transactions]);
+          const newTransactions = [...transactions];
+          newTransactions[oldTransIndex] = updatedTrans;
+          setTransactions(newTransactions);
+
+      } else {
+          const effect = getBalanceEffect(transType, amountVal);
+          newBalance += effect;
+          const newId = Date.now().toString();
+
+          const newTransDb = {
+              id: newId,
+              contact_id: selectedContact.id,
+              date: dateStr,
+              description: finalDesc,
+              amount: amountVal,
+              type: transType,
+              balance_after: newBalance,
+              has_attachment: false
+          };
+
+          await supabase.from('transactions').insert([newTransDb]);
+          await supabase.from('contacts').update({
+             balance: newBalance,
+             last_updated: new Date().toISOString().split('T')[0]
+          }).eq('id', selectedContact.id);
+
+          const newTrans: Transaction = {
+              id: newId,
+              contactId: selectedContact.id,
+              date: dateStr,
+              description: finalDesc,
+              amount: amountVal,
+              type: transType,
+              balanceAfter: newBalance,
+              hasAttachment: false
+          };
+          setTransactions([newTrans, ...transactions]);
+      }
+
+      setContacts(contacts.map(c => 
+        c.id === selectedContact.id 
+          ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
+          : c
+      ));
+
+      handleBack(); 
+
+    } catch(error) {
+      console.error("Error saving transaction", error);
+      alert("Failed to save transaction");
     }
-
-    setContacts(contacts.map(c => 
-      c.id === selectedContact.id 
-        ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
-        : c
-    ));
-
-    handleBack(); 
   };
 
   const getFormattedDate = (isoString: string) => {
@@ -412,6 +565,16 @@ function App() {
   const handleSendReminder = (contact: Contact) => {
       alert(`Reminder sent to ${contact.name} (${contact.phone}) for Rs. ${contact.balance.toLocaleString()}`);
   };
+
+  // --- RENDER: LOADING ---
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center flex-col gap-4">
+        <Loader2 size={40} className="animate-spin text-blue-600" />
+        <p className="text-gray-500 font-medium">Loading your ledger...</p>
+      </div>
+    );
+  }
 
   // --- RENDER: REMINDERS VIEW ---
   if (currentView === 'REMINDERS') {
