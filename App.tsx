@@ -180,7 +180,7 @@ function App() {
 
       // Map snake_case DB to camelCase Types
       const mappedContacts: Contact[] = (contactsData || []).map(c => ({
-        id: c.id,
+        id: String(c.id), // Force string ID to ensure click handling works
         name: c.name,
         phone: c.phone,
         type: c.type as ContactType,
@@ -200,8 +200,8 @@ function App() {
       if (transError) throw transError;
 
       const mappedTransactions: Transaction[] = (transData || []).map(t => ({
-        id: t.id,
-        contactId: t.contact_id,
+        id: String(t.id),
+        contactId: String(t.contact_id), // Force string ID
         date: t.date,
         description: t.description,
         amount: t.amount,
@@ -1246,6 +1246,136 @@ function App() {
             className={`w-full ${btnColor} text-white font-bold py-3.5 rounded-lg active:opacity-90 transition-opacity ${isUploading ? 'opacity-70' : ''}`}
           >
             {editingTransactionId ? 'Update Transaction' : 'Save'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- RENDER: DETAIL VIEW ---
+  if (currentView === 'DETAIL' && selectedContact) {
+    const isSupplier = selectedContact.type === 'SUPPLIER';
+    const isRent = selectedContact.type === 'RENT';
+    
+    // For Rent: Remaining calculation
+    const rentTarget = selectedContact.targetAmount || 0;
+    const rentRemaining = Math.max(0, rentTarget - selectedContact.balance);
+    const progressPercent = rentTarget > 0 ? Math.min(100, (selectedContact.balance / rentTarget) * 100) : 0;
+    
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-24 relative">
+        {/* Header */}
+        <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button onClick={handleBack} className="p-1">
+                <ChevronLeft size={24} className="text-slate-800" />
+              </button>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-sm font-medium text-gray-600">
+                  {isRent ? <Target size={18} /> : selectedContact.name.substring(0, 1)}
+                </div>
+                <h1 className="font-bold text-lg text-slate-800 line-clamp-1">{selectedContact.name}</h1>
+              </div>
+            </div>
+            <button>
+              <MoreVertical size={20} className="text-slate-700" />
+            </button>
+          </div>
+          
+          {/* Actions Bar next to name */}
+          <div className="flex gap-2 pl-12">
+            <button 
+                onClick={openEditContact} 
+                className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-700 transition-colors"
+            >
+                <Pencil size={14} />
+                Edit
+            </button>
+            <button 
+                onClick={handleDeleteContact} 
+                className="flex items-center gap-1 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-full text-xs font-semibold text-red-600 transition-colors"
+            >
+                <Trash2 size={14} />
+                Delete
+            </button>
+            <button 
+                onClick={() => setCurrentView('REPORT')}
+                className={`flex items-center gap-1 ${theme.light} ${theme.lightHover} px-3 py-1.5 rounded-full text-xs font-semibold ${theme.text} transition-colors`}
+            >
+                <FileText size={14} />
+                Reports
+            </button>
+          </div>
+        </header>
+
+        {/* Balance Summary */}
+        <div className="p-4 bg-white mb-2">
+          <div className="bg-gray-50 rounded-lg p-6 flex flex-col items-center justify-center">
+             {isRent ? (
+                 <div className="w-full">
+                     <div className="flex justify-between items-center mb-2">
+                         <span className="text-sm font-semibold text-gray-500">Goal: Rs. {rentTarget.toLocaleString()}</span>
+                         <span className="text-sm font-bold text-blue-600">{progressPercent.toFixed(1)}%</span>
+                     </div>
+                     <div className="w-full h-3 bg-gray-200 rounded-full mb-4 overflow-hidden">
+                         <div className="h-full bg-blue-600 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+                     </div>
+                     <div className="flex justify-between items-center text-center">
+                         <div>
+                             <p className="text-xs text-gray-500">Saved</p>
+                             <p className="text-lg font-bold text-green-600">Rs. {selectedContact.balance.toLocaleString()}</p>
+                         </div>
+                         <div className="h-8 w-[1px] bg-gray-200"></div>
+                         <div>
+                             <p className="text-xs text-gray-500">Remaining</p>
+                             <p className="text-lg font-bold text-red-600">Rs. {rentRemaining.toLocaleString()}</p>
+                         </div>
+                     </div>
+                 </div>
+             ) : (
+                <>
+                    <h2 className={`text-xl font-bold ${selectedContact.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      Rs. {selectedContact.balance.toLocaleString()}
+                    </h2>
+                    <p className="text-gray-500 text-sm">
+                      {isSupplier ? 'To Pay' : 'To Collect'}
+                    </p>
+                </>
+             )}
+          </div>
+        </div>
+
+        {/* Transactions List */}
+        <div className="flex-1">
+          {currentTransactions.length > 0 ? (
+             currentTransactions.map(t => (
+                <TransactionRow 
+                    key={t.id} 
+                    transaction={t} 
+                    onClick={handleEditTransaction}
+                />
+             ))
+          ) : (
+            <div className="p-8 text-center text-gray-400">No transactions found</div>
+          )}
+        </div>
+
+        {/* Sticky Action Buttons */}
+        <div className="fixed bottom-0 left-0 right-0 bg-white p-4 flex gap-4 border-t border-gray-200 z-40">
+          <button 
+            onClick={() => startTransaction('CREDIT')}
+            className="flex-1 bg-red-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-red-800 transition-colors"
+          >
+            <ArrowDown size={18} />
+            {isRent ? 'Withdraw' : (isSupplier ? 'Purchase (Credit)' : 'Give Credit')}
+          </button>
+          <button 
+            onClick={() => startTransaction('PAYMENT')}
+            className="flex-1 bg-green-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-green-800 transition-colors"
+          >
+            <ArrowUp size={18} />
+            {isRent ? 'Add Savings' : (isSupplier ? 'Pay Cash / Bank' : 'Receive Cash / Bank')}
           </button>
         </div>
       </div>
