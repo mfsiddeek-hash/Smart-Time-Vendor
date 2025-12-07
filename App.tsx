@@ -18,14 +18,17 @@ import {
   Camera,
   FilePlus,
   Trash2,
-  FileText
+  FileText,
+  Calendar,
+  Share2,
+  Download
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { MOCK_CONTACTS, MOCK_TRANSACTIONS } from './constants';
 
-type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM';
+type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT';
 
 function App() {
   // Core Data State
@@ -50,10 +53,9 @@ function App() {
   
   // Editing State
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
-  const [isEditingContact, setIsEditingContact] = useState(false);
 
-  // Add/Edit Contact Modal State
-  const [showContactModal, setShowContactModal] = useState(false);
+  // Add/Edit Contact State
+  const [showAddContactModal, setShowAddContactModal] = useState(false); // Only for ADD now
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
 
@@ -94,9 +96,9 @@ function App() {
   };
 
   const handleBack = () => {
-    if (currentView === 'TRANSACTION_FORM') {
+    if (currentView === 'TRANSACTION_FORM' || currentView === 'REPORT' || currentView === 'EDIT_CONTACT') {
       setCurrentView('DETAIL');
-      setEditingTransactionId(null); // Reset editing state
+      setEditingTransactionId(null);
     } else if (currentView === 'DETAIL') {
       setSelectedContactId(null);
       setCurrentView('DASHBOARD');
@@ -109,52 +111,52 @@ function App() {
     setTransDesc('');
     setTransDate(new Date().toISOString().split('T')[0]);
     setPaymentMode('CASH');
-    setEditingTransactionId(null); // Ensure we are in create mode
+    setEditingTransactionId(null);
     setShowMoreOptions(type === 'CREDIT');
     setCurrentView('TRANSACTION_FORM');
   };
 
   const openAddContact = () => {
-    setIsEditingContact(false);
     setNewContactName('');
     setNewContactPhone('');
-    setShowContactModal(true);
+    setShowAddContactModal(true);
   };
 
   const openEditContact = () => {
     if (!selectedContact) return;
-    setIsEditingContact(true);
     setNewContactName(selectedContact.name);
     setNewContactPhone(selectedContact.phone);
-    setShowContactModal(true);
+    setCurrentView('EDIT_CONTACT'); // Navigate to dedicated Edit View
   };
 
-  const handleSaveContact = () => {
+  const handleSaveNewContact = () => {
     if (!newContactName) return;
-
-    if (isEditingContact && selectedContact) {
-      // Update existing contact
-      setContacts(contacts.map(c => 
-        c.id === selectedContact.id 
-          ? { ...c, name: newContactName, phone: newContactPhone }
-          : c
-      ));
-    } else {
-      // Add new contact
-      const newContact: Contact = {
-        id: Date.now().toString(),
-        name: newContactName,
-        phone: newContactPhone,
-        type: activeTab,
-        balance: 0,
-        lastUpdated: new Date().toISOString().split('T')[0]
-      };
-      setContacts([...contacts, newContact]);
-    }
+    
+    const newContact: Contact = {
+      id: Date.now().toString(),
+      name: newContactName,
+      phone: newContactPhone,
+      type: activeTab,
+      balance: 0,
+      lastUpdated: new Date().toISOString().split('T')[0]
+    };
+    setContacts([...contacts, newContact]);
     
     setNewContactName('');
     setNewContactPhone('');
-    setShowContactModal(false);
+    setShowAddContactModal(false);
+  };
+
+  const handleUpdateContact = () => {
+    if (!selectedContact || !newContactName) return;
+
+    setContacts(contacts.map(c => 
+        c.id === selectedContact.id 
+          ? { ...c, name: newContactName, phone: newContactPhone }
+          : c
+    ));
+
+    setCurrentView('DETAIL'); // Go back to Detail view
   };
 
   const handleDeleteContact = () => {
@@ -165,7 +167,6 @@ function App() {
       // Remove associated transactions
       setTransactions(transactions.filter(t => t.contactId !== selectedContact.id));
       
-      setShowContactModal(false);
       setSelectedContactId(null);
       setCurrentView('DASHBOARD');
     }
@@ -176,7 +177,7 @@ function App() {
     setTransType(transaction.type);
     setTransAmount(transaction.amount.toString());
     
-    // Parse date for input (assuming stored as string or convert if needed)
+    // Parse date for input
     let isoDate = new Date().toISOString().split('T')[0];
     const parsedDate = new Date(transaction.date);
     if (!isNaN(parsedDate.getTime())) {
@@ -206,7 +207,6 @@ function App() {
         if (!transToDelete) return;
 
         // Revert balance
-        // If CREDIT (+), we subtract. If PAYMENT (-), we add.
         let reversionAmount = 0;
         if (transToDelete.type === 'CREDIT') {
             reversionAmount = -transToDelete.amount;
@@ -216,10 +216,8 @@ function App() {
         
         const newBalance = selectedContact.balance + reversionAmount;
 
-        // Update Transactions
         setTransactions(transactions.filter(t => t.id !== editingTransactionId));
         
-        // Update Contact
         setContacts(contacts.map(c => 
             c.id === selectedContact.id 
               ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
@@ -236,7 +234,6 @@ function App() {
     const amountVal = parseFloat(transAmount);
     if (isNaN(amountVal)) return;
 
-    // Helper to calculate effect of a transaction type on balance
     const getBalanceEffect = (type: TransactionType, amount: number) => {
         return type === 'CREDIT' ? amount : -amount;
     };
@@ -245,7 +242,6 @@ function App() {
     const dateObj = new Date(transDate);
     const dateStr = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     
-    // Description formatting
     let finalDesc = transDesc;
     if (transType === 'PAYMENT' && paymentMode === 'BANK') {
        finalDesc = finalDesc ? `${finalDesc} (Bank)` : 'Bank Payment';
@@ -257,15 +253,12 @@ function App() {
         if (oldTransIndex === -1) return;
         const oldTrans = transactions[oldTransIndex];
 
-        // 1. Revert old transaction effect
         const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount);
         newBalance -= oldEffect;
 
-        // 2. Apply new transaction effect
         const newEffect = getBalanceEffect(transType, amountVal);
         newBalance += newEffect;
 
-        // 3. Update Transaction Object
         const updatedTrans: Transaction = {
             ...oldTrans,
             date: dateStr,
@@ -297,7 +290,6 @@ function App() {
         setTransactions([newTrans, ...transactions]);
     }
 
-    // Update Contact Balance
     setContacts(contacts.map(c => 
       c.id === selectedContact.id 
         ? { ...c, balance: newBalance, lastUpdated: new Date().toISOString().split('T')[0] }
@@ -307,12 +299,163 @@ function App() {
     handleBack(); 
   };
 
-  // Helper to get formatted date string for the form
   const getFormattedDate = (isoString: string) => {
     const d = new Date(isoString);
-    if (isNaN(d.getTime())) return isoString; // Fallback
+    if (isNaN(d.getTime())) return isoString; 
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   };
+
+  // --- RENDER: REPORT VIEW ---
+  if (currentView === 'REPORT' && selectedContact) {
+    const totalCredit = currentTransactions
+        .filter(t => t.type === 'CREDIT')
+        .reduce((sum, t) => sum + t.amount, 0);
+    const totalPayment = currentTransactions
+        .filter(t => t.type === 'PAYMENT')
+        .reduce((sum, t) => sum + t.amount, 0);
+
+    return (
+        <div className="min-h-screen bg-gray-50 flex flex-col">
+            <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm sticky top-0 z-10">
+                <button onClick={handleBack}>
+                    <ChevronLeft size={24} className="text-slate-800" />
+                </button>
+                <div className="flex-1">
+                    <h1 className="text-lg font-bold text-slate-800">Report</h1>
+                    <p className="text-xs text-gray-500">{selectedContact.name}</p>
+                </div>
+                <button className="text-blue-600">
+                    <Share2 size={20} />
+                </button>
+            </header>
+
+            <div className="p-4">
+                {/* Date Filter Mock */}
+                <div className="bg-white rounded-lg p-3 flex items-center justify-between shadow-sm mb-4 border border-gray-100">
+                    <div className="flex items-center gap-2 text-slate-600">
+                        <Calendar size={18} />
+                        <span className="text-sm font-medium">This Month</span>
+                    </div>
+                    <ChevronDown size={16} className="text-gray-400" />
+                </div>
+
+                {/* Stats */}
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
+                    <div className="flex border-b border-gray-100">
+                        <div className="flex-1 p-4 border-r border-gray-100 text-center">
+                            <p className="text-xs text-gray-500 mb-1">Total Credit</p>
+                            <p className="text-lg font-bold text-red-600">Rs. {totalCredit.toLocaleString()}</p>
+                        </div>
+                        <div className="flex-1 p-4 text-center">
+                            <p className="text-xs text-gray-500 mb-1">Total Paid</p>
+                            <p className="text-lg font-bold text-green-600">Rs. {totalPayment.toLocaleString()}</p>
+                        </div>
+                    </div>
+                    <div className="p-4 text-center bg-gray-50">
+                        <p className="text-xs text-gray-500 mb-1">Net Balance</p>
+                        <p className={`text-xl font-bold ${selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                             Rs. {selectedContact.balance.toLocaleString()}
+                             <span className="text-xs font-normal text-gray-500 ml-1">
+                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : '(To Collect)'}
+                             </span>
+                        </p>
+                    </div>
+                </div>
+
+                {/* Transaction List (Simplified for Report) */}
+                <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
+                    <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between">
+                        <span className="text-xs font-bold text-gray-500">DATE</span>
+                        <div className="flex gap-8">
+                             <span className="text-xs font-bold text-gray-500 w-16 text-right">CREDIT</span>
+                             <span className="text-xs font-bold text-gray-500 w-16 text-right">DEBIT</span>
+                        </div>
+                    </div>
+                    {currentTransactions.map(t => (
+                        <div key={t.id} className="p-3 border-b border-gray-100 flex justify-between text-sm">
+                            <div className="flex flex-col">
+                                <span className="font-medium text-slate-700">{t.date}</span>
+                                <span className="text-[10px] text-gray-400 max-w-[100px] truncate">{t.description || '-'}</span>
+                            </div>
+                            <div className="flex gap-8">
+                                <span className="w-16 text-right font-medium text-red-600">
+                                    {t.type === 'CREDIT' ? t.amount.toLocaleString() : '-'}
+                                </span>
+                                <span className="w-16 text-right font-medium text-green-600">
+                                    {t.type === 'PAYMENT' ? t.amount.toLocaleString() : '-'}
+                                </span>
+                            </div>
+                        </div>
+                    ))}
+                    {currentTransactions.length === 0 && (
+                        <div className="p-6 text-center text-gray-400 text-sm">No transactions in this period</div>
+                    )}
+                </div>
+            </div>
+
+            <div className="p-4 mt-auto">
+                <button className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2">
+                    <Download size={18} />
+                    Download PDF Report
+                </button>
+            </div>
+        </div>
+    );
+  }
+
+  // --- RENDER: EDIT CONTACT VIEW (Dedicated Page) ---
+  if (currentView === 'EDIT_CONTACT' && selectedContact) {
+      return (
+        <div className="min-h-screen bg-white flex flex-col">
+            <header className="px-4 py-4 flex items-center gap-4 border-b border-gray-100">
+                <button onClick={handleBack}>
+                    <ChevronLeft size={24} className="text-slate-800" />
+                </button>
+                <h1 className="text-lg font-bold text-slate-800">Edit Contact</h1>
+            </header>
+
+            <div className="p-6 flex-col flex gap-6">
+                <div className="flex flex-col gap-2">
+                    <label className="text-sm font-semibold text-slate-600">Name</label>
+                    <input 
+                        type="text" 
+                        value={newContactName}
+                        onChange={(e) => setNewContactName(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 focus:border-blue-500 outline-none transition-colors"
+                        placeholder="Name"
+                    />
+                </div>
+                
+                <div className="flex flex-col gap-2">
+                    <label className="text-sm font-semibold text-slate-600">Phone Number</label>
+                    <input 
+                        type="tel" 
+                        value={newContactPhone}
+                        onChange={(e) => setNewContactPhone(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 focus:border-blue-500 outline-none transition-colors"
+                        placeholder="Phone"
+                    />
+                </div>
+            </div>
+
+            <div className="mt-auto p-6 flex flex-col gap-3">
+                <button 
+                    onClick={handleUpdateContact}
+                    className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-lg active:bg-blue-700 transition-colors shadow-sm"
+                >
+                    Save Changes
+                </button>
+                <button 
+                    onClick={handleDeleteContact}
+                    className="w-full bg-white border border-red-200 text-red-600 font-bold py-3.5 rounded-lg active:bg-red-50 transition-colors flex items-center justify-center gap-2"
+                >
+                    <Trash2 size={18} />
+                    Delete Contact
+                </button>
+            </div>
+        </div>
+      );
+  }
 
   // --- RENDER: TRANSACTION FORM VIEW ---
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
@@ -496,7 +639,7 @@ function App() {
             </button>
           </div>
           
-          {/* Actions Bar next to name (conceptually) */}
+          {/* Actions Bar next to name */}
           <div className="flex gap-2 pl-12">
             <button 
                 onClick={openEditContact} 
@@ -512,7 +655,10 @@ function App() {
                 <Trash2 size={14} />
                 Delete
             </button>
-            <button className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full text-xs font-semibold text-blue-600 transition-colors">
+            <button 
+                onClick={() => setCurrentView('REPORT')}
+                className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full text-xs font-semibold text-blue-600 transition-colors"
+            >
                 <FileText size={14} />
                 Reports
             </button>
@@ -712,15 +858,15 @@ function App() {
         </button>
       </div>
 
-      {/* Add/Edit Contact Modal */}
-      {showContactModal && (
+      {/* Add Contact Modal (Only for new contacts now) */}
+      {showAddContactModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in duration-200">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-lg font-bold text-slate-800">
-                {isEditingContact ? `Edit ${activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}` : `Add New ${activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}`}
+                Add New {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}
               </h3>
-              <button onClick={() => setShowContactModal(false)}><X size={24} className="text-gray-400" /></button>
+              <button onClick={() => setShowAddContactModal(false)}><X size={24} className="text-gray-400" /></button>
             </div>
             
             <div className="flex flex-col gap-4">
@@ -748,20 +894,11 @@ function App() {
               </div>
 
               <button 
-                onClick={handleSaveContact}
+                onClick={handleSaveNewContact}
                 className="mt-2 w-full bg-blue-600 text-white font-semibold py-3 rounded-lg active:bg-blue-700 transition-colors"
               >
-                {isEditingContact ? 'Update Contact' : 'Save Contact'}
+                Save Contact
               </button>
-              
-              {isEditingContact && (
-                <button 
-                    onClick={handleDeleteContact}
-                    className="w-full bg-white border border-red-200 text-red-600 font-semibold py-3 rounded-lg active:bg-red-50 transition-colors"
-                >
-                    Delete Contact
-                </button>
-              )}
             </div>
           </div>
         </div>
