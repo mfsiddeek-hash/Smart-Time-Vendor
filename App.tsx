@@ -21,19 +21,106 @@ import {
   FileText,
   Calendar,
   Share2,
-  Download
+  Download,
+  Store,
+  Phone,
+  Palette,
+  Languages,
+  LogOut,
+  Check
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { MOCK_CONTACTS, MOCK_TRANSACTIONS } from './constants';
 
-type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT';
+type ViewState = 'DASHBOARD' | 'DETAIL' | 'TRANSACTION_FORM' | 'EDIT_CONTACT' | 'REPORT' | 'PROFILE';
+type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
+
+// Theme Configuration
+const THEMES: Record<ThemeColor, {
+  name: string;
+  primary: string;
+  primaryHover: string;
+  primaryActive: string;
+  text: string;
+  textDark: string;
+  light: string;
+  lightHover: string;
+  border: string;
+  bgIndicator: string;
+}> = {
+  blue: {
+    name: 'Blue',
+    primary: 'bg-blue-600',
+    primaryHover: 'hover:bg-blue-700',
+    primaryActive: 'active:bg-blue-700',
+    text: 'text-blue-600',
+    textDark: 'text-blue-700',
+    light: 'bg-blue-50',
+    lightHover: 'hover:bg-blue-100',
+    border: 'border-blue-200',
+    bgIndicator: 'bg-blue-600'
+  },
+  purple: {
+    name: 'Purple',
+    primary: 'bg-purple-600',
+    primaryHover: 'hover:bg-purple-700',
+    primaryActive: 'active:bg-purple-700',
+    text: 'text-purple-600',
+    textDark: 'text-purple-700',
+    light: 'bg-purple-50',
+    lightHover: 'hover:bg-purple-100',
+    border: 'border-purple-200',
+    bgIndicator: 'bg-purple-600'
+  },
+  emerald: {
+    name: 'Emerald',
+    primary: 'bg-emerald-600',
+    primaryHover: 'hover:bg-emerald-700',
+    primaryActive: 'active:bg-emerald-700',
+    text: 'text-emerald-600',
+    textDark: 'text-emerald-700',
+    light: 'bg-emerald-50',
+    lightHover: 'hover:bg-emerald-100',
+    border: 'border-emerald-200',
+    bgIndicator: 'bg-emerald-600'
+  },
+  orange: {
+    name: 'Orange',
+    primary: 'bg-orange-600',
+    primaryHover: 'hover:bg-orange-700',
+    primaryActive: 'active:bg-orange-700',
+    text: 'text-orange-600',
+    textDark: 'text-orange-700',
+    light: 'bg-orange-50',
+    lightHover: 'hover:bg-orange-100',
+    border: 'border-orange-200',
+    bgIndicator: 'bg-orange-600'
+  },
+  dark: {
+    name: 'Dark',
+    primary: 'bg-slate-800',
+    primaryHover: 'hover:bg-slate-900',
+    primaryActive: 'active:bg-slate-900',
+    text: 'text-slate-800',
+    textDark: 'text-slate-900',
+    light: 'bg-slate-100',
+    lightHover: 'hover:bg-slate-200',
+    border: 'border-slate-300',
+    bgIndicator: 'bg-slate-800'
+  }
+};
 
 function App() {
   // Core Data State
   const [contacts, setContacts] = useState<Contact[]>(MOCK_CONTACTS);
   const [transactions, setTransactions] = useState<Transaction[]>(MOCK_TRANSACTIONS);
+
+  // App Settings State
+  const [shopName, setShopName] = useState('Smart Time');
+  const [shopPhone, setShopPhone] = useState('0771234567');
+  const [appTheme, setAppTheme] = useState<ThemeColor>('blue');
 
   // UI State
   const [activeTab, setActiveTab] = useState<ContactType>('SUPPLIER');
@@ -55,9 +142,12 @@ function App() {
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
 
   // Add/Edit Contact State
-  const [showAddContactModal, setShowAddContactModal] = useState(false); // Only for ADD now
+  const [showAddContactModal, setShowAddContactModal] = useState(false); 
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
+
+  // Helpers
+  const theme = THEMES[appTheme];
 
   // Derived Data
   const selectedContact = useMemo(() => 
@@ -95,12 +185,22 @@ function App() {
     setCurrentView('DETAIL');
   };
 
+  const handleNavigate = (view: ViewState) => {
+    // If going to dashboard, clear selection
+    if (view === 'DASHBOARD') {
+        setSelectedContactId(null);
+    }
+    setCurrentView(view);
+  };
+
   const handleBack = () => {
     if (currentView === 'TRANSACTION_FORM' || currentView === 'REPORT' || currentView === 'EDIT_CONTACT') {
       setCurrentView('DETAIL');
       setEditingTransactionId(null);
     } else if (currentView === 'DETAIL') {
       setSelectedContactId(null);
+      setCurrentView('DASHBOARD');
+    } else if (currentView === 'PROFILE') {
       setCurrentView('DASHBOARD');
     }
   };
@@ -126,7 +226,7 @@ function App() {
     if (!selectedContact) return;
     setNewContactName(selectedContact.name);
     setNewContactPhone(selectedContact.phone);
-    setCurrentView('EDIT_CONTACT'); // Navigate to dedicated Edit View
+    setCurrentView('EDIT_CONTACT'); 
   };
 
   const handleSaveNewContact = () => {
@@ -156,15 +256,13 @@ function App() {
           : c
     ));
 
-    setCurrentView('DETAIL'); // Go back to Detail view
+    setCurrentView('DETAIL'); 
   };
 
   const handleDeleteContact = () => {
     if (!selectedContact) return;
     if (confirm('Are you sure you want to delete this contact and all their transactions?')) {
-      // Remove contact
       setContacts(contacts.filter(c => c.id !== selectedContact.id));
-      // Remove associated transactions
       setTransactions(transactions.filter(t => t.contactId !== selectedContact.id));
       
       setSelectedContactId(null);
@@ -177,7 +275,6 @@ function App() {
     setTransType(transaction.type);
     setTransAmount(transaction.amount.toString());
     
-    // Parse date for input
     let isoDate = new Date().toISOString().split('T')[0];
     const parsedDate = new Date(transaction.date);
     if (!isNaN(parsedDate.getTime())) {
@@ -185,7 +282,6 @@ function App() {
     }
     setTransDate(isoDate);
 
-    // Handle Description and Payment Mode
     let desc = transaction.description || '';
     if (transaction.type === 'PAYMENT' && desc.includes('(Bank)')) {
         setPaymentMode('BANK');
@@ -206,7 +302,6 @@ function App() {
         const transToDelete = transactions.find(t => t.id === editingTransactionId);
         if (!transToDelete) return;
 
-        // Revert balance
         let reversionAmount = 0;
         if (transToDelete.type === 'CREDIT') {
             reversionAmount = -transToDelete.amount;
@@ -248,7 +343,6 @@ function App() {
     }
 
     if (editingTransactionId) {
-        // --- EDIT MODE ---
         const oldTransIndex = transactions.findIndex(t => t.id === editingTransactionId);
         if (oldTransIndex === -1) return;
         const oldTrans = transactions[oldTransIndex];
@@ -273,7 +367,6 @@ function App() {
         setTransactions(newTransactions);
 
     } else {
-        // --- CREATE MODE ---
         const effect = getBalanceEffect(transType, amountVal);
         newBalance += effect;
 
@@ -305,6 +398,116 @@ function App() {
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   };
 
+  // --- RENDER: PROFILE VIEW ---
+  if (currentView === 'PROFILE') {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
+            <header className="bg-white px-4 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+                <h1 className="text-xl font-bold text-slate-800">Profile & Settings</h1>
+                <div className={`w-8 h-8 rounded-full ${theme.light} flex items-center justify-center`}>
+                    <Store size={16} className={theme.text} />
+                </div>
+            </header>
+
+            <div className="p-4 flex flex-col gap-4">
+                {/* Shop Details Card */}
+                <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                    <h2 className="text-sm font-bold text-gray-500 mb-4 uppercase">Business Details</h2>
+                    
+                    <div className="flex flex-col gap-4">
+                        <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-full ${theme.light} flex items-center justify-center shrink-0`}>
+                                <Store size={20} className={theme.text} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-xs text-gray-400">Shop Name</label>
+                                <input 
+                                    type="text" 
+                                    value={shopName}
+                                    onChange={(e) => setShopName(e.target.value)}
+                                    className="w-full text-slate-800 font-semibold outline-none border-b border-gray-100 focus:border-gray-300 py-1 transition-colors"
+                                />
+                            </div>
+                            <Pencil size={16} className="text-gray-300" />
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-full ${theme.light} flex items-center justify-center shrink-0`}>
+                                <Phone size={20} className={theme.text} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-xs text-gray-400">Phone Number</label>
+                                <input 
+                                    type="tel" 
+                                    value={shopPhone}
+                                    onChange={(e) => setShopPhone(e.target.value)}
+                                    className="w-full text-slate-800 font-semibold outline-none border-b border-gray-100 focus:border-gray-300 py-1 transition-colors"
+                                />
+                            </div>
+                            <Pencil size={16} className="text-gray-300" />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Appearance Card */}
+                <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                    <h2 className="text-sm font-bold text-gray-500 mb-4 uppercase">Appearance</h2>
+                    
+                    <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Palette size={18} className="text-gray-400" />
+                            <span className="text-sm font-medium text-slate-700">App Theme</span>
+                        </div>
+                        <div className="flex gap-3 overflow-x-auto no-scrollbar pb-2">
+                            {(Object.keys(THEMES) as ThemeColor[]).map((colorKey) => (
+                                <button
+                                    key={colorKey}
+                                    onClick={() => setAppTheme(colorKey)}
+                                    className={`relative flex flex-col items-center gap-2 p-2 rounded-lg border ${appTheme === colorKey ? `border-${colorKey}-500 bg-gray-50` : 'border-transparent'}`}
+                                >
+                                    <div className={`w-10 h-10 rounded-full ${THEMES[colorKey].bgIndicator} shadow-sm flex items-center justify-center`}>
+                                        {appTheme === colorKey && <Check size={18} className="text-white" />}
+                                    </div>
+                                    <span className={`text-xs font-medium ${appTheme === colorKey ? 'text-slate-800' : 'text-gray-500'}`}>
+                                        {THEMES[colorKey].name}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Other Settings Placeholder */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <button className="w-full p-4 flex items-center justify-between active:bg-gray-50">
+                        <div className="flex items-center gap-3">
+                            <Languages size={20} className="text-gray-400" />
+                            <span className="text-sm font-medium text-slate-700">App Language</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">English</span>
+                            <ChevronRight size={16} className="text-gray-300" />
+                        </div>
+                    </button>
+                    <div className="h-[1px] bg-gray-50 mx-4"></div>
+                    <button className="w-full p-4 flex items-center justify-between active:bg-gray-50 text-red-600">
+                        <div className="flex items-center gap-3">
+                            <LogOut size={20} />
+                            <span className="text-sm font-medium">Log Out</span>
+                        </div>
+                    </button>
+                </div>
+            </div>
+
+            <BottomNav 
+                currentView={currentView} 
+                onNavigate={handleNavigate} 
+                activeTheme={appTheme}
+            />
+        </div>
+      );
+  }
+
   // --- RENDER: REPORT VIEW ---
   if (currentView === 'REPORT' && selectedContact) {
     const totalCredit = currentTransactions
@@ -324,7 +527,7 @@ function App() {
                     <h1 className="text-lg font-bold text-slate-800">Report</h1>
                     <p className="text-xs text-gray-500">{selectedContact.name}</p>
                 </div>
-                <button className="text-blue-600">
+                <button className={theme.text}>
                     <Share2 size={20} />
                 </button>
             </header>
@@ -362,7 +565,7 @@ function App() {
                     </div>
                 </div>
 
-                {/* Transaction List (Simplified for Report) */}
+                {/* Transaction List */}
                 <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
                     <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between">
                         <span className="text-xs font-bold text-gray-500">DATE</span>
@@ -394,7 +597,7 @@ function App() {
             </div>
 
             <div className="p-4 mt-auto">
-                <button className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2">
+                <button className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}>
                     <Download size={18} />
                     Download PDF Report
                 </button>
@@ -403,7 +606,7 @@ function App() {
     );
   }
 
-  // --- RENDER: EDIT CONTACT VIEW (Dedicated Page) ---
+  // --- RENDER: EDIT CONTACT VIEW ---
   if (currentView === 'EDIT_CONTACT' && selectedContact) {
       return (
         <div className="min-h-screen bg-white flex flex-col">
@@ -421,7 +624,7 @@ function App() {
                         type="text" 
                         value={newContactName}
                         onChange={(e) => setNewContactName(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 focus:border-blue-500 outline-none transition-colors"
+                        className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
                         placeholder="Name"
                     />
                 </div>
@@ -432,7 +635,7 @@ function App() {
                         type="tel" 
                         value={newContactPhone}
                         onChange={(e) => setNewContactPhone(e.target.value)}
-                        className="w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 focus:border-blue-500 outline-none transition-colors"
+                        className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
                         placeholder="Phone"
                     />
                 </div>
@@ -441,7 +644,7 @@ function App() {
             <div className="mt-auto p-6 flex flex-col gap-3">
                 <button 
                     onClick={handleUpdateContact}
-                    className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-lg active:bg-blue-700 transition-colors shadow-sm"
+                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3.5 rounded-lg transition-colors shadow-sm`}
                 >
                     Save Changes
                 </button>
@@ -499,7 +702,7 @@ function App() {
                 autoFocus
                 placeholder="0"
               />
-              <button className="p-2 bg-blue-50 rounded text-blue-600">
+              <button className={`p-2 rounded ${theme.light} ${theme.text}`}>
                 <Calculator size={20} />
               </button>
             </div>
@@ -507,7 +710,7 @@ function App() {
 
           {/* Date Selector */}
           <div className="flex justify-end mt-2 mb-6">
-            <div className="flex items-center gap-2 text-blue-600 bg-white py-1 px-2 rounded hover:bg-gray-50 cursor-pointer relative">
+            <div className={`flex items-center gap-2 ${theme.text} bg-white py-1 px-2 rounded hover:bg-gray-50 cursor-pointer relative`}>
                <input 
                 type="date" 
                 value={transDate}
@@ -519,7 +722,7 @@ function App() {
             </div>
           </div>
 
-          {/* Payment Mode (Only for Payment) */}
+          {/* Payment Mode */}
           {!isCredit && (
              <div className="mb-6">
                <label className="text-sm font-medium text-slate-800 block mb-4">Payment Mode</label>
@@ -542,7 +745,7 @@ function App() {
              </div>
           )}
 
-          {/* Notes Input (Only for Payment - replaces the 'Add Item' row) */}
+          {/* Notes Input */}
           {!isCredit && (
             <div className="mb-6">
               <textarea
@@ -561,7 +764,7 @@ function App() {
           <div>
             <button 
               onClick={() => setShowMoreOptions(!showMoreOptions)}
-              className="flex items-center gap-2 text-blue-600 mb-4"
+              className={`flex items-center gap-2 ${theme.text} mb-4`}
             >
               <span className="text-sm font-medium">More Options</span>
               {showMoreOptions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -570,7 +773,6 @@ function App() {
             {/* Expanded Options */}
             {showMoreOptions && (
               <div className="flex flex-col gap-3 animate-in slide-in-from-top-2 duration-200">
-                {/* Add Item Row (Only for Credit) */}
                 {isCredit && (
                   <div className="border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50">
                     <div className="flex items-center gap-3 w-full">
@@ -588,7 +790,6 @@ function App() {
                   </div>
                 )}
 
-                {/* Attach Bills Row (Common) */}
                 <div className="border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50">
                   <div className="flex items-center gap-3">
                     <Camera size={20} className="text-gray-400" />
@@ -657,7 +858,7 @@ function App() {
             </button>
             <button 
                 onClick={() => setCurrentView('REPORT')}
-                className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full text-xs font-semibold text-blue-600 transition-colors"
+                className={`flex items-center gap-1 ${theme.light} ${theme.lightHover} px-3 py-1.5 rounded-full text-xs font-semibold ${theme.text} transition-colors`}
             >
                 <FileText size={14} />
                 Reports
@@ -722,18 +923,19 @@ function App() {
           <div>
             <h1 className="text-xl font-bold text-slate-800">Manage Credit</h1>
             <div className="flex items-center text-slate-600 text-sm gap-1 mt-1">
-              <span>Smart Time</span>
+              <span className="font-semibold">{shopName}</span>
               <ChevronLeft size={16} className="-rotate-90" />
             </div>
+            {shopPhone && <div className="text-xs text-slate-400 mt-0.5">{shopPhone}</div>}
           </div>
           <div className="flex gap-4">
             <div className="flex flex-col items-center gap-0.5">
-              <PlayCircle className="text-blue-600" size={22} />
-              <span className="text-[10px] text-blue-600 font-medium">Demo</span>
+              <PlayCircle className={theme.text} size={22} />
+              <span className={`text-[10px] font-medium ${theme.text}`}>Demo</span>
             </div>
             <div className="flex flex-col items-center gap-0.5">
-              <CalendarClock className="text-blue-600" size={22} />
-              <span className="text-[10px] text-blue-600 font-medium">Reminders</span>
+              <CalendarClock className={theme.text} size={22} />
+              <span className={`text-[10px] font-medium ${theme.text}`}>Reminders</span>
             </div>
           </div>
         </div>
@@ -852,13 +1054,13 @@ function App() {
       <div className="px-4 mt-4">
         <button 
           onClick={openAddContact}
-          className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg shadow-md active:bg-blue-700 transition-colors"
+          className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-semibold py-3 rounded-lg shadow-md transition-colors`}
         >
           Add {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}
         </button>
       </div>
 
-      {/* Add Contact Modal (Only for new contacts now) */}
+      {/* Add Contact Modal */}
       {showAddContactModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in duration-200">
@@ -895,7 +1097,7 @@ function App() {
 
               <button 
                 onClick={handleSaveNewContact}
-                className="mt-2 w-full bg-blue-600 text-white font-semibold py-3 rounded-lg active:bg-blue-700 transition-colors"
+                className={`mt-2 w-full ${theme.primary} ${theme.primaryActive} text-white font-semibold py-3 rounded-lg transition-colors`}
               >
                 Save Contact
               </button>
@@ -907,7 +1109,11 @@ function App() {
       {/* Spacer for Bottom Nav */}
       <div className="h-4"></div>
 
-      <BottomNav />
+      <BottomNav 
+        currentView={currentView} 
+        onNavigate={handleNavigate} 
+        activeTheme={appTheme}
+      />
     </div>
   );
 }
