@@ -147,7 +147,18 @@ const parseLocalDate = (dateStr: string): Date => {
 const getFormattedDate = (dateStr: string): string => {
   if (!dateStr) return '';
   const date = parseLocalDate(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+const getDaysAgo = (dateString: string) => {
+    const today = new Date();
+    const last = parseLocalDate(dateString);
+    if (isNaN(last.getTime())) return 0;
+    
+    const diffTime = Math.abs(today.getTime() - last.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+    return diffDays;
 };
 
 // --- CHART COMPONENT ---
@@ -315,11 +326,12 @@ function App() {
       if (contactsError) throw contactsError;
 
       // Map snake_case DB to camelCase Types
+      // CRITICAL FIX: Normalize 'type' to Uppercase to match 'SUPPLIER' | 'CUSTOMER' | 'RENT'
       const mappedContacts: Contact[] = (contactsData || []).map(c => ({
         id: String(c.id),
         name: c.name,
         phone: c.phone,
-        type: c.type as ContactType,
+        type: (c.type || 'SUPPLIER').toUpperCase() as ContactType, 
         balance: c.balance,
         targetAmount: c.target_amount || 0,
         startDate: c.start_date,
@@ -666,6 +678,10 @@ function App() {
     }
   };
 
+  const handleSendReminder = (contact: Contact) => {
+      alert(`Reminder sent to ${contact.name} (${contact.phone}) for Rs. ${contact.balance.toLocaleString()}`);
+  };
+
   // --- PDF GENERATION ---
   const handleDownloadReport = () => {
       if (!selectedContact) return;
@@ -886,6 +902,33 @@ function App() {
     }
   };
 
+  const handleEditTransaction = (transaction: Transaction) => {
+    setEditingTransactionId(transaction.id);
+    setTransType(transaction.type);
+    setTransAmount(transaction.amount.toString());
+    
+    // Parse Date for Input
+    let isoDate = new Date().toISOString().split('T')[0];
+    const parsedDate = parseLocalDate(transaction.date);
+    if (!isNaN(parsedDate.getTime())) {
+         isoDate = parsedDate.toISOString().split('T')[0];
+    }
+    setTransDate(isoDate);
+
+    let desc = transaction.description || '';
+    if (transaction.type === 'PAYMENT' && desc.includes('(Bank)')) {
+        setPaymentMode('BANK');
+        desc = desc.replace(' (Bank)', '').replace('Bank Payment', '').trim();
+    } else {
+        setPaymentMode('CASH');
+    }
+    setTransDesc(desc);
+    
+    setAttachmentUrl(transaction.attachmentUrl || null);
+    setShowMoreOptions(true);
+    setCurrentView('TRANSACTION_FORM');
+  };
+
   const handleDeleteTransaction = async () => {
     if (!editingTransactionId || !selectedContact) return;
     if (!confirm("Delete this transaction?")) return;
@@ -919,431 +962,233 @@ function App() {
         alert("Failed to delete");
     }
   };
-  
-  // ... (rest of the file stays same)
 
-  // --- RENDER: REPORT VIEW ---
-  if (currentView === 'REPORT' && selectedContact) {
-    const totalCredit = reportTransactions
-        .filter(t => t.type === 'CREDIT')
-        .reduce((sum, t) => sum + t.amount, 0);
-    const totalPayment = reportTransactions
-        .filter(t => t.type === 'PAYMENT')
-        .reduce((sum, t) => sum + t.amount, 0);
-
+  // --- RENDER: LOADING ---
+  if (isLoading) {
     return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center flex-col gap-4">
+        <Loader2 size={40} className="animate-spin text-blue-600" />
+        <p className="text-gray-500 font-medium">Loading your ledger...</p>
+      </div>
+    );
+  }
+
+  // --- RENDER: REMINDERS VIEW ---
+  if (currentView === 'REMINDERS') {
+      const reminderContacts = contacts.filter(c => c.type !== 'RENT' && c.type === activeTab && c.balance > 0);
+      const totalPending = reminderContacts.reduce((sum, c) => sum + c.balance, 0);
+      
+      return (
         <div className="min-h-screen bg-gray-50 flex flex-col">
             <header className="bg-white px-4 py-4 flex items-center gap-4 shadow-sm sticky top-0 z-10">
                 <button onClick={handleBack}>
                     <ChevronLeft size={24} className="text-slate-800" />
                 </button>
                 <div className="flex-1">
-                    <h1 className="text-lg font-bold text-slate-800">Report</h1>
-                    <p className="text-xs text-gray-500">{selectedContact.name}</p>
+                    <h1 className="text-lg font-bold text-slate-800">Payment Reminders</h1>
+                    <p className="text-xs text-gray-500">Manage pending payments</p>
                 </div>
-                <button className={theme.text}>
-                    <Share2 size={20} />
-                </button>
             </header>
 
-            <div className="p-4">
-                {/* Date Filter */}
-                <div className="flex gap-2 mb-4">
-                    <div className="relative flex-1">
-                        <div className="bg-white rounded-lg p-3 flex items-center justify-between shadow-sm border border-gray-100 h-12">
-                            <div className="flex items-center gap-2 text-slate-600">
-                                <Calendar size={18} />
-                                <span className="text-sm font-medium">{formattedReportMonth}</span>
-                            </div>
-                            <ChevronDown size={16} className="text-gray-400" />
-                        </div>
-                        {/* Invisible Month Input Overlay */}
-                        <input 
-                            type="month" 
-                            value={reportMonth}
-                            onChange={(e) => setReportMonth(e.target.value)}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-                        />
-                    </div>
-                    
-                    {/* All Time Button */}
-                    <button 
-                        onClick={() => setReportMonth('')}
-                        className={`px-4 rounded-lg font-medium text-sm border flex items-center gap-2 h-12 transition-colors ${!reportMonth ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-gray-200'}`}
-                    >
-                        <Filter size={16} />
-                        All Time
-                    </button>
-                </div>
-
-                {/* GRAPH SECTION */}
-                <TrendChart transactions={reportTransactions} type={selectedContact.type} monthLabel={formattedReportMonth} />
-
-                {/* Stats */}
-                <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
-                    <div className="flex border-b border-gray-100">
-                        <div className="flex-1 p-4 border-r border-gray-100 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Withdrawn' : 'Credit'}</p>
-                            <p className="text-lg font-bold text-red-600">Rs. {totalCredit.toLocaleString()}</p>
-                        </div>
-                        <div className="flex-1 p-4 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Saved' : 'Paid'}</p>
-                            <p className="text-lg font-bold text-green-600">Rs. {totalPayment.toLocaleString()}</p>
-                        </div>
-                    </div>
-                    <div className="p-4 text-center bg-gray-50">
-                        <p className="text-xs text-gray-500 mb-1">
-                            {selectedContact.type === 'RENT' ? 'Current Savings Balance' : 'Net Balance'}
-                        </p>
-                        <p className={`text-xl font-bold ${selectedContact.type === 'RENT' ? 'text-blue-700' : selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
-                             Rs. {selectedContact.balance.toLocaleString()}
-                             <span className="text-xs font-normal text-gray-500 ml-1">
-                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : selectedContact.type === 'RENT' ? '(Saved)' : '(To Collect)'}
-                             </span>
-                        </p>
-                    </div>
-                </div>
-
-                {/* Transaction List */}
-                <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                    <div className="p-3 border-b border-gray-100 bg-gray-50 flex justify-between">
-                        <span className="text-xs font-bold text-gray-500">DATE</span>
-                        <div className="flex gap-8">
-                             <span className="text-xs font-bold text-gray-500 w-16 text-right">CREDIT</span>
-                             <span className="text-xs font-bold text-gray-500 w-16 text-right">{selectedContact.type === 'RENT' ? 'DEPOSIT' : 'DEBIT'}</span>
-                        </div>
-                    </div>
-                    {reportTransactions.map(t => (
-                        <div key={t.id} className="p-3 border-b border-gray-100 flex justify-between text-sm">
-                            <div className="flex flex-col">
-                                <span className="font-medium text-slate-700">{t.date}</span>
-                                <span className="text-[10px] text-gray-400 max-w-[100px] truncate">{t.description || '-'}</span>
-                            </div>
-                            <div className="flex gap-8">
-                                <span className="w-16 text-right font-medium text-red-600">
-                                    {t.type === 'CREDIT' ? t.amount.toLocaleString() : '-'}
-                                </span>
-                                <span className="w-16 text-right font-medium text-green-600">
-                                    {t.type === 'PAYMENT' ? t.amount.toLocaleString() : '-'}
-                                </span>
-                            </div>
-                        </div>
-                    ))}
-                    {reportTransactions.length === 0 && (
-                        <div className="p-6 text-center text-gray-400 text-sm">No transactions in {formattedReportMonth}</div>
+            {/* Toggle Tabs (Customers/Suppliers) */}
+             <div className="bg-white px-4 pt-2 pb-0 mb-2 border-b border-slate-100">
+                <div className="flex">
+                  <button 
+                    className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'CUSTOMER' ? theme.textDark : 'text-slate-500'}`}
+                    onClick={() => setActiveTab('CUSTOMER')}
+                  >
+                    <Users size={18} />
+                    To Collect
+                    {activeTab === 'CUSTOMER' && (
+                      <div className={`absolute bottom-0 left-0 right-0 h-0.5 ${theme.bgIndicator}`}></div>
                     )}
+                  </button>
+                  <button 
+                    className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'SUPPLIER' ? theme.textDark : 'text-slate-500'}`}
+                    onClick={() => setActiveTab('SUPPLIER')}
+                  >
+                    <Truck size={18} />
+                    To Pay
+                    {activeTab === 'SUPPLIER' && (
+                      <div className={`absolute bottom-0 left-0 right-0 h-0.5 ${theme.bgIndicator}`}></div>
+                    )}
+                  </button>
                 </div>
             </div>
 
-            <div className="p-4 mt-auto">
-                <button 
-                    onClick={handleDownloadReport}
-                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors`}
-                >
-                    <Download size={18} />
-                    Download PDF Report
-                </button>
+            {/* Summary Banner */}
+            <div className="px-4 py-2">
+                <div className={`${activeTab === 'CUSTOMER' ? 'bg-green-50 border-green-100 text-green-800' : 'bg-red-50 border-red-100 text-red-800'} border rounded-lg p-4 flex justify-between items-center`}>
+                    <span className="text-sm font-medium">{activeTab === 'CUSTOMER' ? 'Total To Collect' : 'Total To Pay'}</span>
+                    <span className="text-xl font-bold">Rs. {totalPending.toLocaleString()}</span>
+                </div>
             </div>
-        </div>
-    );
-  }
 
-  // --- RENDER: EDIT CONTACT VIEW ---
-  // ... (rest of the file)
-  if (currentView === 'EDIT_CONTACT' && selectedContact) {
-      return (
-        <div className="min-h-screen bg-white flex flex-col">
-            <header className="px-4 py-4 flex items-center gap-4 border-b border-gray-100">
-                <button onClick={handleBack}>
-                    <ChevronLeft size={24} className="text-slate-800" />
-                </button>
-                <h1 className="text-lg font-bold text-slate-800">Edit {selectedContact.type === 'RENT' ? 'Target' : 'Contact'}</h1>
-            </header>
-
-            <div className="p-6 flex-col flex gap-6">
-                <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold text-slate-600">Name</label>
-                    <input 
-                        type="text" 
-                        value={newContactName}
-                        onChange={(e) => setNewContactName(e.target.value)}
-                        className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
-                        placeholder="Name"
-                    />
-                </div>
-                
-                <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold text-slate-600">Phone Number</label>
-                    <input 
-                        type="tel" 
-                        value={newContactPhone}
-                        onChange={(e) => setNewContactPhone(e.target.value)}
-                        className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
-                        placeholder="Phone"
-                    />
-                </div>
-
-                {selectedContact.type === 'RENT' && (
-                    <>
-                        <div className="flex flex-col gap-2">
-                            <label className="text-sm font-semibold text-slate-600">Target Amount</label>
-                            <input 
-                                type="number" 
-                                value={newContactTarget}
-                                onChange={(e) => setNewContactTarget(e.target.value)}
-                                className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
-                                placeholder="Target Amount (e.g. 30000)"
-                            />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="flex flex-col gap-2">
-                                <label className="text-sm font-semibold text-slate-600">Start Date</label>
-                                <input 
-                                    type="date" 
-                                    value={newContactStartDate}
-                                    onChange={(e) => setNewContactStartDate(e.target.value)}
-                                    className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} outline-none transition-all`}
-                                />
+            {/* List */}
+            <div className="flex-1 px-4 py-2 flex flex-col gap-3 pb-safe">
+                {reminderContacts.length > 0 ? (
+                    reminderContacts.map(contact => {
+                        const daysAgo = getDaysAgo(contact.lastUpdated);
+                        return (
+                            <div key={contact.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-3">
+                                <div className="flex justify-between items-start">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center font-bold text-gray-500">
+                                            {contact.name.substring(0, 1)}
+                                        </div>
+                                        <div>
+                                            <h3 className="font-bold text-slate-800">{contact.name}</h3>
+                                            <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
+                                                <Clock size={12} />
+                                                <span>{daysAgo} days ago</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className={`font-bold text-lg ${activeTab === 'CUSTOMER' ? 'text-green-700' : 'text-red-700'}`}>
+                                            Rs. {contact.balance.toLocaleString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                {activeTab === 'CUSTOMER' && (
+                                    <div className="pt-2 border-t border-gray-50 flex gap-3">
+                                        <button 
+                                            onClick={() => handleSendReminder(contact)}
+                                            className="flex-1 bg-green-50 text-green-700 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 active:bg-green-100 transition-colors"
+                                        >
+                                            <MessageCircle size={16} />
+                                            Remind via WhatsApp
+                                        </button>
+                                    </div>
+                                )}
                             </div>
-                            <div className="flex flex-col gap-2">
-                                <label className="text-sm font-semibold text-slate-600">End Date</label>
-                                <input 
-                                    type="date" 
-                                    value={newContactEndDate}
-                                    onChange={(e) => setNewContactEndDate(e.target.value)}
-                                    className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} outline-none transition-all`}
-                                />
-                            </div>
-                        </div>
-                    </>
+                        );
+                    })
+                ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                        <Check size={48} className="mb-2 opacity-20" />
+                        <p>No pending payments</p>
+                    </div>
                 )}
-            </div>
-
-            <div className="mt-auto p-6 flex flex-col gap-3">
-                <button 
-                    onClick={handleUpdateContact}
-                    className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-bold py-3.5 rounded-lg transition-colors shadow-sm`}
-                >
-                    Save Changes
-                </button>
-                <button 
-                    onClick={handleDeleteContact}
-                    className="w-full bg-white border border-red-200 text-red-600 font-bold py-3.5 rounded-lg active:bg-red-50 transition-colors flex items-center justify-center gap-2"
-                >
-                    <Trash2 size={18} />
-                    Delete {selectedContact.type === 'RENT' ? 'Target' : 'Contact'}
-                </button>
             </div>
         </div>
       );
   }
 
-  // --- RENDER: TRANSACTION FORM VIEW ---
-  if (currentView === 'TRANSACTION_FORM' && selectedContact) {
-    const isCredit = transType === 'CREDIT';
-    const isRent = selectedContact.type === 'RENT';
-    const themeColor = isCredit ? 'text-red-700' : 'text-green-700';
-    const btnColor = isCredit ? 'bg-red-800' : 'bg-green-800';
-    
-    let titleAction = '';
-    if (editingTransactionId) titleAction = 'Edit';
-    else if (isRent) titleAction = isCredit ? 'Withdraw from' : 'Save to';
-    else titleAction = isCredit ? 'Get Credit from' : 'Make Payment to';
-    
-    const title = editingTransactionId ? 'Edit Transaction' : `${titleAction} ${selectedContact.name}`;
-    
-    return (
-      <div className="min-h-screen bg-white flex flex-col relative">
-        <header className="bg-white px-4 py-4 flex items-center justify-between shadow-sm">
-            <div className="flex items-center gap-4">
-                <button onClick={handleBack}>
-                    <ChevronLeft size={24} className="text-slate-800" />
-                </button>
-                <h1 className={`text-lg font-bold ${themeColor}`}>{title}</h1>
-            </div>
-            {editingTransactionId && (
-                <button 
-                    onClick={handleDeleteTransaction}
-                    className="p-2 text-red-600 bg-red-50 rounded-full"
-                >
-                    <Trash2 size={20} />
-                </button>
-            )}
-        </header>
-
-        <div className="flex-1 p-4 flex flex-col">
-          <div className="mt-2">
-            <label className="text-sm font-medium text-slate-800 block mb-1">Amount</label>
-            <div className="flex items-center border-b border-gray-300 py-2">
-              <span className={`text-lg font-bold mr-2 ${themeColor}`}>Rs.</span>
-              <input 
-                type="number" 
-                value={transAmount}
-                onChange={(e) => setTransAmount(e.target.value)}
-                className={`flex-1 text-2xl font-bold outline-none bg-transparent ${themeColor}`}
-                autoFocus
-                placeholder="0"
-              />
-              <button className={`p-2 rounded ${theme.light} ${theme.text}`}>
-                <Calculator size={20} />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex justify-end mt-2 mb-6">
-            <div className={`flex items-center gap-2 ${theme.text} bg-white py-1 px-2 rounded hover:bg-gray-50 cursor-pointer relative`}>
-               <input 
-                type="date" 
-                value={transDate}
-                onChange={(e) => setTransDate(e.target.value)}
-                className="absolute inset-0 opacity-0 cursor-pointer z-10"
-               />
-               <span className="text-sm font-medium">{getFormattedDate(transDate)}</span>
-               <Pencil size={14} />
-            </div>
-          </div>
-
-          {!isCredit && (
-             <div className="mb-6">
-               <label className="text-sm font-medium text-slate-800 block mb-4">Payment Mode</label>
-               <div className="flex gap-8">
-                 <label className="flex items-center gap-2 cursor-pointer">
-                   <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${paymentMode === 'CASH' ? 'border-blue-600' : 'border-gray-400'}`}>
-                     {paymentMode === 'CASH' && <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />}
-                   </div>
-                   <input type="radio" className="hidden" checked={paymentMode === 'CASH'} onChange={() => setPaymentMode('CASH')} />
-                   <span className="text-sm font-medium text-slate-700">Cash</span>
-                 </label>
-                 <label className="flex items-center gap-2 cursor-pointer">
-                   <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${paymentMode === 'BANK' ? 'border-blue-600' : 'border-gray-400'}`}>
-                     {paymentMode === 'BANK' && <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />}
-                   </div>
-                   <input type="radio" className="hidden" checked={paymentMode === 'BANK'} onChange={() => setPaymentMode('BANK')} />
-                   <span className="text-sm font-medium text-slate-700">Bank</span>
-                 </label>
-               </div>
-             </div>
-          )}
-
-          {!isCredit && (
-            <div className="mb-6">
-              <textarea
-                placeholder="Add notes (Items, bill number, quantity, etc.)"
-                className="w-full bg-gray-50 border border-gray-100 rounded-lg p-4 text-sm text-slate-700 outline-none resize-none h-24 placeholder:text-gray-400"
-                value={transDesc}
-                onChange={(e) => setTransDesc(e.target.value)}
-              />
-              <div className="flex justify-end mt-1">
-                <span className="text-[10px] text-gray-400">0/180</span>
-              </div>
-            </div>
-          )}
-
-          <div>
-            <button 
-              onClick={() => setShowMoreOptions(!showMoreOptions)}
-              className={`flex items-center gap-2 ${theme.text} mb-4`}
-            >
-              <span className="text-sm font-medium">More Options</span>
-              {showMoreOptions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-            </button>
-
-            {showMoreOptions && (
-              <div className="flex flex-col gap-3 animate-in slide-in-from-top-2 duration-200">
-                {isCredit && (
-                  <div className="border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50">
-                    <div className="flex items-center gap-3 w-full">
-                      <FilePlus size={20} className="text-gray-400" />
-                      <input 
-                          type="text" 
-                          placeholder="Add Item"
-                          value={transDesc}
-                          onChange={(e) => setTransDesc(e.target.value)}
-                          className="text-sm text-slate-700 outline-none w-full placeholder:text-gray-400"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                    </div>
-                    <ChevronRight size={16} className="text-gray-300" />
-                  </div>
-                )}
-                
-                <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    className="hidden" 
-                    accept="image/*,application/pdf"
-                    onChange={handleFileSelect}
-                />
-
-                <div 
-                    onClick={() => {
-                        if (!attachmentUrl && !isUploading) {
-                            fileInputRef.current?.click();
-                        }
-                    }}
-                    className={`border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50 transition-colors ${attachmentUrl ? 'bg-blue-50 border-blue-200' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    {isUploading ? (
-                        <Loader2 size={20} className="text-blue-600 animate-spin" />
-                    ) : attachmentUrl ? (
-                        <Check size={20} className="text-blue-600" />
-                    ) : (
-                        <Camera size={20} className="text-gray-400" />
-                    )}
-                    
-                    <span className={`text-sm ${attachmentUrl ? 'text-blue-700 font-medium' : 'text-gray-400'}`}>
-                        {isUploading ? 'Uploading...' : attachmentUrl ? 'Bill Attached' : 'Attach Bills'}
-                    </span>
-                  </div>
-                  
-                  {attachmentUrl ? (
-                      <div className="flex items-center gap-3">
-                           <button 
-                             onClick={(e) => {
-                                 e.stopPropagation();
-                                 window.open(attachmentUrl, '_blank');
-                             }}
-                             className="text-blue-600 hover:text-blue-800"
-                           >
-                               <Eye size={18} />
-                           </button>
-                           <button 
-                             onClick={(e) => {
-                                 e.stopPropagation();
-                                 setAttachmentUrl(null);
-                                 if (fileInputRef.current) fileInputRef.current.value = '';
-                             }}
-                             className="text-red-500 hover:text-red-700"
-                           >
-                               <Trash2 size={18} />
-                           </button>
-                      </div>
-                  ) : (
-                      <ChevronRight size={16} className="text-gray-300" />
-                  )}
+  // --- RENDER: PROFILE VIEW ---
+  if (currentView === 'PROFILE') {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
+            <header className="bg-white px-4 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+                <h1 className="text-xl font-bold text-slate-800">Profile & Settings</h1>
+                <div className={`w-8 h-8 rounded-full ${theme.light} flex items-center justify-center`}>
+                    <Store size={16} className={theme.text} />
                 </div>
-              </div>
-            )}
-          </div>
-        </div>
+            </header>
 
-        <div className="p-4 border-t border-gray-100">
-          <button 
-            onClick={handleSaveTransaction}
-            disabled={isUploading}
-            className={`w-full ${btnColor} text-white font-bold py-3.5 rounded-lg active:opacity-90 transition-opacity ${isUploading ? 'opacity-70' : ''}`}
-          >
-            {editingTransactionId ? 'Update Transaction' : 'Save'}
-          </button>
+            <div className="p-4 flex flex-col gap-4">
+                {/* Shop Details Card */}
+                <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                    <h2 className="text-sm font-bold text-gray-500 mb-4 uppercase">Business Details</h2>
+                    
+                    <div className="flex flex-col gap-4">
+                        <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-full ${theme.light} flex items-center justify-center shrink-0`}>
+                                <Store size={20} className={theme.text} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-xs text-gray-400">Shop Name</label>
+                                <input 
+                                    type="text" 
+                                    value={shopName}
+                                    onChange={(e) => setShopName(e.target.value)}
+                                    className="w-full text-slate-800 font-semibold outline-none border-b border-gray-100 focus:border-gray-300 py-1 transition-colors"
+                                />
+                            </div>
+                            <Pencil size={16} className="text-gray-300" />
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-full ${theme.light} flex items-center justify-center shrink-0`}>
+                                <Phone size={20} className={theme.text} />
+                            </div>
+                            <div className="flex-1">
+                                <label className="text-xs text-gray-400">Phone Number</label>
+                                <input 
+                                    type="tel" 
+                                    value={shopPhone}
+                                    onChange={(e) => setShopPhone(e.target.value)}
+                                    className="w-full text-slate-800 font-semibold outline-none border-b border-gray-100 focus:border-gray-300 py-1 transition-colors"
+                                />
+                            </div>
+                            <Pencil size={16} className="text-gray-300" />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Appearance Card */}
+                <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+                    <h2 className="text-sm font-bold text-gray-500 mb-4 uppercase">Appearance</h2>
+                    
+                    <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Palette size={18} className="text-gray-400" />
+                            <span className="text-sm font-medium text-slate-700">App Theme</span>
+                        </div>
+                        <div className="flex gap-3 overflow-x-auto no-scrollbar pb-2">
+                            {(Object.keys(THEMES) as ThemeColor[]).map((colorKey) => (
+                                <button
+                                    key={colorKey}
+                                    onClick={() => setAppTheme(colorKey)}
+                                    className={`relative flex flex-col items-center gap-2 p-2 rounded-lg border ${appTheme === colorKey ? `border-${colorKey}-500 bg-gray-50` : 'border-transparent'}`}
+                                >
+                                    <div className={`w-10 h-10 rounded-full ${THEMES[colorKey].bgIndicator} shadow-sm flex items-center justify-center`}>
+                                        {appTheme === colorKey && <Check size={18} className="text-white" />}
+                                    </div>
+                                    <span className={`text-xs font-medium ${appTheme === colorKey ? 'text-slate-800' : 'text-gray-500'}`}>
+                                        {THEMES[colorKey].name}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Other Settings Placeholder */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                    <button className="w-full p-4 flex items-center justify-between active:bg-gray-50">
+                        <div className="flex items-center gap-3">
+                            <Languages size={20} className="text-gray-400" />
+                            <span className="text-sm font-medium text-slate-700">App Language</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">English</span>
+                            <ChevronRight size={16} className="text-gray-300" />
+                        </div>
+                    </button>
+                    <div className="h-[1px] bg-gray-50 mx-4"></div>
+                    <button className="w-full p-4 flex items-center justify-between active:bg-gray-50 text-red-600">
+                        <div className="flex items-center gap-3">
+                            <LogOut size={20} />
+                            <span className="text-sm font-medium">Log Out</span>
+                        </div>
+                    </button>
+                </div>
+            </div>
+
+            <BottomNav 
+                currentView={currentView} 
+                onNavigate={handleNavigate} 
+                activeTheme={appTheme}
+            />
         </div>
-      </div>
-    );
+      );
   }
-  
-  // ... (DASHBOARD View and export default remain same)
 
-  // --- RENDER: DASHBOARD VIEW ---
+  // --- RENDER: OTHER VIEWS ALREADY HANDLED ---
+
+  // --- RENDER: DASHBOARD VIEW (Default) ---
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
       <header className="bg-white px-4 py-3 pb-0">
