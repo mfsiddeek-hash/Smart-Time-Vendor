@@ -17,7 +17,8 @@ import {
   ChevronRight,
   Camera,
   FilePlus,
-  Trash2
+  Trash2,
+  FileText
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
@@ -176,12 +177,6 @@ function App() {
     setTransAmount(transaction.amount.toString());
     
     // Parse date for input (assuming stored as string or convert if needed)
-    // The input[type=date] needs YYYY-MM-DD.
-    // Our mock data is "6th Dec 2025" or similar, which is hard to parse back simply.
-    // For this demo, we'll try to parse or default to today if format is complex.
-    // Ideally, store ISO string in backend.
-    
-    // Attempting simple parse or fallback
     let isoDate = new Date().toISOString().split('T')[0];
     const parsedDate = new Date(transaction.date);
     if (!isNaN(parsedDate.getTime())) {
@@ -277,9 +272,7 @@ function App() {
             description: finalDesc,
             amount: amountVal,
             type: transType,
-            balanceAfter: newBalance // Note: In a real ledger, subsequent transactions would also need re-calculation. For this simplified app, we update the contact's final balance but might leave intermediate "balanceAfter" slightly out of sync if editing historical data.
-            // Ideally, we'd re-calculate the running balance for all transactions after this date. 
-            // For simplicity here, we assume the user mainly cares about the final Contact Balance.
+            balanceAfter: newBalance
         };
 
         const newTransactions = [...transactions];
@@ -485,30 +478,43 @@ function App() {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 relative">
         {/* Header */}
-        <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={handleBack} className="p-1">
-              <ChevronLeft size={24} className="text-slate-800" />
-            </button>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-sm font-medium text-gray-600">
-                {selectedContact.name.substring(0, 1)}
-              </div>
-              <h1 className="font-bold text-lg text-slate-800">{selectedContact.name}</h1>
-              <button 
-                onClick={openEditContact}
-                className="text-gray-400 p-2 hover:bg-gray-100 rounded-full"
-              >
-                <Pencil size={16} />
+        <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button onClick={handleBack} className="p-1">
+                <ChevronLeft size={24} className="text-slate-800" />
               </button>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-sm font-medium text-gray-600">
+                  {selectedContact.name.substring(0, 1)}
+                </div>
+                <h1 className="font-bold text-lg text-slate-800 line-clamp-1">{selectedContact.name}</h1>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button className="border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-700">
-              Reports
-            </button>
             <button>
               <MoreVertical size={20} className="text-slate-700" />
+            </button>
+          </div>
+          
+          {/* Actions Bar next to name (conceptually) */}
+          <div className="flex gap-2 pl-12">
+            <button 
+                onClick={openEditContact} 
+                className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-700 transition-colors"
+            >
+                <Pencil size={14} />
+                Edit
+            </button>
+            <button 
+                onClick={handleDeleteContact} 
+                className="flex items-center gap-1 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-full text-xs font-semibold text-red-600 transition-colors"
+            >
+                <Trash2 size={14} />
+                Delete
+            </button>
+            <button className="flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full text-xs font-semibold text-blue-600 transition-colors">
+                <FileText size={14} />
+                Reports
             </button>
           </div>
         </header>
