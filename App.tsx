@@ -31,7 +31,10 @@ import {
   Clock,
   Loader2,
   Eye,
-  ImageIcon
+  ImageIcon,
+  Target,
+  PiggyBank,
+  Building
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
@@ -155,6 +158,7 @@ function App() {
   const [showAddContactModal, setShowAddContactModal] = useState(false); 
   const [newContactName, setNewContactName] = useState('');
   const [newContactPhone, setNewContactPhone] = useState('');
+  const [newContactTarget, setNewContactTarget] = useState('');
 
   // Helpers
   const theme = THEMES[appTheme];
@@ -181,6 +185,7 @@ function App() {
         phone: c.phone,
         type: c.type as ContactType,
         balance: c.balance,
+        targetAmount: c.target_amount || 0,
         lastUpdated: c.last_updated
       }));
       
@@ -240,6 +245,12 @@ function App() {
       .filter(c => c.type === 'CUSTOMER')
       .reduce((sum, c) => sum + c.balance, 0);
   }, [contacts]);
+  
+  const totalRentSaved = useMemo(() => {
+    return contacts
+      .filter(c => c.type === 'RENT')
+      .reduce((sum, c) => sum + c.balance, 0);
+  }, [contacts]);
 
   const currentTransactions = useMemo(() => {
     if (!selectedContactId) return [];
@@ -288,6 +299,7 @@ function App() {
   const openAddContact = () => {
     setNewContactName('');
     setNewContactPhone('');
+    setNewContactTarget('');
     setShowAddContactModal(true);
   };
 
@@ -295,6 +307,7 @@ function App() {
     if (!selectedContact) return;
     setNewContactName(selectedContact.name);
     setNewContactPhone(selectedContact.phone);
+    setNewContactTarget(selectedContact.targetAmount?.toString() || '');
     setCurrentView('EDIT_CONTACT'); 
   };
 
@@ -302,13 +315,14 @@ function App() {
     if (!newContactName) return;
     
     try {
-      const newContactId = Date.now().toString(); // Or use crypto.randomUUID()
+      const newContactId = Date.now().toString(); 
       const newContact = {
         id: newContactId,
         name: newContactName,
         phone: newContactPhone,
         type: activeTab,
         balance: 0,
+        target_amount: activeTab === 'RENT' ? (parseFloat(newContactTarget) || 0) : 0,
         last_updated: new Date().toISOString().split('T')[0]
       };
 
@@ -322,12 +336,14 @@ function App() {
         phone: newContactPhone,
         type: activeTab,
         balance: 0,
+        targetAmount: newContact.target_amount,
         lastUpdated: newContact.last_updated
       };
       
       setContacts([...contacts, mappedNewContact]);
       setNewContactName('');
       setNewContactPhone('');
+      setNewContactTarget('');
       setShowAddContactModal(false);
     } catch (error) {
       console.error('Error adding contact:', error);
@@ -339,16 +355,21 @@ function App() {
     if (!selectedContact || !newContactName) return;
 
     try {
+      const updates: any = { name: newContactName, phone: newContactPhone };
+      if (selectedContact.type === 'RENT') {
+          updates.target_amount = parseFloat(newContactTarget) || 0;
+      }
+
       const { error } = await supabase
         .from('contacts')
-        .update({ name: newContactName, phone: newContactPhone })
+        .update(updates)
         .eq('id', selectedContact.id);
 
       if (error) throw error;
 
       setContacts(contacts.map(c => 
           c.id === selectedContact.id 
-            ? { ...c, name: newContactName, phone: newContactPhone }
+            ? { ...c, name: newContactName, phone: newContactPhone, targetAmount: updates.target_amount ?? c.targetAmount }
             : c
       ));
 
@@ -363,10 +384,7 @@ function App() {
     if (!selectedContact) return;
     if (confirm('Are you sure you want to delete this contact and all their transactions?')) {
       try {
-        // Delete transactions first (manual cascade just in case)
         await supabase.from('transactions').delete().eq('contact_id', selectedContact.id);
-        
-        // Delete contact
         const { error } = await supabase.from('contacts').delete().eq('id', selectedContact.id);
         if (error) throw error;
 
@@ -417,22 +435,23 @@ function App() {
           if (!transToDelete) return;
 
           let reversionAmount = 0;
-          if (transToDelete.type === 'CREDIT') {
-              reversionAmount = -transToDelete.amount;
+          if (selectedContact.type === 'RENT') {
+              // For rent: Payment adds to balance (savings), Credit reduces it (withdrawal)
+              // Reversing means doing opposite
+              reversionAmount = transToDelete.type === 'PAYMENT' ? -transToDelete.amount : transToDelete.amount;
           } else {
-              reversionAmount = transToDelete.amount;
+              // For Cust/Supp: Credit increases balance (Debt), Payment reduces it
+              reversionAmount = transToDelete.type === 'CREDIT' ? -transToDelete.amount : transToDelete.amount;
           }
           
           const newBalance = selectedContact.balance + reversionAmount;
 
-          // DB Updates
           await supabase.from('transactions').delete().eq('id', editingTransactionId);
           await supabase.from('contacts').update({
              balance: newBalance,
              last_updated: new Date().toISOString().split('T')[0]
           }).eq('id', selectedContact.id);
 
-          // State Updates
           setTransactions(transactions.filter(t => t.id !== editingTransactionId));
           setContacts(contacts.map(c => 
               c.id === selectedContact.id 
@@ -459,14 +478,12 @@ function App() {
       const fileName = `${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
-      // Upload file to 'receipts' bucket
       const { error: uploadError } = await supabase.storage
         .from('receipts')
         .upload(filePath, file);
 
       if (uploadError) throw uploadError;
 
-      // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('receipts')
         .getPublicUrl(filePath);
@@ -486,8 +503,15 @@ function App() {
     const amountVal = parseFloat(transAmount);
     if (isNaN(amountVal)) return;
 
-    const getBalanceEffect = (type: TransactionType, amount: number) => {
-        return type === 'CREDIT' ? amount : -amount;
+    // Logic: 
+    // For RENT: PAYMENT = Adding Savings (+), CREDIT = Removing Savings (-)
+    // For OTHERS: CREDIT = Adding Debt (+), PAYMENT = Paying Debt (-)
+    const getBalanceEffect = (type: TransactionType, amount: number, contactType: ContactType) => {
+        if (contactType === 'RENT') {
+            return type === 'PAYMENT' ? amount : -amount;
+        } else {
+            return type === 'CREDIT' ? amount : -amount;
+        }
     };
 
     let newBalance = selectedContact.balance;
@@ -505,10 +529,10 @@ function App() {
           if (oldTransIndex === -1) return;
           const oldTrans = transactions[oldTransIndex];
 
-          const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount);
+          const oldEffect = getBalanceEffect(oldTrans.type, oldTrans.amount, selectedContact.type);
           newBalance -= oldEffect;
 
-          const newEffect = getBalanceEffect(transType, amountVal);
+          const newEffect = getBalanceEffect(transType, amountVal, selectedContact.type);
           newBalance += newEffect;
 
           const updatedTransDb = {
@@ -527,7 +551,6 @@ function App() {
              last_updated: new Date().toISOString().split('T')[0]
           }).eq('id', selectedContact.id);
 
-          // Local update
           const updatedTrans: Transaction = {
               ...oldTrans,
               date: dateStr,
@@ -544,7 +567,7 @@ function App() {
           setTransactions(newTransactions);
 
       } else {
-          const effect = getBalanceEffect(transType, amountVal);
+          const effect = getBalanceEffect(transType, amountVal, selectedContact.type);
           newBalance += effect;
           const newId = Date.now().toString();
 
@@ -626,7 +649,7 @@ function App() {
 
   // --- RENDER: REMINDERS VIEW ---
   if (currentView === 'REMINDERS') {
-      const reminderContacts = contacts.filter(c => c.type === activeTab && c.balance > 0);
+      const reminderContacts = contacts.filter(c => c.type !== 'RENT' && c.type === activeTab && c.balance > 0);
       const totalPending = reminderContacts.reduce((sum, c) => sum + c.balance, 0);
       
       return (
@@ -875,20 +898,22 @@ function App() {
                 <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-4 border border-gray-100">
                     <div className="flex border-b border-gray-100">
                         <div className="flex-1 p-4 border-r border-gray-100 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total Credit</p>
+                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Withdrawn' : 'Credit'}</p>
                             <p className="text-lg font-bold text-red-600">Rs. {totalCredit.toLocaleString()}</p>
                         </div>
                         <div className="flex-1 p-4 text-center">
-                            <p className="text-xs text-gray-500 mb-1">Total Paid</p>
+                            <p className="text-xs text-gray-500 mb-1">Total {selectedContact.type === 'RENT' ? 'Saved' : 'Paid'}</p>
                             <p className="text-lg font-bold text-green-600">Rs. {totalPayment.toLocaleString()}</p>
                         </div>
                     </div>
                     <div className="p-4 text-center bg-gray-50">
-                        <p className="text-xs text-gray-500 mb-1">Net Balance</p>
-                        <p className={`text-xl font-bold ${selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                        <p className="text-xs text-gray-500 mb-1">
+                            {selectedContact.type === 'RENT' ? 'Current Savings Balance' : 'Net Balance'}
+                        </p>
+                        <p className={`text-xl font-bold ${selectedContact.type === 'RENT' ? 'text-blue-700' : selectedContact.balance > 0 ? 'text-red-700' : 'text-green-700'}`}>
                              Rs. {selectedContact.balance.toLocaleString()}
                              <span className="text-xs font-normal text-gray-500 ml-1">
-                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : '(To Collect)'}
+                                {selectedContact.type === 'SUPPLIER' ? '(To Pay)' : selectedContact.type === 'RENT' ? '(Saved)' : '(To Collect)'}
                              </span>
                         </p>
                     </div>
@@ -900,7 +925,7 @@ function App() {
                         <span className="text-xs font-bold text-gray-500">DATE</span>
                         <div className="flex gap-8">
                              <span className="text-xs font-bold text-gray-500 w-16 text-right">CREDIT</span>
-                             <span className="text-xs font-bold text-gray-500 w-16 text-right">DEBIT</span>
+                             <span className="text-xs font-bold text-gray-500 w-16 text-right">{selectedContact.type === 'RENT' ? 'DEPOSIT' : 'DEBIT'}</span>
                         </div>
                     </div>
                     {currentTransactions.map(t => (
@@ -943,7 +968,7 @@ function App() {
                 <button onClick={handleBack}>
                     <ChevronLeft size={24} className="text-slate-800" />
                 </button>
-                <h1 className="text-lg font-bold text-slate-800">Edit Contact</h1>
+                <h1 className="text-lg font-bold text-slate-800">Edit {selectedContact.type === 'RENT' ? 'Target' : 'Contact'}</h1>
             </header>
 
             <div className="p-6 flex-col flex gap-6">
@@ -968,6 +993,19 @@ function App() {
                         placeholder="Phone"
                     />
                 </div>
+
+                {selectedContact.type === 'RENT' && (
+                    <div className="flex flex-col gap-2">
+                        <label className="text-sm font-semibold text-slate-600">Target Amount</label>
+                        <input 
+                            type="number" 
+                            value={newContactTarget}
+                            onChange={(e) => setNewContactTarget(e.target.value)}
+                            className={`w-full border border-gray-300 rounded-lg p-3 text-base text-slate-800 ${theme.primary} focus:border-transparent focus:ring-2 outline-none transition-all ring-offset-0`}
+                            placeholder="Target Amount (e.g. 30000)"
+                        />
+                    </div>
+                )}
             </div>
 
             <div className="mt-auto p-6 flex flex-col gap-3">
@@ -982,7 +1020,7 @@ function App() {
                     className="w-full bg-white border border-red-200 text-red-600 font-bold py-3.5 rounded-lg active:bg-red-50 transition-colors flex items-center justify-center gap-2"
                 >
                     <Trash2 size={18} />
-                    Delete Contact
+                    Delete {selectedContact.type === 'RENT' ? 'Target' : 'Contact'}
                 </button>
             </div>
         </div>
@@ -992,9 +1030,17 @@ function App() {
   // --- RENDER: TRANSACTION FORM VIEW ---
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isCredit = transType === 'CREDIT';
+    const isRent = selectedContact.type === 'RENT';
+    // For Rent: Payment (Saving) is Green/Good. Credit (Withdrawal) is Red/Bad.
+    // For Normal: Payment (Paying Debt) is Green. Credit (Taking Debt) is Red.
     const themeColor = isCredit ? 'text-red-700' : 'text-green-700';
     const btnColor = isCredit ? 'bg-red-800' : 'bg-green-800';
-    const titleAction = editingTransactionId ? 'Edit' : (isCredit ? 'Get Credit from' : 'Make Payment to');
+    
+    let titleAction = '';
+    if (editingTransactionId) titleAction = 'Edit';
+    else if (isRent) titleAction = isCredit ? 'Withdraw from' : 'Save to';
+    else titleAction = isCredit ? 'Get Credit from' : 'Make Payment to';
+    
     const title = editingTransactionId ? 'Edit Transaction' : `${titleAction} ${selectedContact.name}`;
     
     return (
@@ -1199,6 +1245,12 @@ function App() {
   // --- RENDER: DETAIL VIEW ---
   if (currentView === 'DETAIL' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
+    const isRent = selectedContact.type === 'RENT';
+    
+    // For Rent: Remaining calculation
+    const rentTarget = selectedContact.targetAmount || 0;
+    const rentRemaining = Math.max(0, rentTarget - selectedContact.balance);
+    const progressPercent = rentTarget > 0 ? Math.min(100, (selectedContact.balance / rentTarget) * 100) : 0;
     
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 relative">
@@ -1211,7 +1263,7 @@ function App() {
               </button>
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center text-sm font-medium text-gray-600">
-                  {selectedContact.name.substring(0, 1)}
+                  {isRent ? <Target size={18} /> : selectedContact.name.substring(0, 1)}
                 </div>
                 <h1 className="font-bold text-lg text-slate-800 line-clamp-1">{selectedContact.name}</h1>
               </div>
@@ -1250,12 +1302,37 @@ function App() {
         {/* Balance Summary */}
         <div className="p-4 bg-white mb-2">
           <div className="bg-gray-50 rounded-lg p-6 flex flex-col items-center justify-center">
-            <h2 className={`text-xl font-bold ${selectedContact.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-              Rs. {selectedContact.balance.toLocaleString()}
-            </h2>
-            <p className="text-gray-500 text-sm">
-              {isSupplier ? 'To Pay' : 'To Collect'}
-            </p>
+             {isRent ? (
+                 <div className="w-full">
+                     <div className="flex justify-between items-center mb-2">
+                         <span className="text-sm font-semibold text-gray-500">Goal: Rs. {rentTarget.toLocaleString()}</span>
+                         <span className="text-sm font-bold text-blue-600">{progressPercent.toFixed(1)}%</span>
+                     </div>
+                     <div className="w-full h-3 bg-gray-200 rounded-full mb-4 overflow-hidden">
+                         <div className="h-full bg-blue-600 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+                     </div>
+                     <div className="flex justify-between items-center text-center">
+                         <div>
+                             <p className="text-xs text-gray-500">Saved</p>
+                             <p className="text-lg font-bold text-green-600">Rs. {selectedContact.balance.toLocaleString()}</p>
+                         </div>
+                         <div className="h-8 w-[1px] bg-gray-200"></div>
+                         <div>
+                             <p className="text-xs text-gray-500">Remaining</p>
+                             <p className="text-lg font-bold text-red-600">Rs. {rentRemaining.toLocaleString()}</p>
+                         </div>
+                     </div>
+                 </div>
+             ) : (
+                <>
+                    <h2 className={`text-xl font-bold ${selectedContact.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      Rs. {selectedContact.balance.toLocaleString()}
+                    </h2>
+                    <p className="text-gray-500 text-sm">
+                      {isSupplier ? 'To Pay' : 'To Collect'}
+                    </p>
+                </>
+             )}
           </div>
         </div>
 
@@ -1281,14 +1358,14 @@ function App() {
             className="flex-1 bg-red-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-red-800 transition-colors"
           >
             <ArrowDown size={18} />
-            {isSupplier ? 'Purchase (Credit)' : 'Give Credit'}
+            {isRent ? 'Withdraw' : (isSupplier ? 'Purchase (Credit)' : 'Give Credit')}
           </button>
           <button 
             onClick={() => startTransaction('PAYMENT')}
             className="flex-1 bg-green-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-green-800 transition-colors"
           >
             <ArrowUp size={18} />
-            {isSupplier ? 'Pay Cash / Bank' : 'Receive Cash / Bank'}
+            {isRent ? 'Add Savings' : (isSupplier ? 'Pay Cash / Bank' : 'Receive Cash / Bank')}
           </button>
         </div>
       </div>
@@ -1321,9 +1398,9 @@ function App() {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-200">
+        <div className="flex border-b border-slate-200 overflow-x-auto no-scrollbar">
           <button 
-            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'CUSTOMER' ? 'text-slate-800' : 'text-slate-500'}`}
+            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative min-w-[100px] ${activeTab === 'CUSTOMER' ? 'text-slate-800' : 'text-slate-500'}`}
             onClick={() => setActiveTab('CUSTOMER')}
           >
             <Users size={18} />
@@ -1333,12 +1410,22 @@ function App() {
             )}
           </button>
           <button 
-            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative ${activeTab === 'SUPPLIER' ? 'text-slate-800' : 'text-slate-500'}`}
+            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative min-w-[100px] ${activeTab === 'SUPPLIER' ? 'text-slate-800' : 'text-slate-500'}`}
             onClick={() => setActiveTab('SUPPLIER')}
           >
             <Truck size={18} />
             Suppliers
             {activeTab === 'SUPPLIER' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-800"></div>
+            )}
+          </button>
+          <button 
+            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 relative min-w-[100px] ${activeTab === 'RENT' ? 'text-slate-800' : 'text-slate-500'}`}
+            onClick={() => setActiveTab('RENT')}
+          >
+            <Building size={18} />
+            Rent / Targets
+            {activeTab === 'RENT' && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-800"></div>
             )}
           </button>
@@ -1358,7 +1445,7 @@ function App() {
               <p className="text-lg font-bold text-red-700">Rs. {totalToPay.toLocaleString()}</p>
             </div>
           </>
-        ) : (
+        ) : activeTab === 'CUSTOMER' ? (
           <>
             <div className="flex-1 bg-green-50 border border-green-100 rounded-lg p-3">
               <p className="text-xs text-slate-600 mb-1">To Collect</p>
@@ -1367,6 +1454,14 @@ function App() {
              {/* Placeholder for symmetry */}
              <div className="flex-1"></div>
           </>
+        ) : (
+            <>
+            <div className="flex-1 bg-blue-50 border border-blue-100 rounded-lg p-3">
+              <p className="text-xs text-slate-600 mb-1">Total Saved</p>
+              <p className="text-lg font-bold text-blue-700">Rs. {totalRentSaved.toLocaleString()}</p>
+            </div>
+             <div className="flex-1"></div>
+            </>
         )}
       </div>
 
@@ -1390,42 +1485,82 @@ function App() {
       {/* List Header */}
       <div className="px-4 py-2 flex justify-between items-center">
         <span className="text-xs font-medium text-gray-400 uppercase">
-          {filteredContacts.length} {activeTab === 'SUPPLIER' ? 'Suppliers' : 'Customers'}
+          {filteredContacts.length} {activeTab === 'SUPPLIER' ? 'Suppliers' : activeTab === 'RENT' ? 'Targets' : 'Customers'}
         </span>
-        <span className="text-xs font-medium text-gray-400 uppercase">Amount (Rs.)</span>
+        <span className="text-xs font-medium text-gray-400 uppercase">{activeTab === 'RENT' ? 'Savings' : 'Amount (Rs.)'}</span>
       </div>
 
       {/* List */}
       <div className="flex-1 px-4 flex flex-col gap-2">
-        {filteredContacts.map(contact => (
-          <div 
-            key={contact.id} 
-            onClick={() => handleContactClick(contact.id)}
-            className="bg-white rounded-lg p-3 shadow-sm flex justify-between items-center active:bg-gray-50 transition-colors cursor-pointer"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-slate-600 font-medium">
-                {contact.name.substring(0, 1)}
+        {filteredContacts.map(contact => {
+            if (contact.type === 'RENT') {
+                const target = contact.targetAmount || 0;
+                const percent = target > 0 ? (contact.balance / target) * 100 : 0;
+                const remaining = Math.max(0, target - contact.balance);
+
+                return (
+                  <div 
+                    key={contact.id} 
+                    onClick={() => handleContactClick(contact.id)}
+                    className="bg-white rounded-lg p-4 shadow-sm flex flex-col gap-3 active:bg-gray-50 transition-colors cursor-pointer"
+                  >
+                    <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-blue-50 rounded-full flex items-center justify-center text-blue-600 font-medium">
+                            <Target size={18} />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-800">{contact.name}</h3>
+                            <p className="text-xs text-gray-400 mt-0.5">Target: {target.toLocaleString()}</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] text-gray-400 uppercase mb-0.5">Saved</p>
+                          <p className="font-bold text-blue-700">{contact.balance.toLocaleString()}</p>
+                        </div>
+                    </div>
+                    {/* Progress Bar */}
+                    <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, percent)}%` }}></div>
+                    </div>
+                    <div className="flex justify-between text-[10px] text-gray-500 font-medium">
+                        <span>{percent.toFixed(0)}% Done</span>
+                        <span>Remaining: {remaining.toLocaleString()}</span>
+                    </div>
+                  </div>
+                );
+            }
+            // Standard View for Customer/Supplier
+            return (
+              <div 
+                key={contact.id} 
+                onClick={() => handleContactClick(contact.id)}
+                className="bg-white rounded-lg p-3 shadow-sm flex justify-between items-center active:bg-gray-50 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-slate-600 font-medium">
+                    {contact.name.substring(0, 1)}
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-800">{contact.name}</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">{contact.phone}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] text-gray-400 uppercase mb-0.5">
+                    {activeTab === 'SUPPLIER' ? 'To pay' : 'To collect'}
+                  </p>
+                  <p className={`font-bold ${activeTab === 'SUPPLIER' ? 'text-red-700' : 'text-green-700'}`}>
+                    {contact.balance.toLocaleString()}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">{contact.name}</h3>
-                <p className="text-xs text-gray-400 mt-0.5">{contact.phone}</p>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className="text-[10px] text-gray-400 uppercase mb-0.5">
-                {activeTab === 'SUPPLIER' ? 'To pay' : 'To collect'}
-              </p>
-              <p className={`font-bold ${activeTab === 'SUPPLIER' ? 'text-red-700' : 'text-green-700'}`}>
-                {contact.balance.toLocaleString()}
-              </p>
-            </div>
-          </div>
-        ))}
+            );
+        })}
 
         {filteredContacts.length === 0 && (
             <div className="text-center py-10 text-gray-400 text-sm">
-                No contacts found.
+                No items found.
             </div>
         )}
       </div>
@@ -1436,7 +1571,7 @@ function App() {
           onClick={openAddContact}
           className={`w-full ${theme.primary} ${theme.primaryActive} text-white font-semibold py-3 rounded-lg shadow-md transition-colors`}
         >
-          Add {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}
+          Add {activeTab === 'SUPPLIER' ? 'Supplier' : activeTab === 'RENT' ? 'Target' : 'Customer'}
         </button>
       </div>
 
@@ -1446,7 +1581,7 @@ function App() {
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl animate-in fade-in zoom-in duration-200">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-lg font-bold text-slate-800">
-                Add New {activeTab === 'SUPPLIER' ? 'Supplier' : 'Customer'}
+                Add New {activeTab === 'SUPPLIER' ? 'Supplier' : activeTab === 'RENT' ? 'Rent / Target' : 'Customer'}
               </h3>
               <button onClick={() => setShowAddContactModal(false)}><X size={24} className="text-gray-400" /></button>
             </div>
@@ -1459,13 +1594,13 @@ function App() {
                   value={newContactName}
                   onChange={(e) => setNewContactName(e.target.value)}
                   className="border border-gray-300 rounded-lg p-3 text-sm"
-                  placeholder="Business or Person Name"
+                  placeholder={activeTab === 'RENT' ? "e.g. Shop Rent" : "Business or Person Name"}
                   autoFocus
                 />
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-500">Phone Number</label>
+                <label className="text-xs font-semibold text-gray-500">Phone Number (Optional)</label>
                 <input 
                   type="tel" 
                   value={newContactPhone}
@@ -1474,12 +1609,25 @@ function App() {
                   placeholder="Mobile Number"
                 />
               </div>
+              
+              {activeTab === 'RENT' && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold text-gray-500">Target Amount</label>
+                    <input 
+                      type="number" 
+                      value={newContactTarget}
+                      onChange={(e) => setNewContactTarget(e.target.value)}
+                      className="border border-gray-300 rounded-lg p-3 text-sm"
+                      placeholder="e.g. 30000"
+                    />
+                  </div>
+              )}
 
               <button 
                 onClick={handleSaveNewContact}
                 className={`mt-2 w-full ${theme.primary} ${theme.primaryActive} text-white font-semibold py-3 rounded-lg transition-colors`}
               >
-                Save Contact
+                Save {activeTab === 'RENT' ? 'Target' : 'Contact'}
               </button>
             </div>
           </div>

@@ -1,11 +1,12 @@
-export type ContactType = 'CUSTOMER' | 'SUPPLIER';
+export type ContactType = 'CUSTOMER' | 'SUPPLIER' | 'RENT';
 
 export interface Contact {
   id: string;
   name: string;
   phone: string;
   type: ContactType;
-  balance: number; // Positive means "To Pay" (for suppliers) or "To Receive" (for customers)
+  balance: number; // For RENT: Amount Saved. For Others: Amount Owed/Due
+  targetAmount?: number; // Only used for RENT
   lastUpdated: string;
 }
 
