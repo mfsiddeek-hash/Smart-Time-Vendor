@@ -1,5 +1,7 @@
 {
   "name": "Smart Credit Ledger",
   "description": "A mobile-first ledger application for managing vendor and customer payments, tracking credits, and cash flows.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera"
+  ]
 }

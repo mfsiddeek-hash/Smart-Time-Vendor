@@ -20,6 +20,7 @@ export interface Transaction {
   type: TransactionType;
   balanceAfter: number;
   hasAttachment?: boolean;
+  attachmentUrl?: string | null;
 }
 
 export interface SummaryStats {

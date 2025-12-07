@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Users, 
   Truck, 
@@ -29,7 +29,9 @@ import {
   Check,
   MessageCircle,
   Clock,
-  Loader2
+  Loader2,
+  Eye,
+  ImageIcon
 } from 'lucide-react';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
@@ -141,6 +143,11 @@ function App() {
   const [showMoreOptions, setShowMoreOptions] = useState(true);
   const [paymentMode, setPaymentMode] = useState<'CASH' | 'BANK'>('CASH');
   
+  // Attachment State
+  const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
   // Editing State
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
 
@@ -195,7 +202,8 @@ function App() {
         amount: t.amount,
         type: t.type as TransactionType,
         balanceAfter: t.balance_after,
-        hasAttachment: t.has_attachment
+        hasAttachment: t.has_attachment,
+        attachmentUrl: t.attachment_url
       }));
 
       setTransactions(mappedTransactions);
@@ -271,6 +279,7 @@ function App() {
     setTransDesc('');
     setTransDate(new Date().toISOString().split('T')[0]);
     setPaymentMode('CASH');
+    setAttachmentUrl(null);
     setEditingTransactionId(null);
     setShowMoreOptions(type === 'CREDIT');
     setCurrentView('TRANSACTION_FORM');
@@ -394,6 +403,7 @@ function App() {
     }
     setTransDesc(desc);
     
+    setAttachmentUrl(transaction.attachmentUrl || null);
     setShowMoreOptions(true);
     setCurrentView('TRANSACTION_FORM');
   };
@@ -438,6 +448,38 @@ function App() {
     }
   }
 
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    
+    const file = e.target.files[0];
+    setIsUploading(true);
+    
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      // Upload file to 'receipts' bucket
+      const { error: uploadError } = await supabase.storage
+        .from('receipts')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('receipts')
+        .getPublicUrl(filePath);
+
+      setAttachmentUrl(publicUrl);
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      alert('Failed to upload image. Make sure the storage bucket "receipts" exists and is public.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleSaveTransaction = async () => {
     if (!selectedContact || !transAmount) return;
     
@@ -474,7 +516,9 @@ function App() {
               description: finalDesc,
               amount: amountVal,
               type: transType,
-              balance_after: newBalance
+              balance_after: newBalance,
+              has_attachment: !!attachmentUrl,
+              attachment_url: attachmentUrl
           };
 
           await supabase.from('transactions').update(updatedTransDb).eq('id', editingTransactionId);
@@ -490,7 +534,9 @@ function App() {
               description: finalDesc,
               amount: amountVal,
               type: transType,
-              balanceAfter: newBalance
+              balanceAfter: newBalance,
+              hasAttachment: !!attachmentUrl,
+              attachmentUrl: attachmentUrl
           };
 
           const newTransactions = [...transactions];
@@ -510,7 +556,8 @@ function App() {
               amount: amountVal,
               type: transType,
               balance_after: newBalance,
-              has_attachment: false
+              has_attachment: !!attachmentUrl,
+              attachment_url: attachmentUrl
           };
 
           await supabase.from('transactions').insert([newTransDb]);
@@ -527,7 +574,8 @@ function App() {
               amount: amountVal,
               type: transType,
               balanceAfter: newBalance,
-              hasAttachment: false
+              hasAttachment: !!attachmentUrl,
+              attachmentUrl: attachmentUrl
           };
           setTransactions([newTrans, ...transactions]);
       }
@@ -1070,13 +1118,64 @@ function App() {
                     <ChevronRight size={16} className="text-gray-300" />
                   </div>
                 )}
+                
+                {/* Hidden File Input */}
+                <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    className="hidden" 
+                    accept="image/*,application/pdf"
+                    onChange={handleFileSelect}
+                />
 
-                <div className="border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50">
+                {/* Attach Bills Button */}
+                <div 
+                    onClick={() => {
+                        if (!attachmentUrl && !isUploading) {
+                            fileInputRef.current?.click();
+                        }
+                    }}
+                    className={`border border-gray-300 rounded-lg p-3 flex items-center justify-between cursor-pointer active:bg-gray-50 transition-colors ${attachmentUrl ? 'bg-blue-50 border-blue-200' : ''}`}
+                >
                   <div className="flex items-center gap-3">
-                    <Camera size={20} className="text-gray-400" />
-                    <span className="text-sm text-gray-400">Attach Bills</span>
+                    {isUploading ? (
+                        <Loader2 size={20} className="text-blue-600 animate-spin" />
+                    ) : attachmentUrl ? (
+                        <Check size={20} className="text-blue-600" />
+                    ) : (
+                        <Camera size={20} className="text-gray-400" />
+                    )}
+                    
+                    <span className={`text-sm ${attachmentUrl ? 'text-blue-700 font-medium' : 'text-gray-400'}`}>
+                        {isUploading ? 'Uploading...' : attachmentUrl ? 'Bill Attached' : 'Attach Bills'}
+                    </span>
                   </div>
-                  <ChevronRight size={16} className="text-gray-300" />
+                  
+                  {attachmentUrl ? (
+                      <div className="flex items-center gap-3">
+                           <button 
+                             onClick={(e) => {
+                                 e.stopPropagation();
+                                 window.open(attachmentUrl, '_blank');
+                             }}
+                             className="text-blue-600 hover:text-blue-800"
+                           >
+                               <Eye size={18} />
+                           </button>
+                           <button 
+                             onClick={(e) => {
+                                 e.stopPropagation();
+                                 setAttachmentUrl(null);
+                                 if (fileInputRef.current) fileInputRef.current.value = '';
+                             }}
+                             className="text-red-500 hover:text-red-700"
+                           >
+                               <Trash2 size={18} />
+                           </button>
+                      </div>
+                  ) : (
+                      <ChevronRight size={16} className="text-gray-300" />
+                  )}
                 </div>
               </div>
             )}
@@ -1087,7 +1186,8 @@ function App() {
         <div className="p-4 border-t border-gray-100">
           <button 
             onClick={handleSaveTransaction}
-            className={`w-full ${btnColor} text-white font-bold py-3.5 rounded-lg active:opacity-90 transition-opacity`}
+            disabled={isUploading}
+            className={`w-full ${btnColor} text-white font-bold py-3.5 rounded-lg active:opacity-90 transition-opacity ${isUploading ? 'opacity-70' : ''}`}
           >
             {editingTransactionId ? 'Update Transaction' : 'Save'}
           </button>
