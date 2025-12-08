@@ -7,7 +7,7 @@ import {
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database
 } from 'lucide-react';
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { BottomNav } from './components/BottomNav';
