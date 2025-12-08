@@ -66,6 +66,9 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   
+  // Refs for History API Sync
+  const contactsRef = useRef(contacts);
+  
   // App Settings
   const [appTheme, setAppTheme] = useState<ThemeColor>('blue');
   const [shopName, setShopName] = useState('Smart Time');
@@ -100,6 +103,53 @@ export default function App() {
 
   const theme = THEMES[appTheme];
 
+  // Sync Ref with State
+  useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
+
+  // History API Integration for Android Back Button
+  useEffect(() => {
+    // Set initial state
+    window.history.replaceState({ view: 'DASHBOARD', contactId: null }, '');
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state;
+      if (!state) {
+        setCurrentView('DASHBOARD');
+        setSelectedContact(null);
+        return;
+      }
+
+      const view = state.view || 'DASHBOARD';
+      setCurrentView(view);
+
+      if (state.contactId) {
+        // We use ref here because state inside event listener might be stale
+        const contact = contactsRef.current.find(c => c.id === state.contactId);
+        if (contact) {
+            setSelectedContact(contact);
+        } else {
+            // Fallback if contact was deleted or not found
+            setSelectedContact(null);
+            if (view === 'DETAIL' || view === 'EDIT_CONTACT' || view === 'TRANSACTION_FORM' || view === 'REPORT') {
+                setCurrentView('DASHBOARD');
+            }
+        }
+      } else {
+        setSelectedContact(null);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (view: string, contactId: string | null = null) => {
+    window.history.pushState({ view, contactId }, '', '');
+    setCurrentView(view);
+  };
+
   const fetchData = async () => {
     setIsLoading(true);
     // Fetch Contacts
@@ -122,6 +172,7 @@ export default function App() {
             lastUpdated: c.last_updated
         }));
         setContacts(mappedContacts);
+        contactsRef.current = mappedContacts; // Sync immediately for safety
     }
 
     // Fetch Transactions
@@ -211,22 +262,21 @@ export default function App() {
       return { supplierTotal, customerToCollect, customerAdvance, rentSaved, rentRemaining };
   }, [contacts]);
 
-  const handleNavigate = (view: string) => setCurrentView(view);
+  const handleNavigate = (view: string) => {
+      if (view === currentView) return;
+      // For top level tabs, we can push or replace. Pushing makes 'Back' go to previous tab.
+      window.history.pushState({ view }, '', '');
+      setCurrentView(view);
+      if (view === 'DASHBOARD') setSelectedContact(null);
+  };
   
   const handleBack = () => {
-    if (currentView === 'TRANSACTION_FORM') setCurrentView('DETAIL');
-    else if (currentView === 'EDIT_CONTACT') setCurrentView('DETAIL');
-    else if (currentView === 'REPORT') setCurrentView('DETAIL');
-    else if (currentView === 'DETAIL') {
-        setSelectedContact(null);
-        setCurrentView('DASHBOARD');
-    }
-    else setCurrentView('DASHBOARD');
+    window.history.back();
   };
 
   const openContact = (contact: Contact) => {
     setSelectedContact(contact);
-    setCurrentView('DETAIL');
+    navigateTo('DETAIL', contact.id);
   };
 
   const openEditContact = () => {
@@ -236,7 +286,7 @@ export default function App() {
     setNewContactTarget(selectedContact.targetAmount?.toString() || '');
     setNewContactStartDate(selectedContact.startDate || '');
     setNewContactEndDate(selectedContact.endDate || '');
-    setCurrentView('EDIT_CONTACT');
+    navigateTo('EDIT_CONTACT', selectedContact.id);
   };
 
   const handleUpdateContact = async () => {
@@ -268,9 +318,13 @@ export default function App() {
           endDate: newContactEndDate,
           lastUpdated: updates.last_updated
       };
-      setContacts(contacts.map(c => c.id === selectedContact.id ? updated : c));
+      
+      const newContacts = contacts.map(c => c.id === selectedContact.id ? updated : c);
+      setContacts(newContacts);
+      contactsRef.current = newContacts; // Sync ref immediately
       setSelectedContact(updated);
-      setCurrentView('DETAIL');
+      
+      window.history.back(); // Return to Detail view
   };
 
   const handleDeleteContact = async () => {
@@ -284,12 +338,18 @@ export default function App() {
           return;
       }
 
-      setContacts(contacts.filter(c => c.id !== selectedContact.id));
+      const newContacts = contacts.filter(c => c.id !== selectedContact.id);
+      setContacts(newContacts);
+      contactsRef.current = newContacts;
       setSelectedContact(null);
-      setCurrentView('DASHBOARD');
+      
+      // We are in Edit Contact (Depth 2: Dash -> Detail -> Edit)
+      // We want to go to Dashboard.
+      window.history.go(-2); 
   };
   
   const startTransaction = (type: TransactionType) => {
+      if (!selectedContact) return;
       setTransType(type);
       setTransAmount('');
       setTransDate(new Date().toISOString().slice(0, 10));
@@ -298,17 +358,18 @@ export default function App() {
       setAttachmentUrl(null);
       setEditingTransactionId(null);
       setShowMoreOptions(false);
-      setCurrentView('TRANSACTION_FORM');
+      navigateTo('TRANSACTION_FORM', selectedContact.id);
   };
 
   const handleEditTransaction = (t: Transaction) => {
+      if (!selectedContact) return;
       setTransType(t.type);
       setTransAmount(t.amount.toString());
       setTransDate(t.date); 
       setTransDesc(t.description || '');
       setAttachmentUrl(t.attachmentUrl || null);
       setEditingTransactionId(t.id);
-      setCurrentView('TRANSACTION_FORM');
+      navigateTo('TRANSACTION_FORM', selectedContact.id);
   };
 
   const handleSaveTransaction = async () => {
@@ -317,9 +378,6 @@ export default function App() {
       const amountVal = parseFloat(transAmount) || 0;
       
       // Basic balance calculation logic
-      // Rent: Payment (Deposit) increases balance. Credit (Withdraw) decreases balance.
-      // Supplier/Customer: Credit increases Owed. Payment decreases Owed.
-      
       // If Editing: Revert old transaction effect first
       let currentBalance = selectedContact.balance;
       
@@ -421,10 +479,14 @@ export default function App() {
       }
       
       const updatedContact = { ...selectedContact, balance: newBalance, lastUpdated: new Date().toISOString().slice(0, 10) };
-      setContacts(contacts.map(c => c.id === selectedContact.id ? updatedContact : c));
+      
+      const newContacts = contacts.map(c => c.id === selectedContact.id ? updatedContact : c);
+      setContacts(newContacts);
+      contactsRef.current = newContacts; // Sync ref immediately
       setSelectedContact(updatedContact);
 
-      setCurrentView('DETAIL');
+      // Go back to Detail View
+      window.history.back();
   };
 
   const handleDeleteTransaction = async () => {
@@ -455,10 +517,14 @@ export default function App() {
       // Local Update
       setTransactions(transactions.filter(t => t.id !== editingTransactionId));
       const updatedContact = { ...selectedContact, balance: newBalance };
-      setContacts(contacts.map(c => c.id === selectedContact.id ? updatedContact : c));
+      
+      const newContacts = contacts.map(c => c.id === selectedContact.id ? updatedContact : c);
+      setContacts(newContacts);
+      contactsRef.current = newContacts;
       setSelectedContact(updatedContact);
       
-      setCurrentView('DETAIL');
+      // Go back to Detail View
+      window.history.back();
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -807,7 +873,10 @@ export default function App() {
                                     balance: c.balance,
                                     lastUpdated: c.last_updated
                                 };
-                                setContacts([...contacts, newContact]);
+                                
+                                const newContacts = [...contacts, newContact];
+                                setContacts(newContacts);
+                                contactsRef.current = newContacts;
                             }
                     }}
                     className={`w-full ${theme.primary} text-white font-semibold py-3.5 rounded-lg shadow-lg pointer-events-auto active:scale-[0.98] transition-transform`}
@@ -1420,7 +1489,7 @@ export default function App() {
                 Delete
             </button>
             <button 
-                onClick={() => setCurrentView('REPORT')}
+                onClick={() => navigateTo('REPORT', selectedContact.id)}
                 className={`flex items-center gap-1 ${theme.light} ${theme.lightHover} px-3 py-1.5 rounded-full text-xs font-semibold ${theme.text} transition-colors`}
             >
                 <FileText size={14} />
