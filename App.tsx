@@ -1428,7 +1428,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="p-4 border-t border-gray-100">
+        <div className="px-4 pt-4 pb-10 border-t border-gray-100">
           <button 
             onClick={handleSaveTransaction}
             disabled={isUploading}
