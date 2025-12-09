@@ -1565,7 +1565,7 @@ export default function App() {
           )}
         </div>
 
-        <div className="fixed bottom-0 left-0 right-0 bg-white p-4 flex gap-4 border-t border-gray-200 z-40">
+        <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-gray-200 z-40">
           <button 
             onClick={() => startTransaction('CREDIT')}
             className="flex-1 bg-red-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 active:bg-red-800 transition-colors"
