@@ -838,7 +838,7 @@ export default function App() {
             </div>
 
             {/* Add Button */}
-            <div className="px-4 fixed bottom-20 left-0 right-0 z-20 pointer-events-none">
+            <div className="px-4 fixed bottom-16 left-0 right-0 z-20 pointer-events-none">
                 <button 
                     onClick={async () => {
                             // Quick add to Supabase
