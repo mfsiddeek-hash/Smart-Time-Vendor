@@ -249,7 +249,13 @@ export default function App() {
   }, [contacts, activeTab, searchQuery]);
 
   const totals = useMemo(() => {
-      const supplierTotal = contacts.filter(c => c.type === 'SUPPLIER').reduce((acc, c) => acc + c.balance, 0);
+      const supplierContacts = contacts.filter(c => c.type === 'SUPPLIER');
+      const supplierTotal = supplierContacts.reduce((acc, c) => acc + c.balance, 0);
+
+      const supplierIds = new Set(supplierContacts.map(c => c.id));
+      const supplierTotalPaid = transactions
+        .filter(t => t.type === 'PAYMENT' && supplierIds.has(t.contactId))
+        .reduce((sum, t) => sum + t.amount, 0);
       
       const customerContacts = contacts.filter(c => c.type === 'CUSTOMER');
       const customerIds = new Set(customerContacts.map(c => c.id));
@@ -266,7 +272,7 @@ export default function App() {
       const rentSaved = rentContacts.reduce((acc, c) => acc + c.balance, 0);
       const rentRemaining = rentContacts.reduce((acc, c) => acc + Math.max(0, (c.targetAmount || 0) - c.balance), 0);
 
-      return { supplierTotal, customerToCollect, customerTotalPaid, rentSaved, rentRemaining };
+      return { supplierTotal, supplierTotalPaid, customerToCollect, customerTotalPaid, rentSaved, rentRemaining };
   }, [contacts, transactions]);
 
   const handleNavigate = (view: string) => {
@@ -736,8 +742,8 @@ export default function App() {
                 {activeTab === 'SUPPLIER' && (
                     <div className="flex gap-3">
                         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
-                            <p className="text-xs text-slate-600">Supplier holds</p>
-                            <p className="text-lg font-bold text-green-700">Rs. 0</p>
+                            <p className="text-xs text-slate-600">Total Paid</p>
+                            <p className="text-lg font-bold text-green-700">Rs. {totals.supplierTotalPaid.toLocaleString()}</p>
                         </div>
                         <div className="flex-1 bg-red-50 border border-red-200 rounded-lg p-3">
                             <p className="text-xs text-slate-600">To pay</p>
