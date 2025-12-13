@@ -644,8 +644,85 @@ export default function App() {
       }
   };
 
-  const handleStartNewMonth = () => {
-      alert("Starting New Month...");
+  const handleStartNewMonth = async () => {
+      if (!selectedContact || selectedContact.type !== 'RENT') return;
+      
+      if (!window.confirm("Start a new month? This will reset the current savings balance to 0 and advance the dates.")) {
+          return;
+      }
+
+      setIsLoading(true);
+
+      try {
+        // 1. Calculate new dates
+        let newStart = new Date();
+        
+        if (selectedContact.endDate) {
+            // Parse existing end date
+            const currentEnd = new Date(selectedContact.endDate);
+            // Add 1 day
+            newStart = new Date(currentEnd);
+            newStart.setDate(newStart.getDate() + 1);
+        }
+        
+        // New end date = New start + 1 month
+        const newEnd = new Date(newStart);
+        newEnd.setMonth(newEnd.getMonth() + 1);
+        
+        const newStartDateStr = newStart.toISOString().slice(0, 10);
+        const newEndDateStr = newEnd.toISOString().slice(0, 10);
+
+        // 2. Create Closing Transaction (if balance > 0)
+        const closingBalance = selectedContact.balance;
+
+        if (closingBalance > 0) {
+            const txPayload = {
+                contact_id: selectedContact.id,
+                date: new Date().toISOString().slice(0, 10),
+                amount: closingBalance,
+                type: 'CREDIT', // Withdraw/Reset
+                description: 'Month End Reset',
+                balance_after: 0,
+                has_attachment: false
+            };
+            
+            const { error: txError } = await supabase.from('transactions').insert([txPayload]);
+            if (txError) throw txError;
+        }
+
+        // 3. Update Contact
+        const updates = {
+            balance: 0,
+            start_date: newStartDateStr,
+            end_date: newEndDateStr,
+            last_updated: new Date().toISOString()
+        };
+
+        const { error: contactError } = await supabase
+            .from('contacts')
+            .update(updates)
+            .eq('id', selectedContact.id);
+
+        if (contactError) throw contactError;
+
+        // 4. Refresh Data
+        await fetchData();
+
+        // Update local selectedContact to reflect changes immediately
+        setSelectedContact({
+            ...selectedContact,
+            balance: 0,
+            startDate: newStartDateStr,
+            endDate: newEndDateStr,
+            lastUpdated: updates.last_updated
+        });
+
+      } catch (err: any) {
+          console.error("Error starting new month:", err);
+          alert(`Failed to start new month: ${err.message}`);
+      } finally {
+          setIsLoading(false);
+      }
   };
   
   const handleLoadSampleData = async () => {
