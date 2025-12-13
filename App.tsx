@@ -110,12 +110,13 @@ export default function App() {
 
   // History API Integration for Android Back Button
   useEffect(() => {
-    // Set initial state
-    window.history.replaceState({ view: 'DASHBOARD', contactId: null }, '');
+    // Set initial state including the default active tab
+    window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: 'SUPPLIER' }, '');
 
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
       if (!state) {
+        // If state is missing, reset to safe default
         setCurrentView('DASHBOARD');
         setSelectedContact(null);
         return;
@@ -123,6 +124,11 @@ export default function App() {
 
       const view = state.view || 'DASHBOARD';
       setCurrentView(view);
+
+      // Restore active tab if present in history state
+      if (state.tab && (view === 'DASHBOARD')) {
+          setActiveTab(state.tab);
+      }
 
       if (state.contactId) {
         // We use ref here because state inside event listener might be stale
@@ -145,7 +151,17 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  const changeTab = (tab: ContactType) => {
+      setActiveTab(tab);
+      // Update current history entry to include the selected tab
+      // We use replaceState so we don't build up a huge stack when just switching tabs, 
+      // but we ensure the state is saved for when we return from a detail view.
+      window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: tab }, '', '');
+  };
+
   const navigateTo = (view: string, contactId: string | null = null) => {
+    // When pushing new state (e.g. going to Detail), we preserve the tab information effectively 
+    // because the *previous* state (Dashboard) has it saved via changeTab/replaceState.
     window.history.pushState({ view, contactId }, '', '');
     setCurrentView(view);
   };
@@ -791,21 +807,21 @@ export default function App() {
                 {/* Tabs */}
                 <div className="flex gap-6 mt-4">
                    <button 
-                     onClick={() => setActiveTab('CUSTOMER')}
+                     onClick={() => changeTab('CUSTOMER')}
                      className={`flex items-center gap-2 pb-3 border-b-2 transition-colors font-medium ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}
                    >
                      <Users size={18} />
                      Customers
                    </button>
                    <button 
-                     onClick={() => setActiveTab('SUPPLIER')}
+                     onClick={() => changeTab('SUPPLIER')}
                      className={`flex items-center gap-2 pb-3 border-b-2 transition-colors font-medium ${activeTab === 'SUPPLIER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}
                    >
                      <Truck size={18} />
                      Suppliers
                    </button>
                    <button 
-                     onClick={() => setActiveTab('RENT')}
+                     onClick={() => changeTab('RENT')}
                      className={`flex items-center gap-2 pb-3 border-b-2 transition-colors font-medium ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}
                    >
                      <Building size={18} />
