@@ -252,15 +252,22 @@ export default function App() {
       const supplierTotal = contacts.filter(c => c.type === 'SUPPLIER').reduce((acc, c) => acc + c.balance, 0);
       
       const customerContacts = contacts.filter(c => c.type === 'CUSTOMER');
+      const customerIds = new Set(customerContacts.map(c => c.id));
+
       const customerToCollect = customerContacts.reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
-      const customerAdvance = customerContacts.reduce((acc, c) => acc + (c.balance < 0 ? Math.abs(c.balance) : 0), 0);
+      // Removed old advance calculation: const customerAdvance = customerContacts.reduce((acc, c) => acc + (c.balance < 0 ? Math.abs(c.balance) : 0), 0);
+
+      // Calculate Total Paid (Historical sum of all payments)
+      const customerTotalPaid = transactions
+        .filter(t => t.type === 'PAYMENT' && customerIds.has(t.contactId))
+        .reduce((sum, t) => sum + t.amount, 0);
       
       const rentContacts = contacts.filter(c => c.type === 'RENT');
       const rentSaved = rentContacts.reduce((acc, c) => acc + c.balance, 0);
       const rentRemaining = rentContacts.reduce((acc, c) => acc + Math.max(0, (c.targetAmount || 0) - c.balance), 0);
 
-      return { supplierTotal, customerToCollect, customerAdvance, rentSaved, rentRemaining };
-  }, [contacts]);
+      return { supplierTotal, customerToCollect, customerTotalPaid, rentSaved, rentRemaining };
+  }, [contacts, transactions]);
 
   const handleNavigate = (view: string) => {
       if (view === currentView) return;
@@ -742,8 +749,8 @@ export default function App() {
                 {activeTab === 'CUSTOMER' && (
                     <div className="flex gap-3">
                          <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
-                            <p className="text-xs text-slate-600">Advance</p>
-                            <p className="text-lg font-bold text-green-700">Rs. {totals.customerAdvance.toLocaleString()}</p>
+                            <p className="text-xs text-slate-600">Total Paid</p>
+                            <p className="text-lg font-bold text-green-700">Rs. {totals.customerTotalPaid.toLocaleString()}</p>
                         </div>
                         <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
                             <p className="text-xs text-slate-600">To Collect</p>
