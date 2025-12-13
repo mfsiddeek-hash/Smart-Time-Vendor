@@ -758,9 +758,9 @@ export default function App() {
                             <p className="text-xs text-slate-600">Total Paid</p>
                             <p className="text-lg font-bold text-green-700">Rs. {totals.customerTotalPaid.toLocaleString()}</p>
                         </div>
-                        <div className="flex-1 bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex-1 bg-red-50 border border-red-200 rounded-lg p-3">
                             <p className="text-xs text-slate-600">To Collect</p>
-                            <p className="text-lg font-bold text-green-700">Rs. {totals.customerToCollect.toLocaleString()}</p>
+                            <p className="text-lg font-bold text-red-700">Rs. {totals.customerToCollect.toLocaleString()}</p>
                         </div>
                     </div>
                 )}
@@ -828,7 +828,7 @@ export default function App() {
                                 <p className="text-[10px] text-gray-400 mb-0.5">
                                     {activeTab === 'SUPPLIER' ? 'To pay' : activeTab === 'CUSTOMER' ? 'To Collect' : 'Saved'}
                                 </p>
-                                <p className={`font-bold text-base ${activeTab === 'SUPPLIER' ? 'text-red-700' : activeTab === 'RENT' ? 'text-blue-600' : 'text-green-700'}`}>
+                                <p className={`font-bold text-base ${activeTab === 'SUPPLIER' ? 'text-red-700' : activeTab === 'RENT' ? 'text-blue-600' : 'text-red-700'}`}>
                                     {contact.balance.toLocaleString()}
                                 </p>
                             </div>
