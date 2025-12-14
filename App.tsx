@@ -266,7 +266,8 @@ export default function App() {
 
   const totals = useMemo(() => {
       const supplierContacts = contacts.filter(c => c.type === 'SUPPLIER');
-      const supplierTotal = supplierContacts.reduce((acc, c) => acc + c.balance, 0);
+      // Fixed: Only sum positive balances (amount to pay). Ignore advances (negative balances) for the total liability calculation.
+      const supplierTotal = supplierContacts.reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
 
       const supplierIds = new Set(supplierContacts.map(c => c.id));
       const supplierTotalPaid = transactions
