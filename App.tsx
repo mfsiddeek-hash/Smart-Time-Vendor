@@ -110,11 +110,14 @@ export default function App() {
 
   // History API Integration for Android Back Button
   useEffect(() => {
-    // Set initial state including the default active tab
-    window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: 'SUPPLIER' }, '');
+    // Initialize history state if null
+    if (!window.history.state) {
+        window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: 'SUPPLIER' }, '', window.location.pathname);
+    }
 
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
+      
       if (!state) {
         // If state is missing, reset to safe default
         setCurrentView('DASHBOARD');
@@ -132,7 +135,7 @@ export default function App() {
 
       if (state.contactId) {
         // We use ref here because state inside event listener might be stale
-        const contact = contactsRef.current.find(c => c.id === state.contactId);
+        const contact = contactsRef.current ? contactsRef.current.find(c => c.id === state.contactId) : null;
         if (contact) {
             setSelectedContact(contact);
         } else {
@@ -153,16 +156,21 @@ export default function App() {
 
   const changeTab = (tab: ContactType) => {
       setActiveTab(tab);
-      // Update current history entry to include the selected tab
-      // We use replaceState so we don't build up a huge stack when just switching tabs, 
-      // but we ensure the state is saved for when we return from a detail view.
-      window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: tab }, '', '');
+      // Update current history entry to include the selected tab. 
+      // We do not add hash for tabs to keep the URL clean on dashboard.
+      window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: tab }, '', window.location.pathname);
   };
 
   const navigateTo = (view: string, contactId: string | null = null) => {
-    // When pushing new state (e.g. going to Detail), we preserve the tab information effectively 
-    // because the *previous* state (Dashboard) has it saved via changeTab/replaceState.
-    window.history.pushState({ view, contactId }, '', '');
+    // Generate URL Hash to ensure Android/Mobile browsers recognize the navigation event
+    let hash = '';
+    if (view !== 'DASHBOARD') {
+        hash = `#${view.toLowerCase()}`;
+        if (contactId) hash += `/${contactId}`;
+    }
+
+    // Push new state with Hash
+    window.history.pushState({ view, contactId }, '', hash || window.location.pathname);
     setCurrentView(view);
   };
 
@@ -266,7 +274,7 @@ export default function App() {
 
   const totals = useMemo(() => {
       const supplierContacts = contacts.filter(c => c.type === 'SUPPLIER');
-      // Fixed: Only sum positive balances (amount to pay). Ignore advances (negative balances) for the total liability calculation.
+      // Only sum positive balances (amount to pay)
       const supplierTotal = supplierContacts.reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
 
       const supplierIds = new Set(supplierContacts.map(c => c.id));
@@ -278,9 +286,7 @@ export default function App() {
       const customerIds = new Set(customerContacts.map(c => c.id));
 
       const customerToCollect = customerContacts.reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
-      // Removed old advance calculation: const customerAdvance = customerContacts.reduce((acc, c) => acc + (c.balance < 0 ? Math.abs(c.balance) : 0), 0);
-
-      // Calculate Total Paid (Historical sum of all payments)
+      
       const customerTotalPaid = transactions
         .filter(t => t.type === 'PAYMENT' && customerIds.has(t.contactId))
         .reduce((sum, t) => sum + t.amount, 0);
@@ -294,8 +300,14 @@ export default function App() {
 
   const handleNavigate = (view: string) => {
       if (view === currentView) return;
-      // For top level tabs, we can push or replace. Pushing makes 'Back' go to previous tab.
-      window.history.pushState({ view }, '', '');
+      
+      // Generate URL Hash for BottomNav navigation
+      let hash = '';
+      if (view !== 'DASHBOARD') {
+         hash = `#${view.toLowerCase()}`;
+      }
+
+      window.history.pushState({ view }, '', hash || window.location.pathname);
       setCurrentView(view);
       if (view === 'DASHBOARD') setSelectedContact(null);
   };
@@ -1692,5 +1704,5 @@ export default function App() {
     );
   }
 
-  return null; // Fallback
+  return null;
 }
