@@ -42,10 +42,10 @@ const generateUUID = () => {
   });
 };
 
-const normalizeDate = (d: string | Date) => {
-  const date = new Date(d);
-  date.setHours(0, 0, 0, 0);
-  return date;
+// Helper for date normalization to local midnight for comparison
+const normalizeToLocalMidnight = (dateString: string) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
 };
 
 // Precise 13th to 13th Cycle Logic
@@ -98,7 +98,6 @@ export default function App() {
   const [transDesc, setTransDesc] = useState('');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
-
   const theme = THEMES[appTheme];
 
   useEffect(() => {
@@ -190,7 +189,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Fetch error:', err);
-      setLoadError("Check connection.");
+      setLoadError("Sync failed. Check connection.");
     } finally {
       setIsLoading(false);
     }
@@ -198,16 +197,18 @@ export default function App() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // Calculate savings in current cycle (inclusive of Deposits and Withdrawals)
   const getCycleSavings = (contactId: string) => {
     const cycleStart = getRentCycleStart();
     return transactions
       .filter(t => {
-        const isMatch = t.contactId === contactId && t.type === 'PAYMENT';
-        if (!isMatch) return false;
-        const tDate = normalizeDate(t.date);
+        if (t.contactId !== contactId) return false;
+        const tDate = normalizeToLocalMidnight(t.date);
         return tDate >= cycleStart;
       })
-      .reduce((sum, t) => sum + t.amount, 0);
+      .reduce((sum, t) => {
+        return t.type === 'PAYMENT' ? sum + t.amount : sum - t.amount;
+      }, 0);
   };
 
   const filteredContacts = useMemo(() => {
@@ -257,7 +258,15 @@ export default function App() {
     setIsSubmitting(true);
     try {
       const finalTarget = activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null;
-      const payload = { id: generateUUID(), name: addName, phone: addPhone, type: activeTab, balance: 0, target_amount: finalTarget, last_updated: new Date().toISOString() };
+      const payload = { 
+        id: generateUUID(), 
+        name: addName, 
+        phone: addPhone, 
+        type: activeTab, 
+        balance: 0, 
+        target_amount: finalTarget, 
+        last_updated: new Date().toISOString() 
+      };
       const { data, error } = await supabase.from('contacts').insert([payload]).select();
       if (error) throw error;
       if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated, targetAmount: payload.target_amount }]);
@@ -305,7 +314,14 @@ export default function App() {
     }
 
     try {
-      const txPayload = { contact_id: selectedContact.id, date: transDate, amount: amountVal, type: transType, description: transDesc, balance_after: newBalance };
+      const txPayload = { 
+        contact_id: selectedContact.id, 
+        date: transDate, 
+        amount: amountVal, 
+        type: transType, 
+        description: transDesc, 
+        balance_after: newBalance 
+      };
       let res;
       if (editingTransaction) {
         res = await supabase.from('transactions').update(txPayload).eq('id', editingTransaction.id).select();
@@ -314,8 +330,17 @@ export default function App() {
       }
       if (res.error) throw res.error;
       await supabase.from('contacts').update({ balance: newBalance, last_updated: new Date().toISOString() }).eq('id', selectedContact.id);
+      
       if (res.data) {
-        const saved = { id: res.data[0].id, contactId: res.data[0].contact_id, date: res.data[0].date, description: res.data[0].description, amount: res.data[0].amount, type: res.data[0].type, balanceAfter: res.data[0].balance_after };
+        const saved = { 
+          id: res.data[0].id, 
+          contactId: res.data[0].contact_id, 
+          date: res.data[0].date, 
+          description: res.data[0].description, 
+          amount: res.data[0].amount, 
+          type: res.data[0].type, 
+          balanceAfter: res.data[0].balance_after 
+        };
         if (editingTransaction) {
           setTransactions(transactions.map(t => t.id === editingTransaction.id ? saved : t));
         } else {
@@ -331,13 +356,7 @@ export default function App() {
     finally { setIsSubmitting(false); }
   };
 
-  const setTransDateShortcut = (offset: number) => {
-    const d = new Date();
-    d.setDate(d.getDate() + offset);
-    setTransDate(d.toISOString().slice(0, 10));
-  };
-
-  if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Syncing...</p></div>;
+  if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Loading Records...</p></div>;
   
   if (currentView === 'DASHBOARD') {
     return (
@@ -382,6 +401,7 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             {filteredContacts.map(c => {
+              // RENT: list shows the cycle progress as requested by screenshot
               const displayAmount = activeTab === 'RENT' ? getCycleSavings(c.id) : Math.abs(c.balance);
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
@@ -400,6 +420,7 @@ export default function App() {
                 </div>
               );
             })}
+            {filteredContacts.length === 0 && <div className="text-center py-16 text-slate-400 text-sm font-medium">No records found</div>}
           </div>
         </div>
         <button onClick={() => navigateTo('ADD_CONTACT')} className={`fixed bottom-24 right-4 w-14 h-14 ${theme.primary} text-white rounded-full shadow-xl flex items-center justify-center z-30 active:scale-90 transition-all`}><Plus size={28} /></button>
@@ -409,8 +430,10 @@ export default function App() {
   }
 
   if (currentView === 'DETAIL' && selectedContact) {
-    const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
+    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'SUPPLIER' ? "GOT ITEMS" : "GAVE ITEMS");
+    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'SUPPLIER' ? "PAID MONEY" : "GOT MONEY");
+
     const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     let runningBalance = selectedContact.balance;
     const computedTransactions = contactTransactions.map((t) => {
@@ -432,21 +455,22 @@ export default function App() {
             <h2 className={`text-3xl font-bold ${selectedContact.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
               Rs. {Math.abs(selectedContact.balance).toLocaleString()}
             </h2>
-            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Cycle Balance' : 'Outstanding'}</p>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Net Balance'}</p>
           </div>
         </div>
         <div className="flex-1 bg-white">
           {computedTransactions.map(t => (
             <TransactionRow key={t.id} transaction={t} onClick={(tx) => { setEditingTransaction(tx); setTransType(tx.type); setTransAmount(tx.amount.toString()); setTransDate(tx.date); setTransDesc(tx.description || ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} />
           ))}
+          {computedTransactions.length === 0 && <div className="p-16 text-center text-slate-400 font-medium text-sm">No entries yet</div>}
         </div>
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
           <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
-             <span className="text-[10px] opacity-90 uppercase font-black">{isRent ? 'WITHDRAW' : 'GAVE'}</span>
+             <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">Rs. <ArrowDown size={14} /></span>
           </button>
           <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
-             <span className="text-[10px] opacity-90 uppercase font-black">{isRent ? 'DEPOSIT' : 'GOT'}</span>
+             <span className="text-[10px] opacity-90 uppercase font-black">{labelRight}</span>
              <span className="flex items-center gap-1 font-bold text-lg">Rs. <ArrowUp size={14} /></span>
           </button>
         </div>
@@ -456,7 +480,7 @@ export default function App() {
 
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isRent = selectedContact.type === 'RENT';
-    let title = editingTransaction ? "Edit Record" : (isRent ? (transType === 'PAYMENT' ? "Deposit Cash" : "Withdraw Cash") : (transType === 'CREDIT' ? 'Items Out' : 'Cash In'));
+    let title = editingTransaction ? "Edit Record" : (isRent ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") : (transType === 'CREDIT' ? 'Items Out' : 'Cash In'));
 
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -474,22 +498,36 @@ export default function App() {
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Amount</label>
           <input type="number" value={transAmount} onChange={e => setTransAmount(e.target.value)} placeholder="0.00" className={`w-full text-5xl font-bold mb-8 outline-none border-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} autoFocus />
           
-          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Date</label>
+          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Entry Date</label>
           <div className="flex flex-col gap-3 mb-8">
-            <div className="flex gap-2">
-              <button onClick={() => setTransDateShortcut(0)} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${transDate === new Date().toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>TODAY</button>
-              <button onClick={() => setTransDateShortcut(-1)} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${transDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>YESTERDAY</button>
-              <button onClick={() => dateInputRef.current?.showPicker()} className="flex-1 py-2 rounded-lg text-xs font-bold bg-white text-slate-500 border border-slate-200 flex items-center justify-center gap-1"><Calendar size={14} /> SELECT</button>
+            <div className="flex gap-2 mb-2">
+              <button onClick={() => setTransDate(new Date().toISOString().slice(0, 10))} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${transDate === new Date().toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>TODAY</button>
+              <button onClick={() => {
+                const d = new Date(); d.setDate(d.getDate() - 1);
+                setTransDate(d.toISOString().slice(0, 10));
+              }} className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${transDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>YESTERDAY</button>
+              <button 
+                onClick={() => dateInputRef.current?.showPicker()} 
+                className="flex-1 py-2 rounded-lg text-xs font-bold bg-white text-slate-500 border border-slate-200 flex items-center justify-center gap-1 active:bg-gray-50 transition-colors"
+              >
+                <Calendar size={14} /> CHOOSE DATE
+              </button>
             </div>
-            <input ref={dateInputRef} type="date" value={transDate} onChange={e => setTransDate(e.target.value)} className="w-full border-b py-3 font-semibold outline-none focus:border-blue-500 transition-colors" />
+            <input 
+              ref={dateInputRef} 
+              type="date" 
+              value={transDate} 
+              onChange={e => setTransDate(e.target.value)} 
+              className="w-full border-b py-3 font-semibold outline-none focus:border-blue-500 transition-colors" 
+            />
           </div>
 
-          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Description</label>
-          <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Add notes..." className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-24 outline-none focus:border-slate-300 transition-colors" />
+          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Notes</label>
+          <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Add optional details..." className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-24 outline-none focus:border-slate-300 transition-colors" />
         </div>
         <div className="p-6 pb-12">
           <button disabled={isSubmitting} onClick={handleSaveTransaction} className={`w-full py-4 rounded-2xl text-white font-bold text-lg shadow-xl flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} active:scale-95 transition-all`}>
-            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Save Entry'}
+            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Save Record'}
           </button>
         </div>
       </div>
@@ -522,11 +560,61 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
         <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
           <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl"><Store size={40} /></div>
-          <div className="text-center"><h1 className="text-xl font-bold">{shopName}</h1><p className="text-sm text-slate-400">Settings</p></div>
+          <div className="text-center"><h1 className="text-xl font-bold">{shopName}</h1><p className="text-sm text-slate-400">Ledger Profile</p></div>
         </header>
         <div className="p-6">
-           <button onClick={async () => { if(!window.confirm("RESET EVERYTHING?")) return; await Promise.all([supabase.from('transactions').delete().neq('id', '0'), supabase.from('contacts').delete().neq('id', '0'), supabase.from('cash_transactions').delete().neq('id', '0')]); window.location.reload(); }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors border border-red-100"><ShieldAlert size={20} /><div className="text-left font-bold">Reset All Data</div></button>
+           <button onClick={async () => { if(!window.confirm("RESET EVERYTHING? This wipes all records permanently.")) return; await Promise.all([supabase.from('transactions').delete().neq('id', '0'), supabase.from('contacts').delete().neq('id', '0'), supabase.from('cash_transactions').delete().neq('id', '0')]); window.location.reload(); }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors border border-red-100"><ShieldAlert size={20} /><div className="text-left font-bold">Wipe All Data</div></button>
         </div>
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
+      </div>
+    );
+  }
+
+  if (currentView === 'CASH_BOOK') {
+    // Basic Cash Book view (from previous versions, kept for consistency)
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-24 no-scrollbar">
+        <header className="bg-white px-4 py-4 shadow-sm sticky top-0 z-20"><h1 className="text-xl font-bold">Cash Book</h1></header>
+        <div className="p-4 flex flex-col gap-4">
+          <div className="bg-slate-900 text-white rounded-[2rem] p-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-[-20%] right-[-10%] w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Net Cash Balance</p>
+            <h2 className="text-4xl font-black">Rs. {cashSummary.balance.toLocaleString()}</h2>
+          </div>
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            {cashTransactions.map(t => (
+              <div key={t.id} className="p-4 border-b border-slate-50 flex justify-between items-center active:bg-slate-50 transition-colors">
+                <div className="flex gap-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${t.type === 'IN' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>{t.type === 'IN' ? <TrendingUp size={24} /> : <TrendingDown size={24} />}</div>
+                  <div><p className="text-sm font-bold text-slate-800">{t.description || (t.type === 'IN' ? 'Cash Received' : 'Expense')}</p><p className="text-[10px] text-slate-400 font-bold tracking-wider">{new Date(t.date).toLocaleDateString()}</p></div>
+                </div>
+                <p className={`font-black text-lg ${t.type === 'IN' ? 'text-green-600' : 'text-red-600'}`}>{t.type === 'IN' ? '+' : '-'} {t.amount.toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        {isCashFormOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-end animate-in fade-in duration-200">
+            <div className="bg-white w-full rounded-t-[2.5rem] p-8 shadow-lg animate-in slide-in-from-bottom duration-300">
+              <div className="flex gap-3 mb-8">
+                <button onClick={() => setCashType('IN')} className={`flex-1 py-4 rounded-2xl border-2 font-black transition-all ${cashType === 'IN' ? 'border-green-600 text-green-700 bg-green-50' : 'border-slate-100 text-slate-400'}`}>CASH IN</button>
+                <button onClick={() => setCashType('OUT')} className={`flex-1 py-4 rounded-2xl border-2 font-black transition-all ${cashType === 'OUT' ? 'border-red-600 text-red-700 bg-red-50' : 'border-slate-100 text-slate-400'}`}>CASH OUT</button>
+              </div>
+              <input type="number" value={cashAmount} onChange={e => setCashAmount(e.target.value)} placeholder="0.00" className="w-full text-4xl font-black mb-6 py-4 border-b-2 outline-none focus:border-slate-800 text-center" autoFocus />
+              <input value={cashDesc} onChange={e => setCashDesc(e.target.value)} placeholder="Entry notes..." className="w-full text-lg mb-10 py-4 border-b outline-none focus:border-slate-400" />
+              <button onClick={async () => {
+                const amount = parseFloat(cashAmount) || 0;
+                if (amount <= 0) return;
+                const p = { id: generateUUID(), date: new Date().toISOString().slice(0, 10), amount, type: cashType, description: cashDesc };
+                await supabase.from('cash_transactions').insert([p]);
+                setCashTransactions([p, ...cashTransactions]);
+                setIsCashFormOpen(false); setCashAmount(''); setCashDesc('');
+              }} className={`w-full py-5 rounded-2xl text-white font-black text-xl shadow-lg ${cashType === 'IN' ? 'bg-green-600' : 'bg-red-600'}`}>Add Entry</button>
+              <button onClick={() => setIsCashFormOpen(false)} className="w-full text-slate-400 mt-6 font-bold py-2">Cancel</button>
+            </div>
+          </div>
+        )}
+        <button onClick={() => setIsCashFormOpen(true)} className="fixed bottom-24 right-4 w-16 h-16 bg-slate-900 text-white rounded-full flex items-center justify-center shadow-2xl active:scale-90 transition-all z-30"><Plus size={32} /></button>
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
       </div>
     );
