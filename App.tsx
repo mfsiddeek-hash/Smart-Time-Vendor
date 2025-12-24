@@ -5,7 +5,7 @@ import {
   ChevronDown, Filter, Download, Trash2, Calculator, FilePlus, Loader2, 
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
-  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown
+  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -42,14 +42,12 @@ const generateUUID = () => {
   });
 };
 
-// Helper for Date Normalization (Ensures comparison happens on date-only)
 const normalizeDate = (d: string | Date) => {
   const date = new Date(d);
   date.setHours(0, 0, 0, 0);
   return date;
 };
 
-// Helper for Rent Cycle (13th to 13th)
 const getRentCycleStart = () => {
   const now = new Date();
   const day = now.getDate();
@@ -60,7 +58,6 @@ const getRentCycleStart = () => {
   if (day >= 13) {
     cycleStart = new Date(year, month, 13);
   } else {
-    // Last month's 13th
     cycleStart = new Date(year, month - 1, 13);
   }
   cycleStart.setHours(0, 0, 0, 0);
@@ -197,11 +194,21 @@ export default function App() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // Helper to get savings in current cycle for a specific contact
+  const getCycleSavings = (contactId: string) => {
+    const cycleStart = getRentCycleStart();
+    return transactions
+      .filter(t => t.contactId === contactId && t.type === 'PAYMENT' && normalizeDate(t.date) >= cycleStart)
+      .reduce((sum, t) => sum + t.amount, 0);
+  };
+
+  // Fixed missing filteredContacts by adding useMemo implementation
   const filteredContacts = useMemo(() => {
     return contacts.filter(c => {
-      const matchesType = c.type === activeTab;
-      const query = searchQuery.toLowerCase().trim();
-      return matchesType && (!query || c.name.toLowerCase().includes(query) || c.phone.includes(query));
+      const matchesTab = c.type === activeTab;
+      const q = searchQuery.toLowerCase();
+      const matchesSearch = c.name.toLowerCase().includes(q) || (c.phone && c.phone.includes(q));
+      return matchesTab && matchesSearch;
     });
   }, [contacts, activeTab, searchQuery]);
 
@@ -210,41 +217,25 @@ export default function App() {
     const contactIds = currentContacts.map(c => c.id);
 
     if (activeTab === 'RENT') {
-      const cycleStart = getRentCycleStart();
       let totalSavedInCycle = 0;
       let totalMonthlyTarget = 0;
 
       currentContacts.forEach(contact => {
-        // Use 30000 LKR as the default monthly target if not set
         const target = contact.targetAmount || 30000;
         totalMonthlyTarget += target;
-
-        const payments = transactions
-          .filter(t => {
-            const isMatch = t.contactId === contact.id && t.type === 'PAYMENT';
-            if (!isMatch) return false;
-            const tDate = normalizeDate(t.date);
-            return tDate >= cycleStart;
-          })
-          .reduce((sum, t) => sum + t.amount, 0);
-        
-        totalSavedInCycle += payments;
+        totalSavedInCycle += getCycleSavings(contact.id);
       });
 
-      // Remaining Amount (Debt) = Target - Saved
       const currentDebt = Math.max(0, totalMonthlyTarget - totalSavedInCycle);
       return { 
-        totalPayments: totalSavedInCycle, // Displays as "Rent Saved"
-        netBalance: currentDebt // Displays as "Current Debt" (Remaining)
+        totalPayments: totalSavedInCycle,
+        netBalance: currentDebt
       };
     } else {
-      // Logic for Supplier/Customer
-      // Total Payments made (Sum of all PAYMENT entries)
       const totalPayments = transactions
         .filter(t => contactIds.includes(t.contactId) && t.type === 'PAYMENT')
         .reduce((acc, t) => acc + t.amount, 0);
 
-      // Current Net Balance (Outstanding debt/credit)
       const netBalance = currentContacts
         .reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
 
@@ -278,6 +269,41 @@ export default function App() {
       if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated, targetAmount: payload.target_amount }]);
       setAddName(''); setAddPhone('');
       handleBack();
+    } catch (err: any) { alert(err.message); }
+    finally { setIsSubmitting(false); }
+  };
+
+  const handleDeleteContact = async (id: string) => {
+    if (!window.confirm("Delete this contact and all their transactions? This cannot be undone.")) return;
+    setIsSubmitting(true);
+    try {
+      await supabase.from('transactions').delete().eq('contact_id', id);
+      const { error } = await supabase.from('contacts').delete().eq('id', id);
+      if (error) throw error;
+      
+      setContacts(contacts.filter(c => c.id !== id));
+      setTransactions(transactions.filter(t => t.contactId !== id));
+      handleBack();
+    } catch (err: any) { alert(err.message); }
+    finally { setIsSubmitting(false); }
+  };
+
+  const handleResetAllData = async () => {
+    if (!window.confirm("CRITICAL: Delete EVERYTHING? (Contacts, Transactions, Cash Book). This is permanent.")) return;
+    setIsSubmitting(true);
+    try {
+      // In Supabase with RLS off or proper permissions, we delete by targeting all rows.
+      // Usually requires a .neq('id', '0') or similar for bulk delete.
+      await Promise.all([
+        supabase.from('transactions').delete().neq('id', '0'),
+        supabase.from('contacts').delete().neq('id', '0'),
+        supabase.from('cash_transactions').delete().neq('id', '0')
+      ]);
+      setContacts([]);
+      setTransactions([]);
+      setCashTransactions([]);
+      alert("All data cleared. Application reset.");
+      navigateTo('DASHBOARD');
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
   };
@@ -344,39 +370,8 @@ export default function App() {
     finally { setIsSubmitting(false); }
   };
 
-  const handleDeleteTransaction = async () => {
-    if (!selectedContact || !editingTransaction || isSubmitting) return;
-    if (!window.confirm("Are you sure you want to delete this transaction?")) return;
-
-    setIsSubmitting(true);
-    let newBalance = selectedContact.balance;
-    const amount = editingTransaction.amount;
-    
-    if (selectedContact.type === 'RENT') {
-      newBalance = editingTransaction.type === 'PAYMENT' ? newBalance - amount : newBalance + amount;
-    } else {
-      newBalance = editingTransaction.type === 'CREDIT' ? newBalance - amount : newBalance + amount;
-    }
-
-    try {
-      const { error } = await supabase.from('transactions').delete().eq('id', editingTransaction.id);
-      if (error) throw error;
-
-      await supabase.from('contacts').update({ balance: newBalance, last_updated: new Date().toISOString() }).eq('id', selectedContact.id);
-
-      setTransactions(transactions.filter(t => t.id !== editingTransaction.id));
-      const updated = { ...selectedContact, balance: newBalance, lastUpdated: new Date().toISOString() };
-      setContacts(contacts.map(c => c.id === selectedContact.id ? updated : c));
-      setSelectedContact(updated);
-      setEditingTransaction(null);
-      handleBack();
-    } catch (err: any) { alert(err.message); }
-    finally { setIsSubmitting(false); }
-  };
-
   if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Syncing Ledger...</p></div>;
-  if (loadError) return <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6 text-center"><div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 max-w-sm"><AlertCircle size={48} className="text-red-500 mx-auto mb-4" /><h2 className="text-xl font-bold mb-2">Sync Error</h2><p className="text-gray-500 text-sm mb-6">{loadError}</p><button onClick={fetchData} className="w-full bg-slate-800 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2"><RefreshCw size={18} /> Retry</button></div></div>;
-
+  
   if (currentView === 'DASHBOARD') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
@@ -393,7 +388,6 @@ export default function App() {
         </header>
 
         <div className="p-4 flex flex-col gap-4">
-          {/* Dual Summary Cards */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[11px] text-slate-600 font-medium mb-1 uppercase tracking-tighter">
@@ -409,7 +403,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Search & Filter Bar */}
           <div className="flex gap-2">
             <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all">
               <Search size={18} className="text-slate-400 mr-3" />
@@ -427,27 +420,30 @@ export default function App() {
           </div>
 
           <div className="flex flex-col gap-2">
-            {filteredContacts.map(c => (
-              <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-blue-500' : 'bg-slate-400'}`}>
-                    {c.name[0]}
+            {filteredContacts.map(c => {
+              const displayAmount = activeTab === 'RENT' ? getCycleSavings(c.id) : Math.abs(c.balance);
+              return (
+                <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-blue-500' : 'bg-slate-400'}`}>
+                      {c.name[0]}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-slate-800">{c.name}</h3>
+                      <p className="text-[11px] text-slate-400 font-medium">{c.phone}</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-semibold text-slate-800">{c.name}</h3>
-                    <p className="text-[11px] text-slate-400 font-medium">{c.phone}</p>
+                  <div className="text-right">
+                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
+                      {c.type === 'RENT' ? 'Current Cycle' : 'Balance'}
+                    </p>
+                    <p className={`font-bold text-[15px] ${c.balance > 0 || c.type === 'RENT' ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+                      Rs. {displayAmount.toLocaleString()}
+                    </p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
-                    {c.type === 'RENT' ? 'Current Cycle' : 'Balance'}
-                  </p>
-                  <p className={`font-bold text-[15px] ${c.balance > 0 ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
-                    Rs. {Math.abs(c.balance).toLocaleString()}
-                  </p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {filteredContacts.length === 0 && <div className="text-center py-16 text-slate-400 text-sm font-medium">No results found</div>}
           </div>
         </div>
@@ -458,7 +454,6 @@ export default function App() {
     );
   }
 
-  // Views for adding contact, details, forms, etc.
   if (currentView === 'ADD_CONTACT') {
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -468,12 +463,6 @@ export default function App() {
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label>
             <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
           </div>
-          {activeTab === 'RENT' && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label>
-              <input type="number" defaultValue={30000} placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
-            </div>
-          )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone (Optional)</label>
             <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="07XXXXXXXX" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
@@ -516,7 +505,7 @@ export default function App() {
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
           <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone}</p></div>
-          <button onClick={() => navigateTo('ADD_CONTACT')} className="p-2 text-slate-400"><Pencil size={20} /></button>
+          <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-400 active:text-red-600"><Trash2 size={20} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
@@ -555,6 +544,57 @@ export default function App() {
     );
   }
 
+  if (currentView === 'PROFILE') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
+        <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
+          <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl">
+             <Store size={40} />
+          </div>
+          <div className="text-center">
+             <h1 className="text-xl font-bold">{shopName}</h1>
+             <p className="text-sm text-slate-400">Settings & Security</p>
+          </div>
+        </header>
+        
+        <div className="p-6 flex flex-col gap-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex flex-col gap-4">
+             <div className="flex items-center gap-4 p-2 border-b border-slate-50 active:bg-slate-50">
+               <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center"><Phone size={20} /></div>
+               <div className="flex-1"><p className="text-xs text-slate-400 font-bold uppercase">Business Phone</p><p className="font-semibold">+94 XX XXX XXXX</p></div>
+               <ChevronRight size={18} className="text-slate-300" />
+             </div>
+             <div className="flex items-center gap-4 p-2 active:bg-slate-50">
+               <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center"><Languages size={20} /></div>
+               <div className="flex-1"><p className="text-xs text-slate-400 font-bold uppercase">Language</p><p className="font-semibold">English (US)</p></div>
+               <ChevronRight size={18} className="text-slate-300" />
+             </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-red-100 p-4 flex flex-col gap-4">
+             <h3 className="text-[11px] font-black text-red-500 uppercase tracking-widest px-2">Danger Zone</h3>
+             <button 
+               onClick={handleResetAllData}
+               disabled={isSubmitting}
+               className="flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors"
+             >
+               <div className="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center">
+                 {isSubmitting ? <Loader2 size={20} className="animate-spin" /> : <ShieldAlert size={20} />}
+               </div>
+               <div className="text-left flex-1">
+                 <p className="font-bold">Delete All Data</p>
+                 <p className="text-[10px] opacity-70">Wipe all records and start fresh</p>
+               </div>
+             </button>
+          </div>
+        </div>
+        
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
+      </div>
+    );
+  }
+
+  // Transaction form view
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
@@ -565,8 +605,25 @@ export default function App() {
         <header className="px-4 py-4 border-b flex items-center justify-between">
           <div className="flex items-center gap-4"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>
           {editingTransaction && (
-            <button disabled={isSubmitting} onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:bg-red-100 transition-colors">
-              {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : <Trash2 size={20} />}
+            <button disabled={isSubmitting} onClick={async () => {
+              if (!window.confirm("Delete this entry?")) return;
+              setIsSubmitting(true);
+              try {
+                let newBalance = selectedContact.balance;
+                if (isRent) {
+                   newBalance = editingTransaction.type === 'PAYMENT' ? newBalance - editingTransaction.amount : newBalance + editingTransaction.amount;
+                } else {
+                   newBalance = editingTransaction.type === 'CREDIT' ? newBalance - editingTransaction.amount : newBalance + editingTransaction.amount;
+                }
+                await supabase.from('transactions').delete().eq('id', editingTransaction.id);
+                await supabase.from('contacts').update({ balance: newBalance }).eq('id', selectedContact.id);
+                setTransactions(transactions.filter(t => t.id !== editingTransaction.id));
+                setContacts(contacts.map(c => c.id === selectedContact.id ? {...c, balance: newBalance} : c));
+                handleBack();
+              } catch (e:any) { alert(e.message); }
+              finally { setIsSubmitting(false); }
+            }} className="p-2 text-red-600 bg-red-50 rounded-full active:bg-red-100 transition-colors">
+              <Trash2 size={20} />
             </button>
           )}
         </header>
@@ -587,6 +644,7 @@ export default function App() {
     );
   }
 
+  // Cash book view
   if (currentView === 'CASH_BOOK') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 no-scrollbar">
