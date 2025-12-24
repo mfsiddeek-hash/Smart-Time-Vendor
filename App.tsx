@@ -48,6 +48,7 @@ const normalizeDate = (d: string | Date) => {
   return date;
 };
 
+// Precise 13th to 13th Cycle Logic
 const getRentCycleStart = () => {
   const now = new Date();
   const day = now.getDate();
@@ -66,7 +67,7 @@ const getRentCycleStart = () => {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('DASHBOARD');
-  const [activeTab, setActiveTab] = useState<ContactType>('SUPPLIER');
+  const [activeTab, setActiveTab] = useState<ContactType>('RENT'); // Start on Rent as per user focus
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -84,6 +85,7 @@ export default function App() {
   // Form States
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
+  const [targetAmount, setTargetAmount] = useState('30000');
   const [isCashFormOpen, setIsCashFormOpen] = useState(false);
   const [cashType, setCashType] = useState<'IN' | 'OUT'>('IN');
   const [cashAmount, setCashAmount] = useState('');
@@ -103,7 +105,7 @@ export default function App() {
 
   useEffect(() => {
     if (!window.history.state) {
-        window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: 'SUPPLIER' }, '', window.location.pathname);
+        window.history.replaceState({ view: 'DASHBOARD', contactId: null, tab: 'RENT' }, '', window.location.pathname);
     }
 
     const handlePopState = (event: PopStateEvent) => {
@@ -194,15 +196,19 @@ export default function App() {
 
   useEffect(() => { fetchData(); }, []);
 
-  // Helper to get savings in current cycle for a specific contact
+  // Precise savings in current cycle for a contact
   const getCycleSavings = (contactId: string) => {
     const cycleStart = getRentCycleStart();
     return transactions
-      .filter(t => t.contactId === contactId && t.type === 'PAYMENT' && normalizeDate(t.date) >= cycleStart)
+      .filter(t => {
+        const isMatch = t.contactId === contactId && t.type === 'PAYMENT';
+        if (!isMatch) return false;
+        const tDate = normalizeDate(t.date);
+        return tDate >= cycleStart;
+      })
       .reduce((sum, t) => sum + t.amount, 0);
   };
 
-  // Fixed missing filteredContacts by adding useMemo implementation
   const filteredContacts = useMemo(() => {
     return contacts.filter(c => {
       const matchesTab = c.type === activeTab;
@@ -214,8 +220,7 @@ export default function App() {
 
   const activeTotals = useMemo(() => {
     const currentContacts = contacts.filter(c => c.type === activeTab);
-    const contactIds = currentContacts.map(c => c.id);
-
+    
     if (activeTab === 'RENT') {
       let totalSavedInCycle = 0;
       let totalMonthlyTarget = 0;
@@ -226,12 +231,14 @@ export default function App() {
         totalSavedInCycle += getCycleSavings(contact.id);
       });
 
+      // Exactly Rs. 30,000 if saved is 0.
       const currentDebt = Math.max(0, totalMonthlyTarget - totalSavedInCycle);
       return { 
-        totalPayments: totalSavedInCycle,
-        netBalance: currentDebt
+        totalPayments: totalSavedInCycle, // Displays as "RENT SAVED"
+        netBalance: currentDebt // Displays as "CURRENT DEBT"
       };
     } else {
+      const contactIds = currentContacts.map(c => c.id);
       const totalPayments = transactions
         .filter(t => contactIds.includes(t.contactId) && t.type === 'PAYMENT')
         .reduce((acc, t) => acc + t.amount, 0);
@@ -255,26 +262,27 @@ export default function App() {
     if (!addName.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
+      const finalTarget = activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null;
       const payload = { 
         id: generateUUID(), 
         name: addName, 
         phone: addPhone, 
         type: activeTab, 
         balance: 0, 
-        target_amount: activeTab === 'RENT' ? 30000 : null,
+        target_amount: finalTarget,
         last_updated: new Date().toISOString() 
       };
       const { data, error } = await supabase.from('contacts').insert([payload]).select();
       if (error) throw error;
       if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated, targetAmount: payload.target_amount }]);
-      setAddName(''); setAddPhone('');
+      setAddName(''); setAddPhone(''); setTargetAmount('30000');
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
   };
 
   const handleDeleteContact = async (id: string) => {
-    if (!window.confirm("Delete this contact and all their transactions? This cannot be undone.")) return;
+    if (!window.confirm("Delete this entry and start new check? This will clear all transactions for this name.")) return;
     setIsSubmitting(true);
     try {
       await supabase.from('transactions').delete().eq('contact_id', id);
@@ -284,26 +292,6 @@ export default function App() {
       setContacts(contacts.filter(c => c.id !== id));
       setTransactions(transactions.filter(t => t.contactId !== id));
       handleBack();
-    } catch (err: any) { alert(err.message); }
-    finally { setIsSubmitting(false); }
-  };
-
-  const handleResetAllData = async () => {
-    if (!window.confirm("CRITICAL: Delete EVERYTHING? (Contacts, Transactions, Cash Book). This is permanent.")) return;
-    setIsSubmitting(true);
-    try {
-      // In Supabase with RLS off or proper permissions, we delete by targeting all rows.
-      // Usually requires a .neq('id', '0') or similar for bulk delete.
-      await Promise.all([
-        supabase.from('transactions').delete().neq('id', '0'),
-        supabase.from('contacts').delete().neq('id', '0'),
-        supabase.from('cash_transactions').delete().neq('id', '0')
-      ]);
-      setContacts([]);
-      setTransactions([]);
-      setCashTransactions([]);
-      alert("All data cleared. Application reset.");
-      navigateTo('DASHBOARD');
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
   };
@@ -370,7 +358,7 @@ export default function App() {
     finally { setIsSubmitting(false); }
   };
 
-  if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Syncing Ledger...</p></div>;
+  if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Syncing Data...</p></div>;
   
   if (currentView === 'DASHBOARD') {
     return (
@@ -388,34 +376,36 @@ export default function App() {
         </header>
 
         <div className="p-4 flex flex-col gap-4">
+          {/* Summary Cards from User Screenshot */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[11px] text-slate-600 font-medium mb-1 uppercase tracking-tighter">
+              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Rent Saved' : (activeTab === 'SUPPLIER' ? 'Total Paid' : 'Total Received')}
               </p>
               <p className="text-lg font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[11px] text-slate-600 font-medium mb-1 uppercase tracking-tighter">
+              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Current Debt' : (activeTab === 'SUPPLIER' ? 'To pay' : 'To collect')}
               </p>
               <p className="text-lg font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
             </div>
           </div>
 
+          {/* Search Bar matching screenshot */}
           <div className="flex gap-2">
             <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all">
               <Search size={18} className="text-slate-400 mr-3" />
               <input 
                 type="text" 
                 placeholder="Search name or number here" 
-                className="bg-transparent outline-none text-sm w-full placeholder:text-slate-400 font-medium" 
+                className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" 
                 value={searchQuery} 
                 onChange={(e) => setSearchQuery(e.target.value)} 
               />
             </div>
-            <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center">
-              <Filter size={20} />
+            <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm">
+              <Filter size={18} />
             </button>
           </div>
 
@@ -425,19 +415,18 @@ export default function App() {
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-blue-500' : 'bg-slate-400'}`}>
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
                       {c.name[0]}
                     </div>
                     <div>
-                      <h3 className="font-semibold text-slate-800">{c.name}</h3>
-                      <p className="text-[11px] text-slate-400 font-medium">{c.phone}</p>
+                      <h3 className="font-semibold text-slate-800 text-sm">{c.name}</h3>
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
+                    <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
                       {c.type === 'RENT' ? 'Current Cycle' : 'Balance'}
                     </p>
-                    <p className={`font-bold text-[15px] ${c.balance > 0 || c.type === 'RENT' ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+                    <p className={`font-bold text-[15px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (c.balance > 0 ? 'text-red-600' : 'text-green-600')}`}>
                       Rs. {displayAmount.toLocaleString()}
                     </p>
                   </div>
@@ -463,6 +452,12 @@ export default function App() {
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label>
             <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
           </div>
+          {activeTab === 'RENT' && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label>
+              <input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
+            </div>
+          )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone (Optional)</label>
             <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="07XXXXXXXX" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
@@ -505,7 +500,7 @@ export default function App() {
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
           <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone}</p></div>
-          <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-400 active:text-red-600"><Trash2 size={20} /></button>
+          <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 active:text-red-700 bg-red-50 rounded-full transition-colors"><Trash2 size={20} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
@@ -540,56 +535,6 @@ export default function App() {
              <span className="flex items-center gap-1 font-bold text-lg">Rs. <ArrowUp size={14} /></span>
           </button>
         </div>
-      </div>
-    );
-  }
-
-  if (currentView === 'PROFILE') {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
-        <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
-          <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl">
-             <Store size={40} />
-          </div>
-          <div className="text-center">
-             <h1 className="text-xl font-bold">{shopName}</h1>
-             <p className="text-sm text-slate-400">Settings & Security</p>
-          </div>
-        </header>
-        
-        <div className="p-6 flex flex-col gap-6">
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex flex-col gap-4">
-             <div className="flex items-center gap-4 p-2 border-b border-slate-50 active:bg-slate-50">
-               <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center"><Phone size={20} /></div>
-               <div className="flex-1"><p className="text-xs text-slate-400 font-bold uppercase">Business Phone</p><p className="font-semibold">+94 XX XXX XXXX</p></div>
-               <ChevronRight size={18} className="text-slate-300" />
-             </div>
-             <div className="flex items-center gap-4 p-2 active:bg-slate-50">
-               <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center"><Languages size={20} /></div>
-               <div className="flex-1"><p className="text-xs text-slate-400 font-bold uppercase">Language</p><p className="font-semibold">English (US)</p></div>
-               <ChevronRight size={18} className="text-slate-300" />
-             </div>
-          </div>
-
-          <div className="bg-white rounded-2xl shadow-sm border border-red-100 p-4 flex flex-col gap-4">
-             <h3 className="text-[11px] font-black text-red-500 uppercase tracking-widest px-2">Danger Zone</h3>
-             <button 
-               onClick={handleResetAllData}
-               disabled={isSubmitting}
-               className="flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors"
-             >
-               <div className="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center">
-                 {isSubmitting ? <Loader2 size={20} className="animate-spin" /> : <ShieldAlert size={20} />}
-               </div>
-               <div className="text-left flex-1">
-                 <p className="font-bold">Delete All Data</p>
-                 <p className="text-[10px] opacity-70">Wipe all records and start fresh</p>
-               </div>
-             </button>
-          </div>
-        </div>
-        
-        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
       </div>
     );
   }
@@ -640,6 +585,42 @@ export default function App() {
             {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingTransaction ? 'Update Ledger' : 'Confirm & Save')}
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // Profile view with Reset option
+  if (currentView === 'PROFILE') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
+        <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
+          <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl">
+             <Store size={40} />
+          </div>
+          <div className="text-center">
+             <h1 className="text-xl font-bold">{shopName}</h1>
+             <p className="text-sm text-slate-400">Ledger Profile & Settings</p>
+          </div>
+        </header>
+        <div className="p-6 flex flex-col gap-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+             <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 mb-4">Security</h3>
+             <button onClick={async () => {
+                if(!window.confirm("RESET APP? All data will be deleted!")) return;
+                await supabase.from('transactions').delete().neq('id', '0');
+                await supabase.from('contacts').delete().neq('id', '0');
+                await supabase.from('cash_transactions').delete().neq('id', '0');
+                window.location.reload();
+             }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors">
+               <ShieldAlert size={20} />
+               <div className="text-left">
+                 <p className="font-bold">Reset All Records</p>
+                 <p className="text-[10px] opacity-70">Wipe ledger and start fresh</p>
+               </div>
+             </button>
+          </div>
+        </div>
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
       </div>
     );
   }
