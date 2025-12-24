@@ -81,7 +81,6 @@ export default function App() {
   // -----------------------------------------------------------------
   // DERIVED STATE: BALANCES
   // -----------------------------------------------------------------
-  // Always derive balances from the transaction list to prevent sync issues
   const contactBalances = useMemo(() => {
     const balances: Record<string, number> = {};
     contacts.forEach(c => balances[c.id] = 0);
@@ -98,7 +97,6 @@ export default function App() {
     return balances;
   }, [contacts, transactions]);
 
-  // Derived cycle savings for Rent contacts
   const cycleSavingsMap = useMemo(() => {
     const savings: Record<string, number> = {};
     const cycleStart = getRentCycleStart();
@@ -113,8 +111,8 @@ export default function App() {
 
   const activeTotals = useMemo(() => {
     const currentContacts = contacts.filter(c => c.type === activeTab);
-    let totalPayments = 0; // "Saved" or "Received"
-    let netBalance = 0;    // "Debt" or "Owed"
+    let totalPayments = 0;
+    let netBalance = 0;
 
     if (activeTab === 'RENT') {
       let totalTarget = 0;
@@ -129,7 +127,6 @@ export default function App() {
       currentContacts.forEach(c => {
         const bal = contactBalances[c.id] || 0;
         if (bal > 0) netBalance += bal;
-        // For simple totals, we show sum of all payments
         totalPayments += transactions
           .filter(t => t.contactId === c.id && t.type === 'PAYMENT')
           .reduce((sum, tx) => sum + tx.amount, 0);
@@ -137,6 +134,85 @@ export default function App() {
     }
     return { totalPayments, netBalance };
   }, [contacts, transactions, activeTab, contactBalances, cycleSavingsMap]);
+
+  // -----------------------------------------------------------------
+  // REPORT GENERATION (PDF)
+  // -----------------------------------------------------------------
+  const downloadCategoryReport = () => {
+    const doc = new jsPDF();
+    const timestamp = new Date().toLocaleString();
+    const currentContacts = contacts.filter(c => c.type === activeTab);
+    
+    doc.setFontSize(20);
+    doc.text(`${shopName} - ${activeTab} Report`, 14, 20);
+    doc.setFontSize(10);
+    doc.text(`Generated on: ${timestamp}`, 14, 30);
+    
+    const tableData = currentContacts.map(c => [
+      c.name,
+      `Rs. ${Math.abs(contactBalances[c.id] || 0).toLocaleString()}`
+    ]);
+    
+    const totalLabel = activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'SUPPLIER' ? 'Total to Pay' : 'Total to Collect');
+    const totalAmount = activeTotals.netBalance;
+
+    autoTable(doc, {
+      startY: 40,
+      head: [['Name', 'Balance']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillStyle: 'F', fillColor: [51, 65, 85] },
+      foot: [[totalLabel, `Rs. ${totalAmount.toLocaleString()}`]],
+      footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
+    });
+    
+    doc.save(`${activeTab.toLowerCase()}_report_${Date.now()}.pdf`);
+  };
+
+  const downloadContactStatement = (contact: Contact) => {
+    const doc = new jsPDF();
+    const timestamp = new Date().toLocaleString();
+    const isRent = contact.type === 'RENT';
+    
+    doc.setFontSize(18);
+    doc.text(shopName, 14, 20);
+    doc.setFontSize(12);
+    doc.text(`Statement for: ${contact.name}`, 14, 30);
+    doc.setFontSize(10);
+    doc.text(`Date Range: All Time | Generated: ${timestamp}`, 14, 38);
+    
+    const contactTransactions = transactions
+      .filter(t => t.contactId === contact.id)
+      .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    
+    let runningBal = 0;
+    const tableRows = contactTransactions.map(t => {
+      if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
+      else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+      
+      const typeLabel = t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit');
+
+      return [
+        t.date,
+        t.description || '-',
+        typeLabel,
+        `Rs. ${t.amount.toLocaleString()}`,
+        `Rs. ${runningBal.toLocaleString()}`
+      ];
+    });
+
+    autoTable(doc, {
+      startY: 45,
+      head: [['Date', 'Description', 'Type', 'Amount', 'Balance']],
+      body: tableRows,
+      theme: 'grid',
+      headStyles: { fillColor: [59, 130, 246] },
+      foot: [['', '', 'FINAL BALANCE', '', `Rs. ${runningBal.toLocaleString()}`]],
+      footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
+    });
+    
+    doc.save(`${contact.name.replace(/\s+/g, '_')}_statement.pdf`);
+  };
 
   // -----------------------------------------------------------------
   // EFFECTS & DATA FETCHING
@@ -237,19 +313,6 @@ export default function App() {
       const newTransactions = transactions.filter(t => t.id !== editingTransaction.id);
       setTransactions(newTransactions);
       
-      // Update contact balance in DB as fallback
-      const contactId = editingTransaction.contactId;
-      const contact = contacts.find(c => c.id === contactId);
-      if (contact) {
-        let newBalance = contactBalances[contactId];
-        if (contact.type === 'RENT') {
-          newBalance -= (editingTransaction.type === 'PAYMENT' ? editingTransaction.amount : -editingTransaction.amount);
-        } else {
-          newBalance -= (editingTransaction.type === 'CREDIT' ? editingTransaction.amount : -editingTransaction.amount);
-        }
-        await supabase.from('contacts').update({ balance: newBalance, last_updated: new Date().toISOString() }).eq('id', contactId);
-      }
-      
       setEditingTransaction(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
@@ -264,7 +327,7 @@ export default function App() {
     try {
       const txPayload = { 
         contact_id: selectedContact.id, date: transDate, amount: amountVal, 
-        type: transType, description: transDesc, balance_after: 0 // Will re-derive
+        type: transType, description: transDesc, balance_after: 0 
       };
       
       let res;
@@ -275,7 +338,6 @@ export default function App() {
       }
       if (res.error) throw res.error;
       
-      // Refresh local state
       if (res.data) {
         const saved = { 
           id: res.data[0].id, contactId: res.data[0].contact_id, date: res.data[0].date, 
@@ -288,26 +350,6 @@ export default function App() {
           setTransactions([saved, ...transactions]); 
         }
       }
-
-      // Update contact balance in DB for consistency
-      const contactId = selectedContact.id;
-      let newBalance = contactBalances[contactId];
-      if (editingTransaction) {
-        // Reverse old
-        if (selectedContact.type === 'RENT') {
-          newBalance -= (editingTransaction.type === 'PAYMENT' ? editingTransaction.amount : -editingTransaction.amount);
-        } else {
-          newBalance -= (editingTransaction.type === 'CREDIT' ? editingTransaction.amount : -editingTransaction.amount);
-        }
-      }
-      // Add new
-      if (selectedContact.type === 'RENT') {
-        newBalance += (transType === 'PAYMENT' ? amountVal : -amountVal);
-      } else {
-        newBalance += (transType === 'CREDIT' ? amountVal : -amountVal);
-      }
-      await supabase.from('contacts').update({ balance: newBalance, last_updated: new Date().toISOString() }).eq('id', contactId);
-      
       setEditingTransaction(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
@@ -361,6 +403,15 @@ export default function App() {
               <Search size={18} className="text-slate-400 mr-3" />
               <input type="text" placeholder="Search name or number here" className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
+            {activeTab !== 'RENT' && (
+              <button 
+                onClick={downloadCategoryReport}
+                className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"
+                title="Download Category Report"
+              >
+                <Download size={18} />
+              </button>
+            )}
             <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"><Filter size={18} /></button>
           </div>
 
@@ -397,7 +448,6 @@ export default function App() {
     const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'SUPPLIER' ? "GOT ITEMS" : "GAVE ITEMS");
     const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'SUPPLIER' ? "PAID MONEY" : "GOT MONEY");
     
-    // Sort transactions oldest to newest to calculate running balance correctly
     const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     
     let currentSum = 0;
@@ -405,13 +455,20 @@ export default function App() {
       if (isRent) { currentSum += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
       else { currentSum += (t.type === 'CREDIT' ? t.amount : -t.amount); }
       return { ...t, balanceAfter: currentSum };
-    }).reverse(); // Reverse back for latest first display
+    }).reverse();
 
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
           <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone}</p></div>
+          <button 
+            onClick={() => downloadContactStatement(selectedContact)}
+            className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm"
+            title="Download Statement"
+          >
+            <FileText size={18} />
+          </button>
           <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
