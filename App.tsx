@@ -42,6 +42,13 @@ const generateUUID = () => {
   });
 };
 
+// Helper for Date Normalization (Ensures comparison happens on date-only)
+const normalizeDate = (d: string | Date) => {
+  const date = new Date(d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
 // Helper for Rent Cycle (13th to 13th)
 const getRentCycleStart = () => {
   const now = new Date();
@@ -49,12 +56,15 @@ const getRentCycleStart = () => {
   const month = now.getMonth();
   const year = now.getFullYear();
   
+  let cycleStart;
   if (day >= 13) {
-    return new Date(year, month, 13);
+    cycleStart = new Date(year, month, 13);
   } else {
     // Last month's 13th
-    return new Date(year, month - 1, 13);
+    cycleStart = new Date(year, month - 1, 13);
   }
+  cycleStart.setHours(0, 0, 0, 0);
+  return cycleStart;
 };
 
 export default function App() {
@@ -205,33 +215,38 @@ export default function App() {
       let totalMonthlyTarget = 0;
 
       currentContacts.forEach(contact => {
-        // Use 30000 as a default target if not specified
+        // Use 30000 LKR as the default monthly target if not set
         const target = contact.targetAmount || 30000;
         totalMonthlyTarget += target;
 
         const payments = transactions
-          .filter(t => t.contactId === contact.id && t.type === 'PAYMENT' && new Date(t.date) >= cycleStart)
+          .filter(t => {
+            const isMatch = t.contactId === contact.id && t.type === 'PAYMENT';
+            if (!isMatch) return false;
+            const tDate = normalizeDate(t.date);
+            return tDate >= cycleStart;
+          })
           .reduce((sum, t) => sum + t.amount, 0);
         
         totalSavedInCycle += payments;
       });
 
+      // Remaining Amount (Debt) = Target - Saved
       const currentDebt = Math.max(0, totalMonthlyTarget - totalSavedInCycle);
       return { 
-        totalPayments: totalSavedInCycle, // "Rent Saved"
-        netBalance: currentDebt // "Current Debt"
+        totalPayments: totalSavedInCycle, // Displays as "Rent Saved"
+        netBalance: currentDebt // Displays as "Current Debt" (Remaining)
       };
     } else {
       // Logic for Supplier/Customer
-      // Total Payments made (Sum of all PAYMENT type entries)
+      // Total Payments made (Sum of all PAYMENT entries)
       const totalPayments = transactions
         .filter(t => contactIds.includes(t.contactId) && t.type === 'PAYMENT')
         .reduce((acc, t) => acc + t.amount, 0);
 
-      // Current Net Balance (Sum of positive balances)
+      // Current Net Balance (Outstanding debt/credit)
       const netBalance = currentContacts
-        .filter(c => c.balance > 0)
-        .reduce((acc, c) => acc + c.balance, 0);
+        .reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
 
       return { totalPayments, netBalance };
     }
@@ -378,23 +393,23 @@ export default function App() {
         </header>
 
         <div className="p-4 flex flex-col gap-4">
-          {/* Dual Summary Cards with Dynamic Labels */}
+          {/* Dual Summary Cards */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[11px] text-slate-600 font-medium mb-1">
+              <p className="text-[11px] text-slate-600 font-medium mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Rent Saved' : (activeTab === 'SUPPLIER' ? 'Total Paid' : 'Total Received')}
               </p>
               <p className="text-lg font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[11px] text-slate-600 font-medium mb-1">
+              <p className="text-[11px] text-slate-600 font-medium mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Current Debt' : (activeTab === 'SUPPLIER' ? 'To pay' : 'To collect')}
               </p>
               <p className="text-lg font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
             </div>
           </div>
 
-          {/* Search & Filter Bar UI */}
+          {/* Search & Filter Bar */}
           <div className="flex gap-2">
             <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all">
               <Search size={18} className="text-slate-400 mr-3" />
@@ -425,7 +440,7 @@ export default function App() {
                 </div>
                 <div className="text-right">
                   <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
-                    {c.type === 'RENT' ? 'Total Saved' : 'Balance'}
+                    {c.type === 'RENT' ? 'Current Cycle' : 'Balance'}
                   </p>
                   <p className={`font-bold text-[15px] ${c.balance > 0 ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
                     Rs. {Math.abs(c.balance).toLocaleString()}
@@ -443,7 +458,7 @@ export default function App() {
     );
   }
 
-  // Rest of views (ADD_CONTACT, DETAIL, TRANSACTION_FORM, CASH_BOOK) remain the same...
+  // Views for adding contact, details, forms, etc.
   if (currentView === 'ADD_CONTACT') {
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -453,6 +468,12 @@ export default function App() {
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label>
             <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
           </div>
+          {activeTab === 'RENT' && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label>
+              <input type="number" defaultValue={30000} placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
+            </div>
+          )}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone (Optional)</label>
             <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="07XXXXXXXX" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
@@ -503,7 +524,7 @@ export default function App() {
               Rs. {Math.abs(selectedContact.balance).toLocaleString()}
             </h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">
-              {selectedContact.balance > 0 ? (isRent ? 'Total Savings' : (isSupplier ? 'You Owe Him' : 'He Owes You')) : 'Account Settled'}
+              {isRent ? 'Current Balance' : (selectedContact.balance > 0 ? (isSupplier ? 'You Owe Him' : 'He Owes You') : 'Settled')}
             </p>
           </div>
         </div>
