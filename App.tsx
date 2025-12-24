@@ -89,22 +89,27 @@ export default function App() {
   const theme = THEMES['blue'];
 
   // -----------------------------------------------------------------
-  // DERIVED STATE: BALANCES
+  // DERIVED STATE: STATS & BALANCES
   // -----------------------------------------------------------------
-  const contactBalances = useMemo(() => {
-    const balances: Record<string, number> = {};
-    contacts.forEach(c => balances[c.id] = 0);
+  const contactStats = useMemo(() => {
+    const stats: Record<string, { totalCredit: number; totalPayment: number; balance: number }> = {};
+    contacts.forEach(c => stats[c.id] = { totalCredit: 0, totalPayment: 0, balance: 0 });
+    
     transactions.forEach(t => {
-      const contact = contacts.find(c => c.id === t.contactId);
-      if (!contact) return;
-      
-      if (contact.type === 'RENT') {
-        balances[t.contactId] += (t.type === 'PAYMENT' ? t.amount : -t.amount);
+      if (!stats[t.contactId]) return;
+      if (t.type === 'CREDIT') stats[t.contactId].totalCredit += t.amount;
+      else stats[t.contactId].totalPayment += t.amount;
+    });
+
+    contacts.forEach(c => {
+      const s = stats[c.id];
+      if (c.type === 'RENT') {
+        s.balance = s.totalPayment - s.totalCredit; // Savings = Deposits - Withdrawals
       } else {
-        balances[t.contactId] += (t.type === 'CREDIT' ? t.amount : -t.amount);
+        s.balance = s.totalCredit - s.totalPayment; // Debt = Items/Credit - Payments
       }
     });
-    return balances;
+    return stats;
   }, [contacts, transactions]);
 
   const cycleSavingsMap = useMemo(() => {
@@ -128,22 +133,20 @@ export default function App() {
       let totalTarget = 0;
       let totalSavedInCycle = 0;
       currentContacts.forEach(c => {
-        totalPayments += contactBalances[c.id] || 0;
+        totalPayments += contactStats[c.id]?.balance || 0;
         totalSavedInCycle += cycleSavingsMap[c.id] || 0;
         totalTarget += c.targetAmount || 30000;
       });
       netBalance = Math.max(0, totalTarget - totalSavedInCycle);
     } else {
       currentContacts.forEach(c => {
-        const bal = contactBalances[c.id] || 0;
+        const bal = contactStats[c.id]?.balance || 0;
         if (bal > 0) netBalance += bal;
-        totalPayments += transactions
-          .filter(t => t.contactId === c.id && t.type === 'PAYMENT')
-          .reduce((sum, tx) => sum + tx.amount, 0);
+        totalPayments += contactStats[c.id]?.totalPayment || 0;
       });
     }
     return { totalPayments, netBalance };
-  }, [contacts, transactions, activeTab, contactBalances, cycleSavingsMap]);
+  }, [contacts, activeTab, contactStats, cycleSavingsMap]);
 
   // Derived totals for the reporting modal summary
   const reportTotals = useMemo(() => {
@@ -186,7 +189,7 @@ export default function App() {
     const tableData = currentContacts.map(c => [
       c.name,
       c.phone || '-',
-      `Rs. ${Math.abs(contactBalances[c.id] || 0).toLocaleString()}`
+      `Rs. ${Math.abs(contactStats[c.id]?.balance || 0).toLocaleString()}`
     ]);
     
     const totalLabel = activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'SUPPLIER' ? 'Total to Pay' : 'Total to Collect');
@@ -484,19 +487,35 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             {filtered.map(c => {
-              const displayBal = contactBalances[c.id] || 0;
+              const stats = contactStats[c.id];
+              const displayBal = stats?.balance || 0;
+              
+              // Define labels based on tab
+              const leftLabel = c.type === 'SUPPLIER' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
+              const rightLabel = c.type === 'SUPPLIER' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
+              
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
                       {c.name[0]}
                     </div>
-                    <div>
-                      <h3 className="font-semibold text-slate-800 text-sm">{c.name}</h3>
-                      {c.phone && <p className="text-[10px] text-gray-400">{c.phone}</p>}
+                    <div className="overflow-hidden">
+                      <h3 className="font-semibold text-slate-800 text-sm truncate">{c.name}</h3>
+                      {/* Summary Totals added here */}
+                      <div className="flex items-center gap-3 mt-1">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
+                          <span className="text-[10px] font-bold text-red-600">Rs.{stats.totalCredit.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] text-gray-400 font-bold uppercase">{rightLabel}:</span>
+                          <span className="text-[10px] font-bold text-green-600">Rs.{stats.totalPayment.toLocaleString()}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right shrink-0 ml-2">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
                     <p className={`font-bold text-[15px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>
                       Rs. {Math.abs(displayBal).toLocaleString()}
@@ -531,7 +550,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Summary Section before Download */}
                 <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
                    <div className="flex justify-between items-center">
                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
@@ -582,7 +600,10 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
-          <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone || 'No phone'}</p></div>
+          <div className="flex-1 overflow-hidden">
+            <h1 className="font-bold text-lg truncate">{selectedContact.name}</h1>
+            <p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone || 'No phone'}</p>
+          </div>
           <button 
             onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }}
             className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm"
@@ -601,8 +622,8 @@ export default function App() {
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
-            <h2 className={`text-3xl font-bold ${contactBalances[selectedContact.id] > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
-              Rs. {Math.abs(contactBalances[selectedContact.id]).toLocaleString()}
+            <h2 className={`text-3xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+              Rs. {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}
             </h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Total Balance'}</p>
           </div>
