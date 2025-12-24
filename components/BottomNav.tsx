@@ -3,11 +3,10 @@ import { BookText, Wallet, Receipt, UserCircle } from 'lucide-react';
 
 interface BottomNavProps {
   currentView: string;
-  onNavigate: (view: any) => void;
-  activeTheme: string; // 'blue' | 'purple' | etc
+  onNavigate: (view: string) => void;
+  activeTheme: string;
 }
 
-// Helper to get text color class based on theme
 const getThemeTextColor = (theme: string) => {
   const colors: Record<string, string> = {
     blue: 'text-blue-600',
@@ -22,11 +21,12 @@ const getThemeTextColor = (theme: string) => {
 export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, activeTheme }) => {
   const activeColorClass = getThemeTextColor(activeTheme);
   
-  const isDashboard = currentView === 'DASHBOARD' || currentView === 'DETAIL';
+  const isDashboard = currentView === 'DASHBOARD' || currentView === 'DETAIL' || currentView === 'TRANSACTION_FORM';
+  const isCashBook = currentView === 'CASH_BOOK';
   const isProfile = currentView === 'PROFILE';
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 py-2 px-6 flex justify-between items-center z-40 pb-safe">
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 py-2 px-6 flex justify-between items-center z-40 pb-safe shadow-[0_-1px_10px_rgba(0,0,0,0.05)]">
       <button 
         onClick={() => onNavigate('DASHBOARD')}
         className={`flex flex-col items-center gap-1 transition-colors ${isDashboard ? activeColorClass : 'text-gray-400'}`}
@@ -35,12 +35,15 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, a
         <span className="text-[10px] font-medium">Credit Book</span>
       </button>
       
-      <button className="flex flex-col items-center text-gray-400 gap-1">
+      <button 
+        onClick={() => onNavigate('CASH_BOOK')}
+        className={`flex flex-col items-center gap-1 transition-colors ${isCashBook ? activeColorClass : 'text-gray-400'}`}
+      >
         <Wallet size={20} />
         <span className="text-[10px] font-medium">Cash Book</span>
       </button>
       
-      <button className="flex flex-col items-center text-gray-400 gap-1">
+      <button className="flex flex-col items-center text-gray-400 gap-1 opacity-50">
         <Receipt size={20} />
         <span className="text-[10px] font-medium">Invoice</span>
       </button>
