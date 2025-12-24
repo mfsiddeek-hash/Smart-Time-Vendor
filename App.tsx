@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, Transaction, ContactType, TransactionType } from './types';
+import { Contact, ContactType, Transaction, TransactionType } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { supabase } from './supabaseClient';
@@ -40,6 +40,21 @@ const generateUUID = () => {
     var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+};
+
+// Helper for Rent Cycle (13th to 13th)
+const getRentCycleStart = () => {
+  const now = new Date();
+  const day = now.getDate();
+  const month = now.getMonth();
+  const year = now.getFullYear();
+  
+  if (day >= 13) {
+    return new Date(year, month, 13);
+  } else {
+    // Last month's 13th
+    return new Date(year, month - 1, 13);
+  }
 };
 
 export default function App() {
@@ -183,18 +198,43 @@ export default function App() {
   const activeTotals = useMemo(() => {
     const currentContacts = contacts.filter(c => c.type === activeTab);
     const contactIds = currentContacts.map(c => c.id);
-    
-    // Sum of all PAYMENT transactions for the active tab (Total Paid/Received)
-    const totalPayments = transactions
-      .filter(t => contactIds.includes(t.contactId) && t.type === 'PAYMENT')
-      .reduce((acc, t) => acc + t.amount, 0);
 
-    // Sum of all positive balances (Net Debt/Owed)
-    const netBalance = currentContacts
-      .filter(c => c.balance > 0)
-      .reduce((acc, c) => acc + c.balance, 0);
+    if (activeTab === 'RENT') {
+      const cycleStart = getRentCycleStart();
+      let totalSavedInCycle = 0;
+      let totalMonthlyTarget = 0;
 
-    return { totalPayments, netBalance };
+      currentContacts.forEach(contact => {
+        // Use 30000 as a default target if not specified
+        const target = contact.targetAmount || 30000;
+        totalMonthlyTarget += target;
+
+        const payments = transactions
+          .filter(t => t.contactId === contact.id && t.type === 'PAYMENT' && new Date(t.date) >= cycleStart)
+          .reduce((sum, t) => sum + t.amount, 0);
+        
+        totalSavedInCycle += payments;
+      });
+
+      const currentDebt = Math.max(0, totalMonthlyTarget - totalSavedInCycle);
+      return { 
+        totalPayments: totalSavedInCycle, // "Rent Saved"
+        netBalance: currentDebt // "Current Debt"
+      };
+    } else {
+      // Logic for Supplier/Customer
+      // Total Payments made (Sum of all PAYMENT type entries)
+      const totalPayments = transactions
+        .filter(t => contactIds.includes(t.contactId) && t.type === 'PAYMENT')
+        .reduce((acc, t) => acc + t.amount, 0);
+
+      // Current Net Balance (Sum of positive balances)
+      const netBalance = currentContacts
+        .filter(c => c.balance > 0)
+        .reduce((acc, c) => acc + c.balance, 0);
+
+      return { totalPayments, netBalance };
+    }
   }, [contacts, transactions, activeTab]);
 
   const cashSummary = useMemo(() => {
@@ -209,10 +249,18 @@ export default function App() {
     if (!addName.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const payload = { id: generateUUID(), name: addName, phone: addPhone, type: activeTab, balance: 0, last_updated: new Date().toISOString() };
+      const payload = { 
+        id: generateUUID(), 
+        name: addName, 
+        phone: addPhone, 
+        type: activeTab, 
+        balance: 0, 
+        target_amount: activeTab === 'RENT' ? 30000 : null,
+        last_updated: new Date().toISOString() 
+      };
       const { data, error } = await supabase.from('contacts').insert([payload]).select();
       if (error) throw error;
-      if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated }]);
+      if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated, targetAmount: payload.target_amount }]);
       setAddName(''); setAddPhone('');
       handleBack();
     } catch (err: any) { alert(err.message); }
@@ -330,17 +378,17 @@ export default function App() {
         </header>
 
         <div className="p-4 flex flex-col gap-4">
-          {/* Restored Summary Cards as seen in screenshots */}
+          {/* Dual Summary Cards with Dynamic Labels */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[11px] text-slate-600 font-medium mb-1">
-                {activeTab === 'SUPPLIER' ? 'Total Paid' : activeTab === 'CUSTOMER' ? 'Total Received' : 'Rent Saved'}
+                {activeTab === 'RENT' ? 'Rent Saved' : (activeTab === 'SUPPLIER' ? 'Total Paid' : 'Total Received')}
               </p>
               <p className="text-lg font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[11px] text-slate-600 font-medium mb-1">
-                {activeTab === 'SUPPLIER' ? 'To pay' : activeTab === 'CUSTOMER' ? 'To collect' : 'Current Debt'}
+                {activeTab === 'RENT' ? 'Current Debt' : (activeTab === 'SUPPLIER' ? 'To pay' : 'To collect')}
               </p>
               <p className="text-lg font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
             </div>
@@ -376,7 +424,9 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">
+                    {c.type === 'RENT' ? 'Total Saved' : 'Balance'}
+                  </p>
                   <p className={`font-bold text-[15px] ${c.balance > 0 ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
                     Rs. {Math.abs(c.balance).toLocaleString()}
                   </p>
@@ -393,7 +443,7 @@ export default function App() {
     );
   }
 
-  // View: ADD_CONTACT
+  // Rest of views (ADD_CONTACT, DETAIL, TRANSACTION_FORM, CASH_BOOK) remain the same...
   if (currentView === 'ADD_CONTACT') {
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -419,7 +469,6 @@ export default function App() {
     );
   }
 
-  // View: DETAIL
   if (currentView === 'DETAIL' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
@@ -485,7 +534,6 @@ export default function App() {
     );
   }
 
-  // View: TRANSACTION_FORM
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
@@ -504,10 +552,8 @@ export default function App() {
         <div className="p-6 flex-1">
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Amount</label>
           <input type="number" value={transAmount} onChange={e => setTransAmount(e.target.value)} placeholder="0.00" className={`w-full text-5xl font-bold mb-8 outline-none border-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} autoFocus />
-          
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Transaction Date</label>
           <input type="date" value={transDate} onChange={e => setTransDate(e.target.value)} className="w-full border-b mb-8 py-3 font-semibold outline-none focus:border-blue-500 transition-colors" />
-          
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Description / Notes</label>
           <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Add items or cash details..." className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-32 outline-none focus:border-slate-300 transition-colors" />
         </div>
@@ -520,7 +566,6 @@ export default function App() {
     );
   }
 
-  // View: CASH_BOOK
   if (currentView === 'CASH_BOOK') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-24 no-scrollbar">
