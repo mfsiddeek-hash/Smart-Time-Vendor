@@ -145,6 +145,30 @@ export default function App() {
     return { totalPayments, netBalance };
   }, [contacts, transactions, activeTab, contactBalances, cycleSavingsMap]);
 
+  // Derived totals for the reporting modal summary
+  const reportTotals = useMemo(() => {
+    const start = normalizeToLocalMidnight(reportRange.start);
+    const end = normalizeToLocalMidnight(reportRange.end);
+    
+    let filteredTransactions = [];
+    if (reportTarget === 'CATEGORY') {
+      const categoryContacts = contacts.filter(c => c.type === activeTab).map(c => c.id);
+      filteredTransactions = transactions.filter(t => categoryContacts.includes(t.contactId));
+    } else if (selectedContact) {
+      filteredTransactions = transactions.filter(t => t.contactId === selectedContact.id);
+    }
+
+    const rangeTransactions = filteredTransactions.filter(t => {
+      const d = normalizeToLocalMidnight(t.date);
+      return d >= start && d <= end;
+    });
+
+    const totalPaid = rangeTransactions.filter(t => t.type === 'PAYMENT').reduce((sum, t) => sum + t.amount, 0);
+    const totalCredit = rangeTransactions.filter(t => t.type === 'CREDIT').reduce((sum, t) => sum + t.amount, 0);
+
+    return { totalPaid, totalCredit };
+  }, [transactions, contacts, activeTab, selectedContact, reportRange, reportTarget]);
+
   // -----------------------------------------------------------------
   // REPORT GENERATION (PDF)
   // -----------------------------------------------------------------
@@ -159,9 +183,6 @@ export default function App() {
     doc.text(`Generated: ${timestamp}`, 14, 28);
     doc.text(`Period: ${reportRange.start} to ${reportRange.end}`, 14, 33);
     
-    // Filter transactions by date to get the balance *in that range* or just current status?
-    // Usually, users want "Current Balance" but filtered activity. 
-    // For a summary, we show contacts and their current status.
     const tableData = currentContacts.map(c => [
       c.name,
       c.phone || '-',
@@ -197,7 +218,6 @@ export default function App() {
     doc.setFontSize(10);
     doc.text(`Period: ${reportRange.start} to ${reportRange.end} | Generated: ${timestamp}`, 14, 38);
     
-    // Filter transactions by selected range
     const start = normalizeToLocalMidnight(reportRange.start);
     const end = normalizeToLocalMidnight(reportRange.end);
 
@@ -490,26 +510,48 @@ export default function App() {
 
         {/* Reporting Modal */}
         {isReportModalOpen && (
-          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-6 backdrop-blur-sm">
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-6 backdrop-blur-md">
             <div className="bg-white w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-              <div className="p-6 border-b flex justify-between items-center">
-                <h3 className="font-bold text-lg">Generate Report</h3>
-                <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-gray-100 rounded-full"><X size={18} /></button>
+              <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+                <div>
+                  <h3 className="font-bold text-lg">Generate Report</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">{reportTarget === 'CATEGORY' ? activeTab : selectedContact?.name}</p>
+                </div>
+                <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm"><X size={18} /></button>
               </div>
               <div className="p-6 flex flex-col gap-4">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
-                  <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold" />
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
+                    <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
+                    <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+                  </div>
                 </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
-                  <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold" />
+
+                {/* Summary Section before Download */}
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
+                   <div className="flex justify-between items-center">
+                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                       {activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items')}
+                     </span>
+                     <span className="font-bold text-red-600 text-sm">Rs. {reportTotals.totalCredit.toLocaleString()}</span>
+                   </div>
+                   <div className="flex justify-between items-center">
+                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                       {activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid')}
+                     </span>
+                     <span className="font-bold text-green-600 text-sm">Rs. {reportTotals.totalPaid.toLocaleString()}</span>
+                   </div>
                 </div>
+
                 <button 
                   onClick={() => reportTarget === 'CATEGORY' ? downloadCategoryReport() : (selectedContact && downloadContactStatement(selectedContact))}
-                  className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-4 shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                  className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-2 shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                 >
-                  <FileText size={18} /> Download PDF
+                  <Download size={18} /> Download PDF Report
                 </button>
               </div>
             </div>
