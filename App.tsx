@@ -5,7 +5,7 @@ import {
   ChevronDown, Filter, Download, Trash2, Calculator, FilePlus, Loader2, 
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
-  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert
+  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -67,13 +67,23 @@ export default function App() {
 
   // Form States
   const [addName, setAddName] = useState('');
+  const [addPhone, setAddPhone] = useState('');
   const [targetAmount, setTargetAmount] = useState('30000');
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
   
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transType, setTransType] = useState<TransactionType>('CREDIT');
   const [transAmount, setTransAmount] = useState('');
   const [transDate, setTransDate] = useState(new Date().toISOString().slice(0, 10));
   const [transDesc, setTransDesc] = useState('');
+
+  // Report States
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportRange, setReportRange] = useState({
+    start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
+    end: new Date().toISOString().slice(0, 10)
+  });
+  const [reportTarget, setReportTarget] = useState<'CATEGORY' | 'CONTACT'>('CATEGORY');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
   const theme = THEMES['blue'];
@@ -144,12 +154,17 @@ export default function App() {
     const currentContacts = contacts.filter(c => c.type === activeTab);
     
     doc.setFontSize(20);
-    doc.text(`${shopName} - ${activeTab} Report`, 14, 20);
+    doc.text(`${shopName} - ${activeTab} Summary`, 14, 20);
     doc.setFontSize(10);
-    doc.text(`Generated on: ${timestamp}`, 14, 30);
+    doc.text(`Generated: ${timestamp}`, 14, 28);
+    doc.text(`Period: ${reportRange.start} to ${reportRange.end}`, 14, 33);
     
+    // Filter transactions by date to get the balance *in that range* or just current status?
+    // Usually, users want "Current Balance" but filtered activity. 
+    // For a summary, we show contacts and their current status.
     const tableData = currentContacts.map(c => [
       c.name,
+      c.phone || '-',
       `Rs. ${Math.abs(contactBalances[c.id] || 0).toLocaleString()}`
     ]);
     
@@ -158,15 +173,16 @@ export default function App() {
 
     autoTable(doc, {
       startY: 40,
-      head: [['Name', 'Balance']],
+      head: [['Name', 'Phone', 'Current Balance']],
       body: tableData,
       theme: 'striped',
-      headStyles: { fillStyle: 'F', fillColor: [51, 65, 85] },
-      foot: [[totalLabel, `Rs. ${totalAmount.toLocaleString()}`]],
+      headStyles: { fillColor: [51, 65, 85] },
+      foot: [['Total', '', `Rs. ${totalAmount.toLocaleString()}`]],
       footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
     });
     
     doc.save(`${activeTab.toLowerCase()}_report_${Date.now()}.pdf`);
+    setIsReportModalOpen(false);
   };
 
   const downloadContactStatement = (contact: Contact) => {
@@ -179,10 +195,18 @@ export default function App() {
     doc.setFontSize(12);
     doc.text(`Statement for: ${contact.name}`, 14, 30);
     doc.setFontSize(10);
-    doc.text(`Date Range: All Time | Generated: ${timestamp}`, 14, 38);
+    doc.text(`Period: ${reportRange.start} to ${reportRange.end} | Generated: ${timestamp}`, 14, 38);
     
+    // Filter transactions by selected range
+    const start = normalizeToLocalMidnight(reportRange.start);
+    const end = normalizeToLocalMidnight(reportRange.end);
+
     const contactTransactions = transactions
       .filter(t => t.contactId === contact.id)
+      .filter(t => {
+        const d = normalizeToLocalMidnight(t.date);
+        return d >= start && d <= end;
+      })
       .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     
     let runningBal = 0;
@@ -207,11 +231,12 @@ export default function App() {
       body: tableRows,
       theme: 'grid',
       headStyles: { fillColor: [59, 130, 246] },
-      foot: [['', '', 'FINAL BALANCE', '', `Rs. ${runningBal.toLocaleString()}`]],
+      foot: [['', '', 'PERIOD TOTAL', '', `Rs. ${runningBal.toLocaleString()}`]],
       footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
     });
     
     doc.save(`${contact.name.replace(/\s+/g, '_')}_statement.pdf`);
+    setIsReportModalOpen(false);
   };
 
   // -----------------------------------------------------------------
@@ -271,19 +296,48 @@ export default function App() {
   // -----------------------------------------------------------------
   const handleBack = () => { window.history.back(); };
 
-  const handleAddContact = async () => {
+  const handleSaveContact = async () => {
     if (!addName.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
       const payload = { 
-        id: generateUUID(), name: addName, type: activeTab, balance: 0, 
+        name: addName, 
+        phone: addPhone,
+        type: activeTab, 
         target_amount: activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null, 
         last_updated: new Date().toISOString() 
       };
-      const { data, error } = await supabase.from('contacts').insert([payload]).select();
-      if (error) throw error;
-      if (data) setContacts([...contacts, { ...payload, lastUpdated: payload.last_updated, targetAmount: payload.target_amount }]);
-      setAddName(''); setTargetAmount('30000');
+      
+      let res;
+      if (editingContact) {
+        res = await supabase.from('contacts').update(payload).eq('id', editingContact.id).select();
+      } else {
+        const newId = generateUUID();
+        res = await supabase.from('contacts').insert([{ ...payload, id: newId, balance: 0 }]).select();
+      }
+
+      if (res.error) throw res.error;
+      
+      if (res.data) {
+        const updatedContact = {
+          id: res.data[0].id,
+          name: res.data[0].name,
+          phone: res.data[0].phone || '',
+          type: res.data[0].type,
+          balance: res.data[0].balance || 0,
+          targetAmount: res.data[0].target_amount,
+          lastUpdated: res.data[0].last_updated
+        };
+        
+        if (editingContact) {
+          setContacts(contacts.map(c => c.id === editingContact.id ? updatedContact : c));
+          if (selectedContact?.id === editingContact.id) setSelectedContact(updatedContact);
+        } else {
+          setContacts([...contacts, updatedContact]);
+        }
+      }
+      
+      setAddName(''); setAddPhone(''); setTargetAmount('30000'); setEditingContact(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
@@ -309,10 +363,8 @@ export default function App() {
     try {
       const { error } = await supabase.from('transactions').delete().eq('id', editingTransaction.id);
       if (error) throw error;
-      
       const newTransactions = transactions.filter(t => t.id !== editingTransaction.id);
       setTransactions(newTransactions);
-      
       setEditingTransaction(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
@@ -323,13 +375,11 @@ export default function App() {
     if (!selectedContact || isSubmitting) return;
     const amountVal = parseFloat(transAmount) || 0;
     setIsSubmitting(true);
-    
     try {
       const txPayload = { 
         contact_id: selectedContact.id, date: transDate, amount: amountVal, 
         type: transType, description: transDesc, balance_after: 0 
       };
-      
       let res;
       if (editingTransaction) { 
         res = await supabase.from('transactions').update(txPayload).eq('id', editingTransaction.id).select(); 
@@ -337,7 +387,6 @@ export default function App() {
         res = await supabase.from('transactions').insert([txPayload]).select(); 
       }
       if (res.error) throw res.error;
-      
       if (res.data) {
         const saved = { 
           id: res.data[0].id, contactId: res.data[0].contact_id, date: res.data[0].date, 
@@ -403,15 +452,13 @@ export default function App() {
               <Search size={18} className="text-slate-400 mr-3" />
               <input type="text" placeholder="Search name or number here" className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
-            {activeTab !== 'RENT' && (
-              <button 
-                onClick={downloadCategoryReport}
-                className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"
-                title="Download Category Report"
-              >
-                <Download size={18} />
-              </button>
-            )}
+            <button 
+              onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }}
+              className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"
+              title="Download Report"
+            >
+              <Download size={18} />
+            </button>
             <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"><Filter size={18} /></button>
           </div>
 
@@ -424,7 +471,10 @@ export default function App() {
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
                       {c.name[0]}
                     </div>
-                    <h3 className="font-semibold text-slate-800 text-sm">{c.name}</h3>
+                    <div>
+                      <h3 className="font-semibold text-slate-800 text-sm">{c.name}</h3>
+                      {c.phone && <p className="text-[10px] text-gray-400">{c.phone}</p>}
+                    </div>
                   </div>
                   <div className="text-right">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
@@ -437,7 +487,36 @@ export default function App() {
             })}
           </div>
         </div>
-        <button onClick={() => navigateTo('ADD_CONTACT')} className="fixed bottom-24 right-4 w-14 h-14 bg-blue-600 text-white rounded-full shadow-xl flex items-center justify-center z-30 active:scale-90 transition-all"><Plus size={28} /></button>
+
+        {/* Reporting Modal */}
+        {isReportModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-6 backdrop-blur-sm">
+            <div className="bg-white w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="p-6 border-b flex justify-between items-center">
+                <h3 className="font-bold text-lg">Generate Report</h3>
+                <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-gray-100 rounded-full"><X size={18} /></button>
+              </div>
+              <div className="p-6 flex flex-col gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
+                  <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold" />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
+                  <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold" />
+                </div>
+                <button 
+                  onClick={() => reportTarget === 'CATEGORY' ? downloadCategoryReport() : (selectedContact && downloadContactStatement(selectedContact))}
+                  className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-4 shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  <FileText size={18} /> Download PDF
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button onClick={() => navigateTo('CONTACT_FORM')} className="fixed bottom-24 right-4 w-14 h-14 bg-blue-600 text-white rounded-full shadow-xl flex items-center justify-center z-30 active:scale-90 transition-all"><Plus size={28} /></button>
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
     );
@@ -461,13 +540,20 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
-          <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone}</p></div>
+          <div className="flex-1"><h1 className="font-bold text-lg">{selectedContact.name}</h1><p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone || 'No phone'}</p></div>
           <button 
-            onClick={() => downloadContactStatement(selectedContact)}
+            onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }}
             className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm"
             title="Download Statement"
           >
-            <FileText size={18} />
+            <Download size={18} />
+          </button>
+          <button 
+            onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); navigateTo('CONTACT_FORM'); }}
+            className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm"
+            title="Edit Contact"
+          >
+            <Pencil size={18} />
           </button>
           <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
         </header>
@@ -483,6 +569,7 @@ export default function App() {
           {computedWithBalance.map(t => (
             <TransactionRow key={t.id} transaction={t} onClick={(tx) => { setEditingTransaction(tx); setTransType(tx.type); setTransAmount(tx.amount.toString()); setTransDate(tx.date); setTransDesc(tx.description || ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} />
           ))}
+          {computedWithBalance.length === 0 && <div className="p-16 text-center text-slate-400">No transactions recorded yet</div>}
         </div>
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
           <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
@@ -533,14 +620,18 @@ export default function App() {
     );
   }
 
-  if (currentView === 'ADD_CONTACT') {
+  if (currentView === 'CONTACT_FORM') {
     return (
       <div className="min-h-screen bg-white flex flex-col">
-        <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">New {activeTab}</h1></header>
+        <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{editingContact ? 'Edit' : 'New'} {activeTab}</h1></header>
         <div className="p-6 flex flex-col gap-6">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label>
             <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Number</label>
+            <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="Enter Phone" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
           </div>
           {activeTab === 'RENT' && (
             <div className="flex flex-col gap-1">
@@ -548,7 +639,9 @@ export default function App() {
               <input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
             </div>
           )}
-          <button disabled={isSubmitting} onClick={handleAddContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all">{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Save Contact'}</button>
+          <button disabled={isSubmitting} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all">
+            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update Contact' : 'Save Contact')}
+          </button>
         </div>
       </div>
     );
