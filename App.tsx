@@ -7,7 +7,7 @@ import {
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown
 } from 'lucide-react';
-import { jsPDF } from 'jsPDF';
+import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, Transaction, ContactType, TransactionType } from './types';
 import { BottomNav } from './components/BottomNav';
@@ -180,12 +180,12 @@ export default function App() {
     });
   }, [contacts, activeTab, searchQuery]);
 
-  const totals = useMemo(() => {
-    const sT = contacts.filter(c => c.type === 'SUPPLIER').reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
-    const cT = contacts.filter(c => c.type === 'CUSTOMER').reduce((acc, c) => acc + (c.balance > 0 ? c.balance : 0), 0);
-    const rS = contacts.filter(c => c.type === 'RENT').reduce((acc, c) => acc + c.balance, 0);
-    return { supplierTotal: sT, customerToCollect: cT, rentSaved: rS };
-  }, [contacts]);
+  const activeTotals = useMemo(() => {
+    const currentContacts = contacts.filter(c => c.type === activeTab);
+    const positive = currentContacts.filter(c => c.balance > 0).reduce((acc, c) => acc + c.balance, 0);
+    const negative = currentContacts.filter(c => c.balance < 0).reduce((acc, c) => acc + Math.abs(c.balance), 0);
+    return { positive, negative };
+  }, [contacts, activeTab]);
 
   const cashSummary = useMemo(() => {
     const totalIn = cashTransactions.filter(t => t.type === 'IN').reduce((s, t) => s + t.amount, 0);
@@ -212,18 +212,15 @@ export default function App() {
   const handleSaveTransaction = async () => {
     if (!selectedContact || isSubmitting) return;
     const amountVal = parseFloat(transAmount) || 0;
-    if (amountVal < 0) return; // Allow 0 for descriptions maybe? But usually > 0
+    if (amountVal < 0) return;
 
     setIsSubmitting(true);
-    // Reconciliation if we were editing (revert old balance first)
     let currentBalance = selectedContact.balance;
     if (editingTransaction) {
       const oldAmount = editingTransaction.amount;
       if (selectedContact.type === 'RENT') {
-        // Revert Rent: Payment was Deposit(+), Credit was Withdrawal(-)
         currentBalance = editingTransaction.type === 'PAYMENT' ? currentBalance - oldAmount : currentBalance + oldAmount;
       } else {
-        // Revert Customer/Supplier: Credit was Debt(+), Payment was Paid(-)
         currentBalance = editingTransaction.type === 'CREDIT' ? currentBalance - oldAmount : currentBalance + oldAmount;
       }
     }
@@ -276,18 +273,15 @@ export default function App() {
 
   const handleDeleteTransaction = async () => {
     if (!selectedContact || !editingTransaction || isSubmitting) return;
-    if (!window.confirm("Are you sure you want to delete this transaction? This will permanently adjust the balance.")) return;
+    if (!window.confirm("Are you sure you want to delete this transaction?")) return;
 
     setIsSubmitting(true);
     let newBalance = selectedContact.balance;
     const amount = editingTransaction.amount;
     
-    // Reverse the transaction effect on the total balance
     if (selectedContact.type === 'RENT') {
-      // Revert Rent: Payment was Deposit (+), Credit was Withdrawal (-)
       newBalance = editingTransaction.type === 'PAYMENT' ? newBalance - amount : newBalance + amount;
     } else {
-      // Revert Customer/Supplier: Credit was Debt (+), Payment was Paid (-)
       newBalance = editingTransaction.type === 'CREDIT' ? newBalance - amount : newBalance + amount;
     }
 
@@ -325,29 +319,72 @@ export default function App() {
             <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Building size={18} />Rent</button>
           </div>
         </header>
+
         <div className="p-4 flex flex-col gap-4">
-          <div className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm">
-            <p className="text-[10px] text-gray-400 font-bold uppercase mb-1">Total {activeTab === 'CUSTOMER' ? 'to collect' : activeTab === 'SUPPLIER' ? 'to pay' : 'saved'}</p>
-            <p className={`text-xl font-bold ${activeTab === 'RENT' ? 'text-blue-600' : 'text-red-600'}`}>Rs. {(activeTab === 'CUSTOMER' ? totals.customerToCollect : activeTab === 'SUPPLIER' ? totals.supplierTotal : totals.rentSaved).toLocaleString()}</p>
+          {/* Restored Dual Summary Cards */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 shadow-sm flex flex-col justify-center">
+              <p className="text-[11px] text-slate-600 font-medium mb-1">
+                {activeTab === 'SUPPLIER' ? 'Supplier holds' : activeTab === 'CUSTOMER' ? 'Customer holds' : 'Overpaid Rent'}
+              </p>
+              <p className="text-lg font-bold text-green-700">Rs. {activeTotals.negative.toLocaleString()}</p>
+            </div>
+            <div className={`${activeTab === 'RENT' ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200'} border rounded-xl p-3 shadow-sm flex flex-col justify-center`}>
+              <p className="text-[11px] text-slate-600 font-medium mb-1">
+                {activeTab === 'SUPPLIER' ? 'To pay' : activeTab === 'CUSTOMER' ? 'To collect' : 'Rent Saved'}
+              </p>
+              <p className={`text-lg font-bold ${activeTab === 'RENT' ? 'text-blue-700' : 'text-red-700'}`}>Rs. {activeTotals.positive.toLocaleString()}</p>
+            </div>
           </div>
-          <div className="bg-gray-100 rounded-lg px-3 py-2.5 flex items-center"><Search size={18} className="text-gray-400 mr-2" /><input type="text" placeholder="Search name" className="bg-transparent outline-none text-sm w-full" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
+
+          {/* Updated Search & Filter UI */}
+          <div className="flex gap-2">
+            <div className="bg-gray-100 rounded-xl px-4 py-3 flex items-center flex-1">
+              <Search size={18} className="text-gray-400 mr-2" />
+              <input 
+                type="text" 
+                placeholder="Search name or number here" 
+                className="bg-transparent outline-none text-sm w-full placeholder:text-gray-400" 
+                value={searchQuery} 
+                onChange={(e) => setSearchQuery(e.target.value)} 
+              />
+            </div>
+            <button className="bg-blue-50 text-blue-600 p-3 rounded-xl border border-blue-100 active:bg-blue-100">
+              <Filter size={20} />
+            </button>
+          </div>
+
           <div className="flex flex-col gap-2">
             {filteredContacts.map(c => (
               <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer">
-                <div className="flex items-center gap-3"><div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${c.type === 'RENT' ? 'bg-blue-500' : 'bg-slate-400'}`}>{c.name[0]}</div><div><h3 className="font-semibold text-slate-800">{c.name}</h3><p className="text-xs text-gray-400">{c.phone}</p></div></div>
-                <div className="text-right"><p className="text-[10px] text-gray-400 font-bold uppercase">Balance</p><p className={`font-bold ${c.balance > 0 ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>{c.balance.toLocaleString()}</p></div>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${c.type === 'RENT' ? 'bg-blue-500' : 'bg-slate-400'}`}>
+                    {c.name[0]}
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-slate-800">{c.name}</h3>
+                    <p className="text-xs text-gray-400">{c.phone}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Balance</p>
+                  <p className={`font-bold ${c.balance > 0 ? (c.type === 'RENT' ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+                    {c.balance.toLocaleString()}
+                  </p>
+                </div>
               </div>
             ))}
-            {filteredContacts.length === 0 && <div className="text-center py-10 text-gray-400">No {activeTab.toLowerCase()} records found</div>}
+            {filteredContacts.length === 0 && <div className="text-center py-12 text-gray-400 text-sm">No {activeTab.toLowerCase()} records found</div>}
           </div>
         </div>
-        <button onClick={() => navigateTo('ADD_CONTACT')} className={`fixed bottom-20 right-4 w-14 h-14 ${theme.primary} text-white rounded-full shadow-xl flex items-center justify-center z-30`}><Plus size={24} /></button>
+        
+        <button onClick={() => navigateTo('ADD_CONTACT')} className={`fixed bottom-20 right-4 w-14 h-14 ${theme.primary} text-white rounded-full shadow-2xl flex items-center justify-center z-30 active:scale-95 transition-transform`}><Plus size={28} /></button>
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme={appTheme} />
       </div>
     );
   }
 
-  // VIEW: ADD_CONTACT
+  // Rest of the code remains same...
   if (currentView === 'ADD_CONTACT') {
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -367,15 +404,12 @@ export default function App() {
     );
   }
 
-  // VIEW: DETAIL
   if (currentView === 'DETAIL' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
-    
     const labelLeft = isRent ? "WITHDRAW" : (isSupplier ? "YOU GOT" : "YOU GAVE");
     const labelRight = isRent ? "DEPOSIT" : (isSupplier ? "YOU GAVE" : "YOU GOT");
 
-    // Dynamic running balance calculation
     const contactTransactions = transactions
       .filter(t => t.contactId === selectedContact.id)
       .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -383,7 +417,6 @@ export default function App() {
     let runningBalance = selectedContact.balance;
     const computedTransactions = contactTransactions.map((t) => {
       const displayTx = { ...t, balanceAfter: runningBalance };
-      // Work backward: If it was a deposit (+), we subtract it to find previous balance
       if (isRent) {
         runningBalance = t.type === 'PAYMENT' ? runningBalance - t.amount : runningBalance + t.amount;
       } else {
@@ -409,18 +442,14 @@ export default function App() {
         </div>
         <div className="flex-1 bg-white">
           {computedTransactions.map(t => (
-            <TransactionRow 
-              key={t.id} 
-              transaction={t} 
-              onClick={(tx) => {
+            <TransactionRow key={t.id} transaction={t} onClick={(tx) => {
                 setEditingTransaction(tx);
                 setTransType(tx.type);
                 setTransAmount(tx.amount.toString());
                 setTransDate(tx.date);
                 setTransDesc(tx.description || '');
                 navigateTo('TRANSACTION_FORM', selectedContact.id);
-              }}
-            />
+            }} />
           ))}
           {computedTransactions.length === 0 && <div className="p-10 text-center text-gray-400">No transactions recorded</div>}
         </div>
@@ -438,35 +467,17 @@ export default function App() {
     );
   }
 
-  // VIEW: TRANSACTION_FORM
   if (currentView === 'TRANSACTION_FORM' && selectedContact) {
     const isSupplier = selectedContact.type === 'SUPPLIER';
     const isRent = selectedContact.type === 'RENT';
-    
-    let title = "";
-    if (editingTransaction) {
-      title = "Edit Entry";
-    } else {
-      if (isRent) {
-        title = transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings";
-      } else {
-        title = transType === 'CREDIT' ? (isSupplier ? 'Received Items' : 'Gave Items') : (isSupplier ? 'Paid Money' : 'Received Money');
-      }
-    }
+    let title = editingTransaction ? "Edit Entry" : (isRent ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") : (transType === 'CREDIT' ? (isSupplier ? 'Received Items' : 'Gave Items') : (isSupplier ? 'Paid Money' : 'Received Money')));
 
     return (
       <div className="min-h-screen bg-white flex flex-col">
         <header className="px-4 py-4 border-b flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <button onClick={handleBack}><ChevronLeft size={24} /></button>
-            <h1 className="text-lg font-bold">{title}</h1>
-          </div>
+          <div className="flex items-center gap-4"><button onClick={handleBack}><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>
           {editingTransaction && (
-            <button 
-              disabled={isSubmitting}
-              onClick={handleDeleteTransaction} 
-              className="p-2 text-red-600 bg-red-50 rounded-full active:bg-red-100"
-            >
+            <button disabled={isSubmitting} onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:bg-red-100">
               {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : <Trash2 size={20} />}
             </button>
           )}
@@ -474,19 +485,13 @@ export default function App() {
         <div className="p-6 flex-1">
           <label className="text-xs font-bold text-gray-400 uppercase mb-2 block">Amount</label>
           <input type="number" value={transAmount} onChange={e => setTransAmount(e.target.value)} placeholder="0.00" className={`w-full text-4xl font-bold mb-8 outline-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} autoFocus />
-          
           <label className="text-xs font-bold text-gray-400 uppercase mb-2 block">Date</label>
           <input type="date" value={transDate} onChange={e => setTransDate(e.target.value)} className="w-full border-b mb-8 py-2 font-semibold outline-none focus:border-blue-500" />
-
           <label className="text-xs font-bold text-gray-400 uppercase mb-2 block">Notes</label>
           <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Enter details..." className="w-full bg-gray-50 border rounded-xl p-4 h-32 outline-none" />
         </div>
         <div className="p-6 pb-10">
-          <button 
-            disabled={isSubmitting}
-            onClick={handleSaveTransaction} 
-            className={`w-full py-4 rounded-xl text-white font-bold shadow-lg flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} disabled:opacity-50`}
-          >
+          <button disabled={isSubmitting} onClick={handleSaveTransaction} className={`w-full py-4 rounded-xl text-white font-bold shadow-lg flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} disabled:opacity-50`}>
             {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingTransaction ? 'Update Entry' : 'Save To Ledger')}
           </button>
         </div>
@@ -494,16 +499,12 @@ export default function App() {
     );
   }
 
-  // VIEW: CASH_BOOK
   if (currentView === 'CASH_BOOK') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-20">
         <header className="bg-white px-4 py-4 shadow-sm sticky top-0"><h1 className="text-xl font-bold">Cash Book</h1></header>
         <div className="p-4 flex flex-col gap-4">
-          <div className="bg-slate-800 text-white rounded-2xl p-6 shadow-lg">
-            <p className="text-xs font-bold text-slate-400 uppercase mb-1">Total Cash In Hand</p>
-            <h2 className="text-3xl font-bold">Rs. {cashSummary.balance.toLocaleString()}</h2>
-          </div>
+          <div className="bg-slate-800 text-white rounded-2xl p-6 shadow-lg"><p className="text-xs font-bold text-slate-400 uppercase mb-1">Total Cash In Hand</p><h2 className="text-3xl font-bold">Rs. {cashSummary.balance.toLocaleString()}</h2></div>
           <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
             {cashTransactions.map(t => (
               <div key={t.id} className="p-4 border-b flex justify-between items-center active:bg-gray-50">
