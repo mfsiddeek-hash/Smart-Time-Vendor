@@ -443,9 +443,18 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
         <header className="bg-white px-4 py-3 pb-0 shadow-sm z-20 sticky top-0">
-          <div className="flex justify-between items-start mb-2">
+          <div className="flex justify-between items-center mb-2">
             <div><h1 className="text-xl font-bold text-slate-800">Ledger Book</h1><p className="text-xs font-semibold text-slate-500">{shopName}</p></div>
-            <PlayCircle size={20} className="text-blue-600" />
+            <div className="flex items-center gap-3">
+               <button 
+                 onClick={() => navigateTo('CONTACT_FORM')}
+                 className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center"
+                 title="Add New"
+               >
+                 <Plus size={22} />
+               </button>
+               <PlayCircle size={24} className="text-blue-600" />
+            </div>
           </div>
           <div className="flex gap-6 mt-4">
             <button onClick={() => setActiveTab('CUSTOMER')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Users size={18} />Customers</button>
@@ -490,7 +499,6 @@ export default function App() {
               const stats = contactStats[c.id];
               const displayBal = stats?.balance || 0;
               
-              // Define labels based on tab
               const leftLabel = c.type === 'SUPPLIER' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
               const rightLabel = c.type === 'SUPPLIER' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
               
@@ -502,7 +510,6 @@ export default function App() {
                     </div>
                     <div className="overflow-hidden">
                       <h3 className="font-semibold text-slate-800 text-sm truncate">{c.name}</h3>
-                      {/* Summary Totals added here */}
                       <div className="flex items-center gap-3 mt-1">
                         <div className="flex items-center gap-1">
                           <span className="text-[9px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
@@ -576,7 +583,6 @@ export default function App() {
           </div>
         )}
 
-        <button onClick={() => navigateTo('CONTACT_FORM')} className="fixed bottom-24 right-4 w-14 h-14 bg-blue-600 text-white rounded-full shadow-xl flex items-center justify-center z-30 active:scale-90 transition-all"><Plus size={28} /></button>
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
     );
