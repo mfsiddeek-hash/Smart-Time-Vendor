@@ -469,13 +469,13 @@ export default function App() {
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'SUPPLIER' ? 'Total Paid' : 'Total Received')}
               </p>
-              <p className="text-lg font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
+              <p className="text-xl font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'SUPPLIER' ? 'To pay' : 'To collect')}
               </p>
-              <p className="text-lg font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
+              <p className="text-xl font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
             </div>
           </div>
 
@@ -509,22 +509,22 @@ export default function App() {
                       {c.name[0]}
                     </div>
                     <div className="overflow-hidden">
-                      <h3 className="font-semibold text-slate-800 text-sm truncate">{c.name}</h3>
-                      <div className="flex items-center gap-3 mt-1">
+                      <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
+                      <div className="flex items-center gap-3 mt-1.5">
                         <div className="flex items-center gap-1">
-                          <span className="text-[9px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
-                          <span className="text-[10px] font-bold text-red-600">Rs.{stats.totalCredit.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
+                          <span className="text-xs font-bold text-red-600">Rs.{stats.totalCredit.toLocaleString()}</span>
                         </div>
                         <div className="flex items-center gap-1">
-                          <span className="text-[9px] text-gray-400 font-bold uppercase">{rightLabel}:</span>
-                          <span className="text-[10px] font-bold text-green-600">Rs.{stats.totalPayment.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span>
+                          <span className="text-xs font-bold text-green-600">Rs.{stats.totalPayment.toLocaleString()}</span>
                         </div>
                       </div>
                     </div>
                   </div>
                   <div className="text-right shrink-0 ml-2">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
-                    <p className={`font-bold text-[15px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>
+                    <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>
                       Rs. {Math.abs(displayBal).toLocaleString()}
                     </p>
                   </div>
@@ -628,7 +628,7 @@ export default function App() {
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
-            <h2 className={`text-3xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+            <h2 className={`text-4xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
               Rs. {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}
             </h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Total Balance'}</p>
