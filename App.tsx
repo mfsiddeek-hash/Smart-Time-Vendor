@@ -53,7 +53,7 @@ const getRentCycleStart = () => {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('DASHBOARD');
-  const [activeTab, setActiveTab] = useState<ContactType>('RENT');
+  const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
@@ -192,7 +192,7 @@ export default function App() {
       `Rs. ${Math.abs(contactStats[c.id]?.balance || 0).toLocaleString()}`
     ]);
     
-    const totalLabel = activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'SUPPLIER' ? 'Total to Pay' : 'Total to Collect');
+    const totalLabel = activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total to Pay' : 'Total to Collect');
     const totalAmount = activeTotals.netBalance;
 
     autoTable(doc, {
@@ -298,8 +298,13 @@ export default function App() {
       ]);
       if (contactsRes.data) {
         setContacts(contactsRes.data.map((c: any) => ({
-          id: c.id, name: c.name, phone: c.phone || '', type: c.type,
-          balance: c.balance || 0, targetAmount: c.target_amount,
+          id: c.id, 
+          name: c.name, 
+          phone: c.phone || '', 
+          // MAPPING LEGACY SUPPLIER TYPE TO VENDOR
+          type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
+          balance: c.balance || 0, 
+          targetAmount: c.target_amount,
           lastUpdated: c.last_updated
         })));
       }
@@ -346,7 +351,7 @@ export default function App() {
           id: res.data[0].id,
           name: res.data[0].name,
           phone: res.data[0].phone || '',
-          type: res.data[0].type,
+          type: res.data[0].type === 'SUPPLIER' ? 'VENDOR' : res.data[0].type,
           balance: res.data[0].balance || 0,
           targetAmount: res.data[0].target_amount,
           lastUpdated: res.data[0].last_updated
@@ -435,7 +440,8 @@ export default function App() {
   
   if (currentView === 'DASHBOARD') {
     const filtered = contacts.filter(c => {
-      const matchesTab = c.type === activeTab;
+      // BACKWARD COMPATIBLE FILTER: VENDOR TAB MATCHES VENDOR OR SUPPLIER TYPE
+      const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
       const q = searchQuery.toLowerCase();
       return matchesTab && (c.name.toLowerCase().includes(q) || (c.phone && c.phone.includes(q)));
     });
@@ -458,7 +464,7 @@ export default function App() {
           </div>
           <div className="flex gap-6 mt-4">
             <button onClick={() => setActiveTab('CUSTOMER')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Users size={18} />Customers</button>
-            <button onClick={() => setActiveTab('SUPPLIER')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'SUPPLIER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Truck size={18} />Suppliers</button>
+            <button onClick={() => setActiveTab('VENDOR')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'VENDOR' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Truck size={18} />Vendors</button>
             <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Building size={18} />Rent</button>
           </div>
         </header>
@@ -467,13 +473,13 @@ export default function App() {
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
-                {activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'SUPPLIER' ? 'Total Paid' : 'Total Received')}
+                {activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total Paid' : 'Total Received')}
               </p>
               <p className="text-xl font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
-                {activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'SUPPLIER' ? 'To pay' : 'To collect')}
+                {activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}
               </p>
               <p className="text-xl font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
             </div>
@@ -499,8 +505,8 @@ export default function App() {
               const stats = contactStats[c.id];
               const displayBal = stats?.balance || 0;
               
-              const leftLabel = c.type === 'SUPPLIER' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
-              const rightLabel = c.type === 'SUPPLIER' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
+              const leftLabel = c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
+              const rightLabel = c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
               
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
@@ -590,8 +596,8 @@ export default function App() {
 
   if (currentView === 'DETAIL' && selectedContact) {
     const isRent = selectedContact.type === 'RENT';
-    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'SUPPLIER' ? "GOT ITEMS" : "GAVE ITEMS");
-    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'SUPPLIER' ? "PAID MONEY" : "GOT MONEY");
+    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : "GAVE ITEMS");
+    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : "GOT MONEY");
     
     const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     

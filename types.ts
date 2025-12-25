@@ -1,4 +1,4 @@
-export type ContactType = 'CUSTOMER' | 'SUPPLIER' | 'RENT';
+export type ContactType = 'CUSTOMER' | 'VENDOR' | 'RENT';
 
 export interface Contact {
   id: string;

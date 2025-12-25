@@ -5,7 +5,7 @@ export const MOCK_CONTACTS: Contact[] = [
     id: '1',
     name: 'Fazlan 7to7',
     phone: '770771513',
-    type: 'SUPPLIER',
+    type: 'VENDOR',
     balance: 13395,
     lastUpdated: '2025-12-06'
   },
@@ -13,7 +13,7 @@ export const MOCK_CONTACTS: Contact[] = [
     id: '2',
     name: 'M4U',
     phone: '0754664556',
-    type: 'SUPPLIER',
+    type: 'VENDOR',
     balance: 14000,
     lastUpdated: '2025-12-06'
   },
@@ -21,7 +21,7 @@ export const MOCK_CONTACTS: Contact[] = [
     id: '3',
     name: 'Manazeer 7to7',
     phone: '94779493930',
-    type: 'SUPPLIER',
+    type: 'VENDOR',
     balance: 6810,
     lastUpdated: '2025-12-05'
   },
@@ -29,7 +29,7 @@ export const MOCK_CONTACTS: Contact[] = [
     id: '4',
     name: 'Maxcell',
     phone: '0773196784',
-    type: 'SUPPLIER',
+    type: 'VENDOR',
     balance: 10000,
     lastUpdated: '2025-12-02'
   },
