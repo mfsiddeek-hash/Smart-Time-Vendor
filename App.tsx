@@ -46,13 +46,12 @@ const normalizeToLocalMidnight = (dateString: string) => {
     return new Date(y, m - 1, d, 0, 0, 0, 0);
   }
   
-  // Try parsing directly for other formats (like mock data '6th Dec 2025')
+  // Try parsing directly for other formats
   const parsed = new Date(dateString);
   if (!isNaN(parsed.getTime())) {
     return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
   }
   
-  // If parsing fails, use a safe default instead of Invalid Date
   return new Date(1970, 0, 1);
 };
 
@@ -277,7 +276,6 @@ export default function App() {
       const end = normalizeToLocalMidnight(reportRange.end);
       end.setHours(23, 59, 59, 999);
 
-      // Calculate Opening Balance (sum of transactions before start date)
       const transactionsBefore = transactions
         .filter(t => t.contactId === contact.id && normalizeToLocalMidnight(t.date) < start);
       
@@ -311,7 +309,6 @@ export default function App() {
         ];
       });
 
-      // Insert Opening Balance row at the beginning
       tableRows.unshift([
         reportRange.start,
         'Opening Balance',
@@ -378,7 +375,6 @@ export default function App() {
           id: c.id, 
           name: c.name, 
           phone: c.phone || '', 
-          // MAPPING LEGACY SUPPLIER TYPE TO VENDOR
           type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
           balance: c.balance || 0, 
           targetAmount: c.target_amount,
@@ -511,13 +507,72 @@ export default function App() {
   };
 
   // -----------------------------------------------------------------
-  // VIEWS
+  // SHARED MODALS (REPORTING)
+  // -----------------------------------------------------------------
+  const renderReportModal = () => {
+    if (!isReportModalOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-6 backdrop-blur-md">
+        <div className="bg-white w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+          <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+            <div>
+              <h3 className="font-bold text-lg">Generate Report</h3>
+              <p className="text-[10px] text-slate-400 font-bold uppercase">{reportTarget === 'CATEGORY' ? activeTab : selectedContact?.name}</p>
+            </div>
+            <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm"><X size={18} /></button>
+          </div>
+          <div className="p-6 flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
+                <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
+                <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
+               <div className="flex justify-between items-center">
+                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                   {reportTarget === 'CONTACT' ? 
+                     (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : 'Total Items')) :
+                     (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items'))
+                   }
+                 </span>
+                 <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
+               </div>
+               <div className="flex justify-between items-center">
+                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                   {reportTarget === 'CONTACT' ? 
+                     (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : 'Total Paid')) :
+                     (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid'))
+                   }
+                 </span>
+                 <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
+               </div>
+            </div>
+
+            <button 
+              onClick={() => reportTarget === 'CATEGORY' ? downloadCategoryReport() : (selectedContact && downloadContactStatement(selectedContact))}
+              className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-2 shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+            >
+              <Download size={18} /> Download PDF Report
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // -----------------------------------------------------------------
+  // MAIN VIEW RENDERING
   // -----------------------------------------------------------------
   if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Updating Ledger...</p></div>;
   
-  if (currentView === 'DASHBOARD') {
+  const renderDashboard = () => {
     const filtered = contacts.filter(c => {
-      // BACKWARD COMPATIBLE FILTER: VENDOR TAB MATCHES VENDOR OR SUPPLIER TYPE
       const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
       const q = searchQuery.toLowerCase();
       return matchesTab && (c.name.toLowerCase().includes(q) || (c.phone && c.phone.includes(q)));
@@ -529,13 +584,7 @@ export default function App() {
           <div className="flex justify-between items-center mb-2">
             <div><h1 className="text-xl font-bold text-slate-800">Ledger Book</h1><p className="text-xs font-semibold text-slate-500">{shopName}</p></div>
             <div className="flex items-center gap-3">
-               <button 
-                 onClick={() => navigateTo('CONTACT_FORM')}
-                 className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center"
-                 title="Add New"
-               >
-                 <Plus size={22} />
-               </button>
+               <button onClick={() => navigateTo('CONTACT_FORM')} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
                <PlayCircle size={24} className="text-blue-600" />
             </div>
           </div>
@@ -545,145 +594,62 @@ export default function App() {
             <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Building size={18} />Rent</button>
           </div>
         </header>
-
         <div className="p-4 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
-                {activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total Paid' : 'Total Received')}
-              </p>
+              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">{activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total Paid' : 'Total Received')}</p>
               <p className="text-xl font-bold text-[#15803d]">LKR {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
-                {activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}
-              </p>
+              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">{activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}</p>
               <p className="text-xl font-bold text-[#b91c1c]">LKR {activeTotals.netBalance.toLocaleString()}</p>
             </div>
           </div>
-
           <div className="flex gap-2">
             <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all shadow-sm">
-              <Search size={18} className="text-slate-400 mr-3" />
-              <input type="text" placeholder="Search name or number here" className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+              <Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder="Search name or number here" className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
-            <button 
-              onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }}
-              className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"
-              title="Download Report"
-            >
-              <Download size={18} />
-            </button>
+            <button onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }} className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm" title="Download Report"><Download size={18} /></button>
             <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"><Filter size={18} /></button>
           </div>
-
           <div className="flex flex-col gap-2">
             {filtered.map(c => {
               const stats = contactStats[c.id];
               const displayBal = stats?.balance || 0;
-              
               const leftLabel = c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
               const rightLabel = c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
-              
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
-                      {c.name[0]}
-                    </div>
+                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>{c.name[0]}</div>
                     <div className="overflow-hidden">
                       <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
                       <div className="flex items-center gap-3 mt-1.5">
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
-                          <span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span>
-                          <span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span>
-                        </div>
+                        <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span><span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span></div>
+                        <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span><span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span></div>
                       </div>
                     </div>
                   </div>
                   <div className="text-right shrink-0 ml-2">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
-                    <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>
-                      LKR {Math.abs(displayBal).toLocaleString()}
-                    </p>
+                    <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>LKR {Math.abs(displayBal).toLocaleString()}</p>
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
-
-        {/* Reporting Modal */}
-        {isReportModalOpen && (
-          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-6 backdrop-blur-md">
-            <div className="bg-white w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-              <div className="p-6 border-b flex justify-between items-center bg-slate-50">
-                <div>
-                  <h3 className="font-bold text-lg">Generate Report</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase">{reportTarget === 'CATEGORY' ? activeTab : selectedContact?.name}</p>
-                </div>
-                <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm"><X size={18} /></button>
-              </div>
-              <div className="p-6 flex flex-col gap-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
-                    <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
-                    <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
-                  </div>
-                </div>
-
-                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
-                   <div className="flex justify-between items-center">
-                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
-                       {reportTarget === 'CONTACT' ? 
-                         (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : 'Total Items')) :
-                         (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items'))
-                       }
-                     </span>
-                     <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
-                   </div>
-                   <div className="flex justify-between items-center">
-                     <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
-                       {reportTarget === 'CONTACT' ? 
-                         (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : 'Total Paid')) :
-                         (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid'))
-                       }
-                     </span>
-                     <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
-                   </div>
-                </div>
-
-                <button 
-                  onClick={() => reportTarget === 'CATEGORY' ? downloadCategoryReport() : (selectedContact && downloadContactStatement(selectedContact))}
-                  className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-2 shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
-                >
-                  <Download size={18} /> Download PDF Report
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
     );
-  }
+  };
 
-  if (currentView === 'DETAIL' && selectedContact) {
+  const renderDetail = () => {
+    if (!selectedContact) return null;
     const isRent = selectedContact.type === 'RENT';
     const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : "GAVE ITEMS");
     const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : "GOT MONEY");
-    
     const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    
     let currentSum = 0;
     const computedWithBalance = contactTransactions.map(t => {
       if (isRent) { currentSum += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
@@ -699,27 +665,13 @@ export default function App() {
             <h1 className="font-bold text-lg truncate">{selectedContact.name}</h1>
             <p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone || 'No phone'}</p>
           </div>
-          <button 
-            onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }}
-            className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm"
-            title="Download Statement"
-          >
-            <Download size={18} />
-          </button>
-          <button 
-            onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); navigateTo('CONTACT_FORM'); }}
-            className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm"
-            title="Edit Contact"
-          >
-            <Pencil size={18} />
-          </button>
+          <button onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm" title="Download Statement"><Download size={18} /></button>
+          <button onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); navigateTo('CONTACT_FORM'); }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
           <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
-            <h2 className={`text-4xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
-              LKR {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}
-            </h2>
+            <h2 className={`text-4xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}</h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Total Balance'}</p>
           </div>
         </div>
@@ -741,19 +693,15 @@ export default function App() {
         </div>
       </div>
     );
-  }
+  };
 
-  if (currentView === 'TRANSACTION_FORM' && selectedContact) {
+  const renderTransactionForm = () => {
+    if (!selectedContact) return null;
     const isRent = selectedContact.type === 'RENT';
     let title = editingTransaction ? "Edit Record" : (isRent ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") : (transType === 'CREDIT' ? 'Items Sent' : 'Cash Received'));
     return (
       <div className="min-h-screen bg-white flex flex-col">
-        <header className="px-4 py-4 border-b flex items-center justify-between">
-          <div className="flex items-center gap-4"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>
-          {editingTransaction && (
-            <button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all"><Trash2 size={20} /></button>
-          )}
-        </header>
+        <header className="px-4 py-4 border-b flex items-center justify-between"><div className="flex items-center gap-4"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>{editingTransaction && (<button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all"><Trash2 size={20} /></button>)}</header>
         <div className="p-6 flex-1 overflow-y-auto">
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Amount</label>
           <input type="number" value={transAmount} onChange={e => setTransAmount(e.target.value)} placeholder="0.00" className={`w-full text-5xl font-bold mb-8 outline-none border-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} autoFocus />
@@ -769,56 +717,46 @@ export default function App() {
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Notes</label>
           <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Add optional details..." className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-24 outline-none focus:border-slate-300 transition-colors" />
         </div>
-        <div className="p-6 pb-12">
-          <button disabled={isSubmitting} onClick={handleSaveTransaction} className={`w-full py-4 rounded-2xl text-white font-bold text-lg shadow-xl flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} active:scale-95 transition-all`}>
-            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Confirm Record'}
-          </button>
-        </div>
+        <div className="p-6 pb-12"><button disabled={isSubmitting} onClick={handleSaveTransaction} className={`w-full py-4 rounded-2xl text-white font-bold text-lg shadow-xl flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} active:scale-95 transition-all`}>{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Confirm Record'}</button></div>
       </div>
     );
-  }
+  };
 
-  if (currentView === 'CONTACT_FORM') {
-    return (
-      <div className="min-h-screen bg-white flex flex-col">
-        <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{editingContact ? 'Edit' : 'New'} {activeTab}</h1></header>
-        <div className="p-6 flex flex-col gap-6">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label>
-            <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Number</label>
-            <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="Enter Phone" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
-          </div>
-          {activeTab === 'RENT' && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label>
-              <input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
-            </div>
-          )}
-          <button disabled={isSubmitting} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all">
-            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update Contact' : 'Save Contact')}
-          </button>
-        </div>
+  const renderContactForm = () => (
+    <div className="min-h-screen bg-white flex flex-col">
+      <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{editingContact ? 'Edit' : 'New'} {activeTab}</h1></header>
+      <div className="p-6 flex flex-col gap-6">
+        <div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label><input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus /></div>
+        <div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Number</label><input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="Enter Phone" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>
+        {activeTab === 'RENT' && (<div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label><input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>)}
+        <button disabled={isSubmitting} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all">{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update Contact' : 'Save Contact')}</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (currentView === 'PROFILE') {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
-        <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
-          <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl"><Store size={40} /></div>
-          <div className="text-center"><h1 className="text-xl font-bold">{shopName}</h1><p className="text-sm text-slate-400">Ledger Profile</p></div>
-        </header>
-        <div className="p-6">
-           <button onClick={async () => { if(!window.confirm("RESET APP? All data will be deleted.")) return; await Promise.all([supabase.from('transactions').delete().neq('id', '0'), supabase.from('contacts').delete().neq('id', '0')]); window.location.reload(); }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors border border-red-100 shadow-sm"><ShieldAlert size={20} /><div className="text-left font-bold">Wipe Ledger Data</div></button>
-        </div>
-        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
-      </div>
-    );
-  }
+  const renderProfile = () => (
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
+      <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
+        <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl"><Store size={40} /></div>
+        <div className="text-center"><h1 className="text-xl font-bold">{shopName}</h1><p className="text-sm text-slate-400">Ledger Profile</p></div>
+      </header>
+      <div className="p-6"><button onClick={async () => { if(!window.confirm("RESET APP? All data will be deleted.")) return; await Promise.all([supabase.from('transactions').delete().neq('id', '0'), supabase.from('contacts').delete().neq('id', '0')]); window.location.reload(); }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors border border-red-100 shadow-sm"><ShieldAlert size={20} /><div className="text-left font-bold">Wipe Ledger Data</div></button></div>
+      <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
+    </div>
+  );
 
-  return <div className="min-h-screen flex items-center justify-center bg-white"><Loader2 className="animate-spin text-slate-200" size={40} /></div>;
+  let content;
+  if (currentView === 'DASHBOARD') content = renderDashboard();
+  else if (currentView === 'DETAIL') content = renderDetail();
+  else if (currentView === 'TRANSACTION_FORM') content = renderTransactionForm();
+  else if (currentView === 'CONTACT_FORM') content = renderContactForm();
+  else if (currentView === 'PROFILE') content = renderProfile();
+  else content = <div className="min-h-screen flex items-center justify-center bg-white"><Loader2 className="animate-spin text-slate-200" size={40} /></div>;
+
+  return (
+    <>
+      {content}
+      {renderReportModal()}
+    </>
+  );
 }
