@@ -35,7 +35,11 @@ const generateUUID = () => {
 };
 
 const normalizeToLocalMidnight = (dateString: string) => {
-  const [year, month, day] = dateString.split('-').map(Number);
+  if (!dateString) return new Date();
+  // Safe parsing for both YYYY-MM-DD and full ISO strings
+  const datePart = dateString.split('T')[0];
+  const [year, month, day] = datePart.split('-').map(Number);
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return new Date(dateString);
   return new Date(year, month - 1, day, 0, 0, 0, 0);
 };
 
@@ -152,10 +156,11 @@ export default function App() {
   const reportTotals = useMemo(() => {
     const start = normalizeToLocalMidnight(reportRange.start);
     const end = normalizeToLocalMidnight(reportRange.end);
+    end.setHours(23, 59, 59, 999);
     
     let filteredTransactions = [];
     if (reportTarget === 'CATEGORY') {
-      const categoryContacts = contacts.filter(c => c.type === activeTab).map(c => c.id);
+      const categoryContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER')).map(c => c.id);
       filteredTransactions = transactions.filter(t => categoryContacts.includes(t.contactId));
     } else if (selectedContact) {
       filteredTransactions = transactions.filter(t => t.contactId === selectedContact.id);
@@ -178,29 +183,57 @@ export default function App() {
   const downloadCategoryReport = () => {
     const doc = new jsPDF();
     const timestamp = new Date().toLocaleString();
-    const currentContacts = contacts.filter(c => c.type === activeTab);
+    const currentContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
     
+    const start = normalizeToLocalMidnight(reportRange.start);
+    const end = normalizeToLocalMidnight(reportRange.end);
+    end.setHours(23, 59, 59, 999);
+
+    const rangeTransactions = transactions.filter(t => {
+      const d = normalizeToLocalMidnight(t.date);
+      return d >= start && d <= end;
+    });
+
+    const contactReportData = currentContacts.map(c => {
+      const cTrans = rangeTransactions.filter(t => t.contactId === c.id);
+      const paid = cTrans.filter(t => t.type === 'PAYMENT').reduce((s, t) => s + t.amount, 0);
+      const credit = cTrans.filter(t => t.type === 'CREDIT').reduce((s, t) => s + t.amount, 0);
+      const bal = credit - paid; 
+      
+      return {
+        name: c.name,
+        phone: c.phone || '-',
+        paid,
+        credit,
+        bal
+      };
+    });
+
     doc.setFontSize(20);
     doc.text(`${shopName} - ${activeTab} Summary`, 14, 20);
     doc.setFontSize(10);
     doc.text(`Generated: ${timestamp}`, 14, 28);
     doc.text(`Period: ${reportRange.start} to ${reportRange.end}`, 14, 33);
     
-    const tableData = currentContacts.map(c => [
-      c.name,
-      c.phone || '-',
-      `LKR ${Math.abs(contactStats[c.id]?.balance || 0).toLocaleString()}`
+    const tableData = contactReportData.map(d => [
+      d.name,
+      d.phone,
+      `LKR ${d.credit.toLocaleString()}`,
+      `LKR ${d.paid.toLocaleString()}`,
+      `LKR ${Math.abs(d.bal).toLocaleString()}`
     ]);
-    
-    const totalAmount = activeTotals.netBalance;
+
+    const totalCredit = contactReportData.reduce((s, d) => s + d.credit, 0);
+    const totalPaid = contactReportData.reduce((s, d) => s + d.paid, 0);
+    const netBalance = totalCredit - totalPaid;
 
     autoTable(doc, {
       startY: 40,
-      head: [['Name', 'Phone', 'Current Balance']],
+      head: [['Name', 'Phone', 'Range Credit', 'Range Paid', 'Range Balance']],
       body: tableData,
       theme: 'striped',
       headStyles: { fillColor: [51, 65, 85] },
-      foot: [['Total', '', `LKR ${totalAmount.toLocaleString()}`]],
+      foot: [['Total', '', `LKR ${totalCredit.toLocaleString()}`, `LKR ${totalPaid.toLocaleString()}`, `LKR ${Math.abs(netBalance).toLocaleString()}`]],
       footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
     });
     
@@ -222,6 +255,7 @@ export default function App() {
     
     const start = normalizeToLocalMidnight(reportRange.start);
     const end = normalizeToLocalMidnight(reportRange.end);
+    end.setHours(23, 59, 59, 999);
 
     const contactTransactions = transactions
       .filter(t => t.contactId === contact.id)
