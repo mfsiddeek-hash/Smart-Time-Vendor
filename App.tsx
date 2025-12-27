@@ -36,11 +36,24 @@ const generateUUID = () => {
 
 const normalizeToLocalMidnight = (dateString: string) => {
   if (!dateString) return new Date();
-  // Safe parsing for both YYYY-MM-DD and full ISO strings
-  const datePart = dateString.split('T')[0];
-  const [year, month, day] = datePart.split('-').map(Number);
-  if (isNaN(year) || isNaN(month) || isNaN(day)) return new Date(dateString);
-  return new Date(year, month - 1, day, 0, 0, 0, 0);
+  
+  // Clean date string: extract only the date part YYYY-MM-DD
+  const match = dateString.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const y = parseInt(match[1]);
+    const m = parseInt(match[2]);
+    const d = parseInt(match[3]);
+    return new Date(y, m - 1, d, 0, 0, 0, 0);
+  }
+  
+  // Try parsing directly for other formats (like mock data '6th Dec 2025')
+  const parsed = new Date(dateString);
+  if (!isNaN(parsed.getTime())) {
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
+  }
+  
+  // If parsing fails, use a safe default instead of Invalid Date
+  return new Date(1970, 0, 1);
 };
 
 const getRentCycleStart = () => {
@@ -181,118 +194,149 @@ export default function App() {
   // REPORT GENERATION (PDF)
   // -----------------------------------------------------------------
   const downloadCategoryReport = () => {
-    const doc = new jsPDF();
-    const timestamp = new Date().toLocaleString();
-    const currentContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
-    
-    const start = normalizeToLocalMidnight(reportRange.start);
-    const end = normalizeToLocalMidnight(reportRange.end);
-    end.setHours(23, 59, 59, 999);
-
-    const rangeTransactions = transactions.filter(t => {
-      const d = normalizeToLocalMidnight(t.date);
-      return d >= start && d <= end;
-    });
-
-    const contactReportData = currentContacts.map(c => {
-      const cTrans = rangeTransactions.filter(t => t.contactId === c.id);
-      const paid = cTrans.filter(t => t.type === 'PAYMENT').reduce((s, t) => s + t.amount, 0);
-      const credit = cTrans.filter(t => t.type === 'CREDIT').reduce((s, t) => s + t.amount, 0);
-      const bal = credit - paid; 
+    try {
+      const doc = new jsPDF();
+      const timestamp = new Date().toLocaleString();
+      const currentContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
       
-      return {
-        name: c.name,
-        phone: c.phone || '-',
-        paid,
-        credit,
-        bal
-      };
-    });
+      const start = normalizeToLocalMidnight(reportRange.start);
+      const end = normalizeToLocalMidnight(reportRange.end);
+      end.setHours(23, 59, 59, 999);
 
-    doc.setFontSize(20);
-    doc.text(`${shopName} - ${activeTab} Summary`, 14, 20);
-    doc.setFontSize(10);
-    doc.text(`Generated: ${timestamp}`, 14, 28);
-    doc.text(`Period: ${reportRange.start} to ${reportRange.end}`, 14, 33);
-    
-    const tableData = contactReportData.map(d => [
-      d.name,
-      d.phone,
-      `LKR ${d.credit.toLocaleString()}`,
-      `LKR ${d.paid.toLocaleString()}`,
-      `LKR ${Math.abs(d.bal).toLocaleString()}`
-    ]);
+      const rangeTransactions = transactions.filter(t => {
+        const d = normalizeToLocalMidnight(t.date);
+        return d >= start && d <= end;
+      });
 
-    const totalCredit = contactReportData.reduce((s, d) => s + d.credit, 0);
-    const totalPaid = contactReportData.reduce((s, d) => s + d.paid, 0);
-    const netBalance = totalCredit - totalPaid;
+      const contactReportData = currentContacts.map(c => {
+        const cTrans = rangeTransactions.filter(t => t.contactId === c.id);
+        const paid = cTrans.filter(t => t.type === 'PAYMENT').reduce((s, t) => s + t.amount, 0);
+        const credit = cTrans.filter(t => t.type === 'CREDIT').reduce((s, t) => s + t.amount, 0);
+        const bal = credit - paid; 
+        
+        return {
+          name: c.name,
+          phone: c.phone || '-',
+          paid,
+          credit,
+          bal
+        };
+      });
 
-    autoTable(doc, {
-      startY: 40,
-      head: [['Name', 'Phone', 'Range Credit', 'Range Paid', 'Range Balance']],
-      body: tableData,
-      theme: 'striped',
-      headStyles: { fillColor: [51, 65, 85] },
-      foot: [['Total', '', `LKR ${totalCredit.toLocaleString()}`, `LKR ${totalPaid.toLocaleString()}`, `LKR ${Math.abs(netBalance).toLocaleString()}`]],
-      footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
-    });
-    
-    doc.save(`${activeTab.toLowerCase()}_report_${Date.now()}.pdf`);
-    setIsReportModalOpen(false);
+      doc.setFontSize(20);
+      doc.text(`${shopName} - ${activeTab} Summary`, 14, 20);
+      doc.setFontSize(10);
+      doc.text(`Generated: ${timestamp}`, 14, 28);
+      doc.text(`Period: ${reportRange.start} to ${reportRange.end}`, 14, 33);
+      
+      const tableData = contactReportData.map(d => [
+        d.name,
+        d.phone,
+        `LKR ${d.credit.toLocaleString()}`,
+        `LKR ${d.paid.toLocaleString()}`,
+        `LKR ${Math.abs(d.bal).toLocaleString()}`
+      ]);
+
+      const totalCredit = contactReportData.reduce((s, d) => s + d.credit, 0);
+      const totalPaid = contactReportData.reduce((s, d) => s + d.paid, 0);
+      const netBalance = totalCredit - totalPaid;
+
+      autoTable(doc, {
+        startY: 40,
+        head: [['Name', 'Phone', 'Range Credit', 'Range Paid', 'Range Balance']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [51, 65, 85] },
+        foot: [['Total', '', `LKR ${totalCredit.toLocaleString()}`, `LKR ${totalPaid.toLocaleString()}`, `LKR ${Math.abs(netBalance).toLocaleString()}`]],
+        footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
+      });
+      
+      const safeFileName = `${activeTab.toLowerCase()}_report_${Date.now()}.pdf`.replace(/[^a-z0-9._-]/gi, '_');
+      doc.save(safeFileName);
+      setIsReportModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to generate PDF report. Please try again.");
+    }
   };
 
   const downloadContactStatement = (contact: Contact) => {
-    const doc = new jsPDF();
-    const timestamp = new Date().toLocaleString();
-    const isRent = contact.type === 'RENT';
-    
-    doc.setFontSize(18);
-    doc.text(shopName, 14, 20);
-    doc.setFontSize(12);
-    doc.text(`Statement for: ${contact.name}`, 14, 30);
-    doc.setFontSize(10);
-    doc.text(`Period: ${reportRange.start} to ${reportRange.end} | Generated: ${timestamp}`, 14, 38);
-    
-    const start = normalizeToLocalMidnight(reportRange.start);
-    const end = normalizeToLocalMidnight(reportRange.end);
-    end.setHours(23, 59, 59, 999);
-
-    const contactTransactions = transactions
-      .filter(t => t.contactId === contact.id)
-      .filter(t => {
-        const d = normalizeToLocalMidnight(t.date);
-        return d >= start && d <= end;
-      })
-      .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    
-    let runningBal = 0;
-    const tableRows = contactTransactions.map(t => {
-      if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
-      else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+    try {
+      const doc = new jsPDF();
+      const timestamp = new Date().toLocaleString();
+      const isRent = contact.type === 'RENT';
       
-      const typeLabel = t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit');
+      doc.setFontSize(18);
+      doc.text(shopName, 14, 20);
+      doc.setFontSize(12);
+      doc.text(`Statement for: ${contact.name}`, 14, 30);
+      doc.setFontSize(10);
+      doc.text(`Period: ${reportRange.start} to ${reportRange.end} | Generated: ${timestamp}`, 14, 38);
+      
+      const start = normalizeToLocalMidnight(reportRange.start);
+      const end = normalizeToLocalMidnight(reportRange.end);
+      end.setHours(23, 59, 59, 999);
 
-      return [
-        t.date,
-        t.description || '-',
-        typeLabel,
-        `LKR ${t.amount.toLocaleString()}`,
-        `LKR ${runningBal.toLocaleString()}`
-      ];
-    });
+      // Calculate Opening Balance (sum of transactions before start date)
+      const transactionsBefore = transactions
+        .filter(t => t.contactId === contact.id && normalizeToLocalMidnight(t.date) < start);
+      
+      let openingBalance = 0;
+      transactionsBefore.forEach(t => {
+        if (isRent) { openingBalance += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
+        else { openingBalance += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+      });
 
-    autoTable(doc, {
-      startY: 45,
-      head: [['Date', 'Description', 'Type', 'Amount', 'Balance']],
-      body: tableRows,
-      theme: 'grid',
-      headStyles: { fillColor: [59, 130, 246] },
-      foot: [['', '', 'PERIOD TOTAL', '', `LKR ${runningBal.toLocaleString()}`]],
-      footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
-    });
-    
-    doc.save(`${contact.name.replace(/\s+/g, '_')}_statement.pdf`);
-    setIsReportModalOpen(false);
+      const contactTransactions = transactions
+        .filter(t => t.contactId === contact.id)
+        .filter(t => {
+          const d = normalizeToLocalMidnight(t.date);
+          return d >= start && d <= end;
+        })
+        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      
+      let runningBal = openingBalance;
+      const tableRows = contactTransactions.map(t => {
+        if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
+        else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+        
+        const typeLabel = t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit');
+
+        return [
+          t.date,
+          t.description || '-',
+          typeLabel,
+          `LKR ${t.amount.toLocaleString()}`,
+          `LKR ${runningBal.toLocaleString()}`
+        ];
+      });
+
+      // Insert Opening Balance row at the beginning
+      tableRows.unshift([
+        reportRange.start,
+        'Opening Balance',
+        '-',
+        '-',
+        `LKR ${openingBalance.toLocaleString()}`
+      ]);
+
+      autoTable(doc, {
+        startY: 45,
+        head: [['Date', 'Description', 'Type', 'Amount', 'Balance']],
+        body: tableRows,
+        theme: 'grid',
+        headStyles: { fillColor: [59, 130, 246] },
+        foot: [['', '', 'CLOSING BALANCE', '', `LKR ${runningBal.toLocaleString()}`]],
+        footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
+      });
+      
+      const safeName = contact.name.replace(/[^a-z0-9]/gi, '_');
+      doc.save(`${safeName}_statement.pdf`);
+      setIsReportModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to generate statement. Please try again.");
+    }
   };
 
   // -----------------------------------------------------------------
@@ -599,13 +643,19 @@ export default function App() {
                 <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
                    <div className="flex justify-between items-center">
                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
-                       {activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items')}
+                       {reportTarget === 'CONTACT' ? 
+                         (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : 'Total Items')) :
+                         (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items'))
+                       }
                      </span>
                      <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
                    </div>
                    <div className="flex justify-between items-center">
                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
-                       {activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid')}
+                       {reportTarget === 'CONTACT' ? 
+                         (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : 'Total Paid')) :
+                         (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid'))
+                       }
                      </span>
                      <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
                    </div>
