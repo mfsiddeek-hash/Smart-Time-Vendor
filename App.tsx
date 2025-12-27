@@ -189,10 +189,9 @@ export default function App() {
     const tableData = currentContacts.map(c => [
       c.name,
       c.phone || '-',
-      `Rs. ${Math.abs(contactStats[c.id]?.balance || 0).toLocaleString()}`
+      `LKR ${Math.abs(contactStats[c.id]?.balance || 0).toLocaleString()}`
     ]);
     
-    const totalLabel = activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total to Pay' : 'Total to Collect');
     const totalAmount = activeTotals.netBalance;
 
     autoTable(doc, {
@@ -201,7 +200,7 @@ export default function App() {
       body: tableData,
       theme: 'striped',
       headStyles: { fillColor: [51, 65, 85] },
-      foot: [['Total', '', `Rs. ${totalAmount.toLocaleString()}`]],
+      foot: [['Total', '', `LKR ${totalAmount.toLocaleString()}`]],
       footStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: 'bold' }
     });
     
@@ -243,8 +242,8 @@ export default function App() {
         t.date,
         t.description || '-',
         typeLabel,
-        `Rs. ${t.amount.toLocaleString()}`,
-        `Rs. ${runningBal.toLocaleString()}`
+        `LKR ${t.amount.toLocaleString()}`,
+        `LKR ${runningBal.toLocaleString()}`
       ];
     });
 
@@ -254,7 +253,7 @@ export default function App() {
       body: tableRows,
       theme: 'grid',
       headStyles: { fillColor: [59, 130, 246] },
-      foot: [['', '', 'PERIOD TOTAL', '', `Rs. ${runningBal.toLocaleString()}`]],
+      foot: [['', '', 'PERIOD TOTAL', '', `LKR ${runningBal.toLocaleString()}`]],
       footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
     });
     
@@ -475,13 +474,13 @@ export default function App() {
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total Paid' : 'Total Received')}
               </p>
-              <p className="text-xl font-bold text-[#15803d]">Rs. {activeTotals.totalPayments.toLocaleString()}</p>
+              <p className="text-xl font-bold text-[#15803d]">LKR {activeTotals.totalPayments.toLocaleString()}</p>
             </div>
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">
                 {activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}
               </p>
-              <p className="text-xl font-bold text-[#b91c1c]">Rs. {activeTotals.netBalance.toLocaleString()}</p>
+              <p className="text-xl font-bold text-[#b91c1c]">LKR {activeTotals.netBalance.toLocaleString()}</p>
             </div>
           </div>
 
@@ -519,11 +518,11 @@ export default function App() {
                       <div className="flex items-center gap-3 mt-1.5">
                         <div className="flex items-center gap-1">
                           <span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span>
-                          <span className="text-xs font-bold text-red-600">Rs.{stats.totalCredit.toLocaleString()}</span>
+                          <span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span>
                         </div>
                         <div className="flex items-center gap-1">
                           <span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span>
-                          <span className="text-xs font-bold text-green-600">Rs.{stats.totalPayment.toLocaleString()}</span>
+                          <span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span>
                         </div>
                       </div>
                     </div>
@@ -531,7 +530,7 @@ export default function App() {
                   <div className="text-right shrink-0 ml-2">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
                     <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>
-                      Rs. {Math.abs(displayBal).toLocaleString()}
+                      LKR {Math.abs(displayBal).toLocaleString()}
                     </p>
                   </div>
                 </div>
@@ -568,13 +567,13 @@ export default function App() {
                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
                        {activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items')}
                      </span>
-                     <span className="font-bold text-red-600 text-sm">Rs. {reportTotals.totalCredit.toLocaleString()}</span>
+                     <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
                    </div>
                    <div className="flex justify-between items-center">
                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
                        {activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid')}
                      </span>
-                     <span className="font-bold text-green-600 text-sm">Rs. {reportTotals.totalPaid.toLocaleString()}</span>
+                     <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
                    </div>
                 </div>
 
@@ -635,7 +634,7 @@ export default function App() {
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
             <h2 className={`text-4xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
-              Rs. {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}
+              LKR {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}
             </h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Total Balance'}</p>
           </div>
@@ -649,11 +648,11 @@ export default function App() {
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
           <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
-             <span className="flex items-center gap-1 font-bold text-lg">Rs. <ArrowDown size={14} /></span>
+             <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
           <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelRight}</span>
-             <span className="flex items-center gap-1 font-bold text-lg">Rs. <ArrowUp size={14} /></span>
+             <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowUp size={14} /></span>
           </button>
         </div>
       </div>

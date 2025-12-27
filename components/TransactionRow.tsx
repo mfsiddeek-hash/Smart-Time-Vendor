@@ -8,7 +8,7 @@ interface TransactionRowProps {
 }
 
 export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onClick }) => {
-  // Logic to determine color based on transaction type relative to a Supplier perspective
+  // Logic to determine color based on transaction type relative to a Vendor perspective
   // Payment reduces balance (Good/Green), Credit increases balance (Debt/Red)
   
   const isPayment = transaction.type === 'PAYMENT';
@@ -21,7 +21,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onC
       <div className="flex justify-between items-start">
         <span className="font-bold text-base text-slate-800">{transaction.date}</span>
         <span className={`font-bold text-base ${isPayment ? 'text-green-700' : 'text-red-600'}`}>
-          Rs. {transaction.amount.toLocaleString()}
+          LKR {transaction.amount.toLocaleString()}
         </span>
       </div>
 
@@ -38,7 +38,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onC
         </div>
         
         <span className="text-xs text-gray-500 font-bold">
-          Bal. Rs.{transaction.balanceAfter.toLocaleString()}
+          Bal. LKR {transaction.balanceAfter.toLocaleString()}
         </span>
       </div>
     </div>
