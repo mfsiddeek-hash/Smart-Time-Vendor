@@ -5,7 +5,8 @@ import {
   ChevronDown, Filter, Download, Trash2, Calculator, FilePlus, Loader2, 
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
-  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X
+  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
+  RotateCcw
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -351,6 +352,8 @@ export default function App() {
         const c = contactsRef.current.find(con => con.id === state.contactId);
         setSelectedContact(c || null);
       } else { setSelectedContact(null); }
+      // Auto-close modal on back if it was open
+      setIsReportModalOpen(false);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -445,7 +448,7 @@ export default function App() {
   };
 
   const handleDeleteContact = async (id: string) => {
-    if (!window.confirm("Delete this check entirely? All transactions will be lost.")) return;
+    if (!window.confirm("Delete this contact entirely? All transactions will be lost.")) return;
     setIsSubmitting(true);
     try {
       await supabase.from('transactions').delete().eq('contact_id', id);
@@ -453,6 +456,18 @@ export default function App() {
       setContacts(contacts.filter(c => c.id !== id));
       setTransactions(transactions.filter(t => t.contactId !== id));
       handleBack();
+    } catch (err: any) { alert(err.message); }
+    finally { setIsSubmitting(false); }
+  };
+
+  const handleResetRentCycle = async (id: string) => {
+    if (!window.confirm("Target achieved! Clear savings for this cycle and start fresh?")) return;
+    setIsSubmitting(true);
+    try {
+      // For simplicity, we "clear" by deleting current transactions for this Rent contact
+      await supabase.from('transactions').delete().eq('contact_id', id);
+      setTransactions(transactions.filter(t => t.contactId !== id));
+      alert("New cycle started!");
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
   };
@@ -569,8 +584,6 @@ export default function App() {
   // -----------------------------------------------------------------
   // MAIN VIEW RENDERING
   // -----------------------------------------------------------------
-  if (isLoading) return <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4"><Loader2 className="w-10 h-10 text-blue-600 animate-spin" /><p className="text-gray-400 font-medium">Updating Ledger...</p></div>;
-  
   const renderDashboard = () => {
     const filtered = contacts.filter(c => {
       const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
@@ -647,6 +660,10 @@ export default function App() {
   const renderDetail = () => {
     if (!selectedContact) return null;
     const isRent = selectedContact.type === 'RENT';
+    const balance = contactStats[selectedContact.id]?.balance || 0;
+    const target = selectedContact.targetAmount || 30000;
+    const isTargetAchieved = isRent && balance >= target;
+
     const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : "GAVE ITEMS");
     const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : "GOT MONEY");
     const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -670,9 +687,21 @@ export default function App() {
           <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
-          <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner">
-            <h2 className={`text-4xl font-bold ${contactStats[selectedContact.id]?.balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(contactStats[selectedContact.id]?.balance || 0).toLocaleString()}</h2>
-            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? 'Total Savings' : 'Total Balance'}</p>
+          <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner relative overflow-hidden">
+            {isTargetAchieved && (
+              <div className="absolute top-0 right-0 bg-green-100 text-green-700 text-[8px] font-black px-2 py-1 rounded-bl-lg uppercase tracking-widest">Target Met!</div>
+            )}
+            <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : 'Total Balance'}</p>
+            
+            {isTargetAchieved && (
+              <button 
+                onClick={() => handleResetRentCycle(selectedContact.id)}
+                className="mt-4 bg-blue-600 text-white text-xs font-bold py-2 px-4 rounded-full flex items-center justify-center gap-2 mx-auto active:scale-95 transition-transform"
+              >
+                <RotateCcw size={14} /> Clear & Start New
+              </button>
+            )}
           </div>
         </div>
         <div className="flex-1 bg-white">
