@@ -35,10 +35,9 @@ const generateUUID = () => {
   });
 };
 
-const normalizeToLocalMidnight = (dateString: string) => {
+const normalizeToLocalMidnight = (dateString: string | null | undefined) => {
   if (!dateString) return new Date();
   
-  // Clean date string: extract only the date part YYYY-MM-DD
   const match = dateString.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (match) {
     const y = parseInt(match[1]);
@@ -47,7 +46,6 @@ const normalizeToLocalMidnight = (dateString: string) => {
     return new Date(y, m - 1, d, 0, 0, 0, 0);
   }
   
-  // Try parsing directly for other formats
   const parsed = new Date(dateString);
   if (!isNaN(parsed.getTime())) {
     return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
@@ -82,7 +80,6 @@ export default function App() {
   const [shopName, setShopName] = useState('Smart Time');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Form States
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
   const [targetAmount, setTargetAmount] = useState('30000');
@@ -94,7 +91,6 @@ export default function App() {
   const [transDate, setTransDate] = useState(new Date().toISOString().slice(0, 10));
   const [transDesc, setTransDesc] = useState('');
 
-  // Report States
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportRange, setReportRange] = useState({
     start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10),
@@ -103,11 +99,7 @@ export default function App() {
   const [reportTarget, setReportTarget] = useState<'CATEGORY' | 'CONTACT'>('CATEGORY');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
-  const theme = THEMES['blue'];
 
-  // -----------------------------------------------------------------
-  // DERIVED STATE: STATS & BALANCES
-  // -----------------------------------------------------------------
   const contactStats = useMemo(() => {
     const stats: Record<string, { totalCredit: number; totalPayment: number; balance: number }> = {};
     contacts.forEach(c => stats[c.id] = { totalCredit: 0, totalPayment: 0, balance: 0 });
@@ -121,9 +113,9 @@ export default function App() {
     contacts.forEach(c => {
       const s = stats[c.id];
       if (c.type === 'RENT') {
-        s.balance = s.totalPayment - s.totalCredit; // Savings = Deposits - Withdrawals
+        s.balance = s.totalPayment - s.totalCredit;
       } else {
-        s.balance = s.totalCredit - s.totalPayment; // Debt = Items/Credit - Payments
+        s.balance = s.totalCredit - s.totalPayment;
       }
     });
     return stats;
@@ -165,7 +157,6 @@ export default function App() {
     return { totalPayments, netBalance };
   }, [contacts, activeTab, contactStats, cycleSavingsMap]);
 
-  // Derived totals for the reporting modal summary
   const reportTotals = useMemo(() => {
     const start = normalizeToLocalMidnight(reportRange.start);
     const end = normalizeToLocalMidnight(reportRange.end);
@@ -190,9 +181,6 @@ export default function App() {
     return { totalPaid, totalCredit };
   }, [transactions, contacts, activeTab, selectedContact, reportRange, reportTarget]);
 
-  // -----------------------------------------------------------------
-  // REPORT GENERATION (PDF)
-  // -----------------------------------------------------------------
   const downloadCategoryReport = () => {
     try {
       const doc = new jsPDF();
@@ -214,13 +202,7 @@ export default function App() {
         const credit = cTrans.filter(t => t.type === 'CREDIT').reduce((s, t) => s + t.amount, 0);
         const bal = credit - paid; 
         
-        return {
-          name: c.name,
-          phone: c.phone || '-',
-          paid,
-          credit,
-          bal
-        };
+        return { name: c.name, phone: c.phone || '-', paid, credit, bal };
       });
 
       doc.setFontSize(20);
@@ -256,7 +238,7 @@ export default function App() {
       setIsReportModalOpen(false);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate PDF report. Please try again.");
+      alert("Failed to generate PDF report.");
     }
   };
 
@@ -292,31 +274,23 @@ export default function App() {
           const d = normalizeToLocalMidnight(t.date);
           return d >= start && d <= end;
         })
-        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        .sort((a,b) => {
+          const timeA = new Date(a.date).getTime();
+          const timeB = new Date(b.date).getTime();
+          if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeA - timeB;
+          if (a.type === b.type) return 0;
+          return a.type === 'CREDIT' ? -1 : 1;
+        });
       
       let runningBal = openingBalance;
       const tableRows = contactTransactions.map(t => {
         if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
         else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
-        
         const typeLabel = t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit');
-
-        return [
-          t.date,
-          t.description || '-',
-          typeLabel,
-          `LKR ${t.amount.toLocaleString()}`,
-          `LKR ${runningBal.toLocaleString()}`
-        ];
+        return [t.date, t.description || '-', typeLabel, `LKR ${t.amount.toLocaleString()}`, `LKR ${runningBal.toLocaleString()}`];
       });
 
-      tableRows.unshift([
-        reportRange.start,
-        'Opening Balance',
-        '-',
-        '-',
-        `LKR ${openingBalance.toLocaleString()}`
-      ]);
+      tableRows.unshift([reportRange.start, 'Opening Balance', '-', '-', `LKR ${openingBalance.toLocaleString()}`]);
 
       autoTable(doc, {
         startY: 45,
@@ -333,26 +307,29 @@ export default function App() {
       setIsReportModalOpen(false);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate statement. Please try again.");
+      alert("Failed to generate statement.");
     }
   };
 
-  // -----------------------------------------------------------------
-  // EFFECTS & DATA FETCHING
-  // -----------------------------------------------------------------
   useEffect(() => { contactsRef.current = contacts; }, [contacts]);
 
   useEffect(() => {
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
-      if (!state) { setCurrentView('DASHBOARD'); setSelectedContact(null); return; }
+      if (!state) { 
+        setCurrentView('DASHBOARD'); 
+        setSelectedContact(null); 
+        setIsReportModalOpen(false);
+        return; 
+      }
       setCurrentView(state.view || 'DASHBOARD');
       if (state.tab) setActiveTab(state.tab);
       if (state.contactId) {
         const c = contactsRef.current.find(con => con.id === state.contactId);
         setSelectedContact(c || null);
-      } else { setSelectedContact(null); }
-      // Auto-close modal on back if it was open
+      } else { 
+        setSelectedContact(null); 
+      }
       setIsReportModalOpen(false);
     };
     window.addEventListener('popstate', handlePopState);
@@ -395,9 +372,6 @@ export default function App() {
 
   useEffect(() => { fetchData(); }, []);
 
-  // -----------------------------------------------------------------
-  // HANDLERS
-  // -----------------------------------------------------------------
   const handleBack = () => { window.history.back(); };
 
   const handleSaveContact = async () => {
@@ -464,7 +438,6 @@ export default function App() {
     if (!window.confirm("Target achieved! Clear savings for this cycle and start fresh?")) return;
     setIsSubmitting(true);
     try {
-      // For simplicity, we "clear" by deleting current transactions for this Rent contact
       await supabase.from('transactions').delete().eq('contact_id', id);
       setTransactions(transactions.filter(t => t.contactId !== id));
       alert("New cycle started!");
@@ -521,9 +494,6 @@ export default function App() {
     finally { setIsSubmitting(false); }
   };
 
-  // -----------------------------------------------------------------
-  // SHARED MODALS (REPORTING)
-  // -----------------------------------------------------------------
   const renderReportModal = () => {
     if (!isReportModalOpen) return null;
     return (
@@ -581,9 +551,6 @@ export default function App() {
     );
   };
 
-  // -----------------------------------------------------------------
-  // MAIN VIEW RENDERING
-  // -----------------------------------------------------------------
   const renderDashboard = () => {
     const filtered = contacts.filter(c => {
       const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
@@ -666,7 +633,17 @@ export default function App() {
 
     const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : "GAVE ITEMS");
     const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : "GOT MONEY");
-    const contactTransactions = transactions.filter(t => t.contactId === selectedContact.id).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    
+    const contactTransactions = transactions
+      .filter(t => t.contactId === selectedContact.id)
+      .sort((a,b) => {
+        const timeA = new Date(a.date).getTime();
+        const timeB = new Date(b.date).getTime();
+        if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeA - timeB;
+        if (a.type === b.type) return 0;
+        return a.type === 'CREDIT' ? -1 : 1;
+      });
+    
     let currentSum = 0;
     const computedWithBalance = contactTransactions.map(t => {
       if (isRent) { currentSum += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
@@ -693,7 +670,6 @@ export default function App() {
             )}
             <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : 'Total Balance'}</p>
-            
             {isTargetAchieved && (
               <button 
                 onClick={() => handleResetRentCycle(selectedContact.id)}
