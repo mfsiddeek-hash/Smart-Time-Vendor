@@ -641,7 +641,7 @@ export default function App() {
         const timeB = new Date(b.date).getTime();
         if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeA - timeB;
         if (a.type === b.type) return 0;
-        return a.type === 'CREDIT' ? -1 : 1;
+        return a.type === 'CREDIT' ? 1 : -1;
       });
     
     let currentSum = 0;
