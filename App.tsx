@@ -3,15 +3,15 @@ import {
   BookText, Wallet, Receipt, UserCircle, Store, Phone, Pencil, Palette, 
   Check, Languages, ChevronRight, LogOut, ChevronLeft, Share2, Calendar, 
   ChevronDown, Filter, Download, Trash2, Calculator, FilePlus, Loader2, 
-  Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
+  Camera, Eye, EyeOff, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
-  RotateCcw, Wrench, Smartphone, Printer, Key, Lock, ShieldCheck, UserPlus, Upload,
+  RotateCcw, Wrench, Smartphone, Printer, Key, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, StoreProfile } from './types';
+import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { supabase } from './supabaseClient';
@@ -100,7 +100,19 @@ export default function App() {
   const [users, setUsers] = useState<AppUser[]>(() => {
     const saved = localStorage.getItem('st_app_users');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { /* ignore fallback */ }
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((u: any) => ({
+            ...u,
+            permissions: u.permissions || {
+              canDeleteData: u.role === 'Admin',
+              canEditData: true,
+              canManageUsers: u.role === 'Admin'
+            }
+          }));
+        }
+      } catch (e) { /* ignore fallback */ }
     }
     return [
       {
@@ -111,19 +123,53 @@ export default function App() {
         status: 'Active',
         phone: '+94 77 123 4567',
         password: 'admin',
+        permissions: {
+          canDeleteData: true,
+          canEditData: true,
+          canManageUsers: true
+        },
         createdAt: new Date().toISOString().slice(0, 10)
       }
     ];
   });
   const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
 
+  // Authentication & Login State: asks for password every session / login
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem('st_auth_active') === 'true';
+  });
+  const [loginUserId, setLoginUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
   const [profileTab, setProfileTab] = useState<'STORE' | 'ADMIN' | 'USERS' | 'DATA'>('STORE');
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '', showPassword: false });
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
-  const [userForm, setUserForm] = useState<{ name: string; username: string; role: UserRole; phone: string; password: string; status: 'Active' | 'Inactive'; showPassword: boolean }>({
-    name: '', username: '', role: 'Cashier', phone: '', password: '', status: 'Active', showPassword: false
+  const [userForm, setUserForm] = useState<{ 
+    name: string; 
+    username: string; 
+    role: UserRole; 
+    phone: string; 
+    password: string; 
+    status: 'Active' | 'Inactive'; 
+    canDeleteData: boolean;
+    canEditData: boolean;
+    canManageUsers: boolean;
+    showPassword: boolean; 
+  }>({
+    name: '', 
+    username: '', 
+    role: 'Cashier', 
+    phone: '', 
+    password: '', 
+    status: 'Active', 
+    canDeleteData: false,
+    canEditData: true,
+    canManageUsers: false,
+    showPassword: false
   });
   const [profileToast, setProfileToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
@@ -131,9 +177,70 @@ export default function App() {
 
   const currentUser = useMemo(() => {
     return users.find(u => u.id === currentUserId) || users[0] || {
-      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, createdAt: ''
+      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, 
+      permissions: { canDeleteData: true, canEditData: true, canManageUsers: true },
+      createdAt: ''
     };
   }, [users, currentUserId]);
+
+  // User Rights & Permissions logic
+  const userCanDelete = useMemo(() => {
+    if (currentUser?.permissions?.canDeleteData !== undefined) {
+      return Boolean(currentUser.permissions.canDeleteData);
+    }
+    return currentUser?.role === 'Admin';
+  }, [currentUser]);
+
+  const userCanEdit = useMemo(() => {
+    if (currentUser?.permissions?.canEditData !== undefined) {
+      return Boolean(currentUser.permissions.canEditData);
+    }
+    return true;
+  }, [currentUser]);
+
+  const userCanManageUsers = useMemo(() => {
+    if (currentUser?.permissions?.canManageUsers !== undefined) {
+      return Boolean(currentUser.permissions.canManageUsers);
+    }
+    return currentUser?.role === 'Admin';
+  }, [currentUser]);
+
+  const handleLogout = () => {
+    if (window.confirm("Are you sure you want to log out of your session?")) {
+      setIsAuthenticated(false);
+      sessionStorage.removeItem('st_auth_active');
+      setLoginPassword('');
+      setLoginError('');
+      setCurrentView('DASHBOARD');
+      showProfileToast("You have been logged out.");
+    }
+  };
+
+  const handleLogin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginError('');
+    const targetUser = users.find(u => u.id === loginUserId);
+    if (!targetUser) {
+      setLoginError('Selected user account not found.');
+      return;
+    }
+    if (targetUser.status === 'Inactive') {
+      setLoginError('This account is marked as Inactive. Please contact an Administrator.');
+      return;
+    }
+    const expectedPassword = targetUser.password || 'admin';
+    if (loginPassword !== expectedPassword) {
+      setLoginError('Incorrect password. Please try again.');
+      return;
+    }
+    setCurrentUserId(targetUser.id);
+    localStorage.setItem('st_current_user_id', targetUser.id);
+    setIsAuthenticated(true);
+    sessionStorage.setItem('st_auth_active', 'true');
+    setLoginPassword('');
+    setLoginError('');
+    showProfileToast(`Welcome back, ${targetUser.name}!`);
+  };
 
   const showProfileToast = (text: string, type: 'success' | 'error' = 'success') => {
     setProfileToast({ text, type });
@@ -1323,6 +1430,10 @@ export default function App() {
   };
 
   const handleDeleteContact = async (id: string, isFromDetail: boolean = true) => {
+    if (!userCanDelete) {
+      alert("Access Denied: You do not have permission to delete data. Only authorized users with Delete Data Rights can delete records.");
+      return;
+    }
     const contact = contacts.find(c => c.id === id);
     const itemLabel = contact?.type === 'SERVICE' ? 'Service Order' : (contact?.type === 'RENT' ? 'Rent Record' : 'Contact');
     if (!window.confirm(`Delete this ${itemLabel} entirely? All transactions will be lost.`)) return;
@@ -1343,6 +1454,10 @@ export default function App() {
   };
 
   const handleResetRentCycle = async (id: string) => {
+    if (!userCanDelete) {
+      alert("Access Denied: Delete Data Rights required to reset or clear cycle transactions.");
+      return;
+    }
     if (!window.confirm("Target achieved! Clear savings for this cycle and start fresh?")) return;
     setIsSubmitting(true);
     try {
@@ -1354,6 +1469,10 @@ export default function App() {
   };
 
   const handleDeleteTransaction = async () => {
+    if (!userCanDelete) {
+      alert("Access Denied: You do not have permission to delete transactions or payments.");
+      return;
+    }
     if (!editingTransaction || isSubmitting) return;
     if (!window.confirm("Delete this record?")) return;
     setIsSubmitting(true);
@@ -1491,16 +1610,24 @@ export default function App() {
                 <p className="text-xs font-semibold text-slate-500 truncate max-w-[160px]">{shopName}</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
                <button 
                  onClick={() => navigateTo('PROFILE')}
-                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-full text-xs font-bold text-slate-700 transition-colors border border-slate-200"
+                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl text-xs font-bold text-slate-700 transition-colors border border-slate-200"
                  title={`Logged in as ${currentUser.name} (${currentUser.role})`}
                >
                  <UserCheck size={14} className="text-blue-600" />
                  <span className="hidden sm:inline max-w-[80px] truncate">{currentUser.name.split(' ')[0]}</span>
                </button>
-               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
+               <button 
+                 onClick={handleLogout}
+                 className="flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-red-200 transition-colors shadow-sm active:scale-95"
+                 title="Log Out of Session"
+               >
+                 <LogOut size={14} />
+                 <span className="hidden sm:inline">Logout</span>
+               </button>
+               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={20} /></button>
             </div>
           </div>
           <div className="flex gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
@@ -1687,18 +1814,20 @@ export default function App() {
                         <span>Edit</span>
                       </button>
 
-                      {/* Delete Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteContact(c.id, false);
-                        }}
-                        className="py-1.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
-                        title="Delete Service Order"
-                      >
-                        <Trash2 size={14} />
-                        <span>Delete</span>
-                      </button>
+                      {/* Delete Button (Restricted by Delete Data Rights) */}
+                      {userCanDelete ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteContact(c.id, false);
+                          }}
+                          className="py-1.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
+                          title="Delete Service Order"
+                        >
+                          <Trash2 size={14} />
+                          <span>Delete</span>
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -1845,13 +1974,15 @@ export default function App() {
               >
                 <Pencil size={18} />
               </button>
-              <button 
-                onClick={() => handleDeleteContact(selectedContact.id, true)} 
-                className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-full active:scale-90 shadow-sm transition-colors"
-                title="Delete Service Order"
-              >
-                <Trash2 size={18} />
-              </button>
+              {userCanDelete && (
+                <button 
+                  onClick={() => handleDeleteContact(selectedContact.id, true)} 
+                  className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-full active:scale-90 shadow-sm transition-colors"
+                  title="Delete Service Order"
+                >
+                  <Trash2 size={18} />
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -1867,7 +1998,9 @@ export default function App() {
                 setAddServiceStatus(selectedContact.serviceStatus || 'Pending'); 
                 navigateTo('CONTACT_FORM'); 
               }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
-              <button onClick={() => handleDeleteContact(selectedContact.id, true)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
+              {userCanDelete && (
+                <button onClick={() => handleDeleteContact(selectedContact.id, true)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm" title="Delete Record"><Trash2 size={18} /></button>
+              )}
             </div>
           )}
         </header>
@@ -1935,13 +2068,15 @@ export default function App() {
                 >
                   <Pencil size={14} /> Edit
                 </button>
-                <button
-                  onClick={() => handleDeleteContact(selectedContact.id, true)}
-                  className="py-2 px-3 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
-                  title="Delete Service Order"
-                >
-                  <Trash2 size={14} /> Delete
-                </button>
+                {userCanDelete && (
+                  <button
+                    onClick={() => handleDeleteContact(selectedContact.id, true)}
+                    className="py-2 px-3 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                    title="Delete Service Order"
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                )}
               </div>
             )}
             {isTargetAchieved && (
@@ -2152,8 +2287,8 @@ export default function App() {
             <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
             <h1 className="text-lg font-bold">{title}</h1>
           </div>
-          {editingTransaction && (
-            <button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all">
+          {editingTransaction && userCanDelete && (
+            <button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-full active:scale-90 transition-all" title="Delete Record">
               <Trash2 size={20} />
             </button>
           )}
@@ -2508,12 +2643,31 @@ export default function App() {
   };
 
   const handleOpenAddUser = () => {
+    if (!userCanManageUsers) {
+      showProfileToast('Access Denied: Administrator rights required to add team users.', 'error');
+      return;
+    }
     setEditingUser(null);
-    setUserForm({ name: '', username: '', role: 'Cashier', phone: '', password: '', status: 'Active', showPassword: false });
+    setUserForm({
+      name: '',
+      username: '',
+      role: 'Cashier',
+      phone: '',
+      password: '',
+      status: 'Active',
+      canDeleteData: false,
+      canEditData: true,
+      canManageUsers: false,
+      showPassword: false
+    });
     setIsUserModalOpen(true);
   };
 
   const handleOpenEditUser = (user: AppUser) => {
+    if (!userCanManageUsers && user.id !== currentUser.id) {
+      showProfileToast('Access Denied: Administrator rights required to edit other users.', 'error');
+      return;
+    }
     setEditingUser(user);
     setUserForm({
       name: user.name,
@@ -2522,6 +2676,9 @@ export default function App() {
       phone: user.phone || '',
       password: '',
       status: user.status,
+      canDeleteData: user.permissions?.canDeleteData !== undefined ? user.permissions.canDeleteData : (user.role === 'Admin'),
+      canEditData: user.permissions?.canEditData !== undefined ? user.permissions.canEditData : true,
+      canManageUsers: user.permissions?.canManageUsers !== undefined ? user.permissions.canManageUsers : (user.role === 'Admin'),
       showPassword: false
     });
     setIsUserModalOpen(true);
@@ -2544,6 +2701,12 @@ export default function App() {
       return;
     }
 
+    const assignedPermissions: UserPermissions = {
+      canDeleteData: userForm.canDeleteData,
+      canEditData: userForm.canEditData,
+      canManageUsers: userForm.canManageUsers
+    };
+
     if (editingUser) {
       const updatedUsers = users.map(u => {
         if (u.id === editingUser.id) {
@@ -2554,6 +2717,7 @@ export default function App() {
             role: userForm.role,
             phone: userForm.phone.trim(),
             status: userForm.status,
+            permissions: assignedPermissions,
             password: userForm.password ? userForm.password : u.password
           };
         }
@@ -2570,6 +2734,7 @@ export default function App() {
         role: userForm.role,
         phone: userForm.phone.trim(),
         status: userForm.status,
+        permissions: assignedPermissions,
         password: userForm.password || '1234',
         createdAt: new Date().toISOString().slice(0, 10)
       };
@@ -2583,6 +2748,10 @@ export default function App() {
   };
 
   const handleDeleteUser = (userId: string) => {
+    if (!userCanManageUsers) {
+      showProfileToast('Access Denied: Only Administrators can delete users.', 'error');
+      return;
+    }
     const user = users.find(u => u.id === userId);
     if (!user) return;
     if (user.role === 'Admin' && users.filter(u => u.role === 'Admin').length <= 1) {
@@ -2779,17 +2948,106 @@ export default function App() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Role & Permission</label>
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Role & Preset</label>
               <select
                 value={userForm.role}
-                onChange={e => setUserForm(prev => ({ ...prev, role: e.target.value as UserRole }))}
+                onChange={e => {
+                  const newRole = e.target.value as UserRole;
+                  setUserForm(prev => ({
+                    ...prev,
+                    role: newRole,
+                    canDeleteData: newRole === 'Admin',
+                    canEditData: true,
+                    canManageUsers: newRole === 'Admin'
+                  }));
+                }}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
               >
-                <option value="Admin">Administrator (Full Access)</option>
+                <option value="Admin">Administrator (Full Access & Delete Rights)</option>
                 <option value="Manager">Manager (Ledger, Service & Reports)</option>
                 <option value="Cashier">Cashier (Payments & Receipts)</option>
                 <option value="Technician">Technician (Repairs & Status)</option>
               </select>
+            </div>
+
+            {/* Custom Rights & Permissions Settings */}
+            <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/90 space-y-2.5">
+              <div className="flex items-center justify-between pb-1.5 border-b border-slate-200">
+                <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
+                  <Shield size={14} className="text-purple-600" />
+                  User Access Rights & Permissions
+                </span>
+                <span className="text-[10px] text-slate-400 font-semibold">Custom Rights</span>
+              </div>
+
+              {/* Delete Data Rights Checkbox */}
+              <label className="flex items-start gap-2.5 p-2 bg-white rounded-xl border border-slate-200/80 cursor-pointer hover:border-slate-300 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={userForm.canDeleteData}
+                  onChange={e => setUserForm(prev => ({ ...prev, canDeleteData: e.target.checked }))}
+                  className="mt-0.5 rounded text-red-600 focus:ring-red-500 h-4 w-4"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-800">Delete Data Rights</span>
+                    {userForm.canDeleteData ? (
+                      <span className="text-[9px] bg-red-100 text-red-700 px-1.5 py-0.2 rounded font-bold">Allowed</span>
+                    ) : (
+                      <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.2 rounded font-bold">Blocked / No Delete</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                    Allow deleting customers, service orders, transactions, and payments. If unchecked, delete buttons are hidden and deletion is strictly prevented.
+                  </p>
+                </div>
+              </label>
+
+              {/* Edit Data Rights Checkbox */}
+              <label className="flex items-start gap-2.5 p-2 bg-white rounded-xl border border-slate-200/80 cursor-pointer hover:border-slate-300 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={userForm.canEditData}
+                  onChange={e => setUserForm(prev => ({ ...prev, canEditData: e.target.checked }))}
+                  className="mt-0.5 rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-800">Edit Data Rights</span>
+                    {userForm.canEditData ? (
+                      <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.2 rounded font-bold">Allowed</span>
+                    ) : (
+                      <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.2 rounded font-bold">Read Only</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                    Allow modifying repair orders, cost estimates, and customer details.
+                  </p>
+                </div>
+              </label>
+
+              {/* Manage Users Rights Checkbox */}
+              <label className="flex items-start gap-2.5 p-2 bg-white rounded-xl border border-slate-200/80 cursor-pointer hover:border-slate-300 transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={userForm.canManageUsers}
+                  onChange={e => setUserForm(prev => ({ ...prev, canManageUsers: e.target.checked }))}
+                  className="mt-0.5 rounded text-purple-600 focus:ring-purple-500 h-4 w-4"
+                />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-800">Admin User Management</span>
+                    {userForm.canManageUsers ? (
+                      <span className="text-[9px] bg-purple-100 text-purple-700 px-1.5 py-0.2 rounded font-bold">Allowed</span>
+                    ) : (
+                      <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.2 rounded font-bold">Standard</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                    Allow adding and editing team users, granting permissions, and updating store profile.
+                  </p>
+                </div>
+              </label>
             </div>
 
             <div className="space-y-1.5">
@@ -2918,27 +3176,45 @@ export default function App() {
               </div>
             </div>
 
-            {/* Switch user selector */}
-            {users.length > 1 && (
-              <div className="relative">
-                <select
-                  value={currentUserId}
-                  onChange={(e) => {
-                    setCurrentUserId(e.target.value);
-                    localStorage.setItem('st_current_user_id', e.target.value);
-                    const switched = users.find(u => u.id === e.target.value);
-                    showProfileToast(`Active user switched to ${switched?.name}`);
-                  }}
-                  className="bg-slate-800 text-slate-200 border border-slate-700 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer hover:bg-slate-700"
-                >
-                  {users.map(u => (
-                    <option key={u.id} value={u.id}>
-                      {u.name} ({u.role})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Switch user selector */}
+              {users.length > 1 && (
+                <div className="relative">
+                  <select
+                    value={currentUserId}
+                    onChange={(e) => {
+                      const nextUserId = e.target.value;
+                      const nextUser = users.find(u => u.id === nextUserId);
+                      if (nextUser) {
+                        setLoginUserId(nextUser.id);
+                        setLoginPassword('');
+                        setLoginError('');
+                        setIsAuthenticated(false);
+                        sessionStorage.removeItem('st_auth_active');
+                      }
+                    }}
+                    className="bg-slate-800 text-slate-200 border border-slate-700 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer hover:bg-slate-700"
+                    title="Switch user account (requires password)"
+                  >
+                    {users.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.role})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Log Out Button */}
+              <button
+                onClick={handleLogout}
+                className="bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-white border border-red-500/40 text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors active:scale-95 shadow-sm"
+                title="Log Out of Session"
+              >
+                <LogOut size={13} />
+                <span className="hidden sm:inline">Log Out</span>
+              </button>
+            </div>
           </div>
 
           {/* Sub Navigation Tabs */}
@@ -3209,16 +3485,29 @@ export default function App() {
             {/* Header with Add User button */}
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="font-bold text-base text-slate-800">User Management</h3>
-                <p className="text-xs text-slate-400">Admin can add staff, technicians, and cashiers</p>
+                <h3 className="font-bold text-base text-slate-800">User Management & Rights</h3>
+                <p className="text-xs text-slate-400">Admin can assign delete rights and team roles</p>
               </div>
-              <button
-                onClick={handleOpenAddUser}
-                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl shadow-md flex items-center gap-1.5 active:scale-95 transition-all"
-              >
-                <UserPlus size={15} /> Add User
-              </button>
+              {userCanManageUsers ? (
+                <button
+                  onClick={handleOpenAddUser}
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl shadow-md flex items-center gap-1.5 active:scale-95 transition-all"
+                >
+                  <UserPlus size={15} /> Add User
+                </button>
+              ) : (
+                <span className="text-xs bg-slate-100 text-slate-500 font-bold px-3 py-1 rounded-xl border border-slate-200">
+                  View Only
+                </span>
+              )}
             </div>
+
+            {!userCanManageUsers && (
+              <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-2xl text-xs text-amber-800 flex items-center gap-2 font-medium">
+                <AlertCircle size={16} className="text-amber-600 shrink-0" />
+                <span>Logged in as standard user. Administrator rights required to add, edit, or delete team accounts.</span>
+              </div>
+            )}
 
             {/* Users List */}
             <div className="space-y-2.5">
@@ -3229,6 +3518,8 @@ export default function App() {
                   u.role === 'Manager' ? 'bg-blue-100 text-blue-800 border-blue-200' :
                   u.role === 'Cashier' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
                   'bg-amber-100 text-amber-800 border-amber-200';
+
+                const hasDeleteRights = u.permissions?.canDeleteData !== undefined ? u.permissions.canDeleteData : (u.role === 'Admin');
 
                 return (
                   <div 
@@ -3260,6 +3551,24 @@ export default function App() {
                       </span>
                     </div>
 
+                    {/* Permissions Badges */}
+                    <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[10px]">
+                      {hasDeleteRights ? (
+                        <span className="bg-red-50 text-red-700 px-2 py-0.5 rounded-md font-bold border border-red-200/60 flex items-center gap-1">
+                          <Trash2 size={10} /> Delete Data Rights: Allowed
+                        </span>
+                      ) : (
+                        <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md font-semibold border border-slate-200 flex items-center gap-1">
+                          <Lock size={10} /> Delete Data: No Access
+                        </span>
+                      )}
+                      {u.permissions?.canManageUsers && (
+                        <span className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded-md font-bold border border-purple-200/60 flex items-center gap-1">
+                          <Shield size={10} /> Admin Rights
+                        </span>
+                      )}
+                    </div>
+
                     <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${u.status === 'Active' ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
@@ -3270,23 +3579,28 @@ export default function App() {
                         {!isCurrent && (
                           <button
                             onClick={() => {
-                              setCurrentUserId(u.id);
-                              localStorage.setItem('st_current_user_id', u.id);
-                              showProfileToast(`Switched active user to ${u.name}`);
+                              setLoginUserId(u.id);
+                              setLoginPassword('');
+                              setLoginError('');
+                              setIsAuthenticated(false);
+                              sessionStorage.removeItem('st_auth_active');
                             }}
                             className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors"
+                            title="Switch to this user (requires password)"
                           >
-                            Switch
+                            Login as User
                           </button>
                         )}
-                        <button
-                          onClick={() => handleOpenEditUser(u)}
-                          className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit User"
-                        >
-                          <Pencil size={15} />
-                        </button>
-                        {users.length > 1 && (
+                        {(userCanManageUsers || isCurrent) && (
+                          <button
+                            onClick={() => handleOpenEditUser(u)}
+                            className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit User"
+                          >
+                            <Pencil size={15} />
+                          </button>
+                        )}
+                        {userCanManageUsers && users.length > 1 && (
                           <button
                             onClick={() => handleDeleteUser(u.id)}
                             className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -3320,34 +3634,241 @@ export default function App() {
               </button>
             </div>
 
-            <div className="bg-red-50/70 p-5 rounded-2xl border border-red-200 shadow-sm space-y-3">
-              <div className="flex items-center gap-2 text-red-700 font-bold text-sm">
-                <ShieldAlert size={18} /> Danger Zone: Wipe Ledger Data
+            {userCanDelete && userCanManageUsers ? (
+              <div className="bg-red-50/70 p-5 rounded-2xl border border-red-200 shadow-sm space-y-3">
+                <div className="flex items-center gap-2 text-red-700 font-bold text-sm">
+                  <ShieldAlert size={18} /> Danger Zone: Wipe Ledger Data
+                </div>
+                <p className="text-xs text-red-600 leading-relaxed">
+                  Permanently deletes all transactions and contacts from the Supabase database. This action cannot be undone.
+                </p>
+                <button 
+                  onClick={async () => { 
+                    if (!window.confirm("RESET APP? All database data will be permanently wiped.")) return; 
+                    await Promise.all([
+                      supabase.from('transactions').delete().neq('id', '0'), 
+                      supabase.from('contacts').delete().neq('id', '0')
+                    ]); 
+                    window.location.reload(); 
+                  }} 
+                  className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all text-xs"
+                >
+                  Wipe All Ledger Records
+                </button>
               </div>
-              <p className="text-xs text-red-600 leading-relaxed">
-                Permanently deletes all transactions and contacts from the Supabase database. This action cannot be undone.
-              </p>
-              <button 
-                onClick={async () => { 
-                  if (!window.confirm("RESET APP? All database data will be permanently wiped.")) return; 
-                  await Promise.all([
-                    supabase.from('transactions').delete().neq('id', '0'), 
-                    supabase.from('contacts').delete().neq('id', '0')
-                  ]); 
-                  window.location.reload(); 
-                }} 
-                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all text-xs"
-              >
-                Wipe All Ledger Records
-              </button>
-            </div>
+            ) : (
+              <div className="bg-slate-100 p-4 rounded-2xl border border-slate-200 text-xs text-slate-500 flex items-center gap-2">
+                <Lock size={16} className="text-slate-400 shrink-0" />
+                <span>Wipe Ledger Data is restricted to Administrators with Delete Data Rights.</span>
+              </div>
+            )}
           </div>
         )}
+
+        {/* Active Session & Log Out Section */}
+        <div className="p-4 sm:p-5 max-w-xl mx-auto w-full pt-1">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold">
+                  <UserCheck size={20} className="text-blue-600" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-slate-800">{currentUser.name}</h4>
+                  <p className="text-xs text-slate-400 font-medium">@{currentUser.username} • {currentUser.role}</p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${userCanDelete ? 'bg-red-50 text-red-700 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                {userCanDelete ? 'Delete: Allowed' : 'Delete: Blocked'}
+              </span>
+            </div>
+
+            <button
+              onClick={handleLogout}
+              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
+            >
+              <LogOut size={16} /> Log Out of Account
+            </button>
+          </div>
+        </div>
 
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
     );
   };
+
+  const renderLoginScreen = () => {
+    const selectedLoginUser = users.find(u => u.id === loginUserId) || users[0] || {
+      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, password: 'admin', createdAt: ''
+    };
+    const canSelectedUserDelete = selectedLoginUser?.permissions?.canDeleteData !== undefined
+      ? selectedLoginUser.permissions.canDeleteData 
+      : (selectedLoginUser?.role === 'Admin');
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden select-none">
+        {/* Subtle decorative glow */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-72 h-72 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="w-full max-w-md z-10 space-y-6">
+          {/* Brand Header */}
+          <div className="text-center space-y-3">
+            <div className="inline-block relative">
+              {shopLogo ? (
+                <img 
+                  src={shopLogo} 
+                  alt="Shop Logo" 
+                  className="w-20 h-20 rounded-3xl object-cover border-2 border-white/20 bg-white shadow-2xl mx-auto" 
+                />
+              ) : (
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-2xl font-black text-3xl border border-white/20 mx-auto">
+                  {shopName[0] || 'S'}
+                </div>
+              )}
+            </div>
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-white">{shopName}</h1>
+              <p className="text-xs text-slate-400 font-medium mt-1">{shopTagline}</p>
+            </div>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[11px] font-semibold text-slate-300">
+              <Lock size={12} className="text-blue-400" />
+              <span>Password Protected Ledger Access</span>
+            </div>
+          </div>
+
+          {/* Login Card */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl backdrop-blur-xl space-y-5">
+            {loginError && (
+              <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-2xl flex items-center gap-2.5 text-xs text-red-300 font-bold animate-in fade-in duration-150">
+                <AlertCircle size={16} className="text-red-400 shrink-0" />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            {/* Select User Section */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                Select User Account
+              </label>
+              <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1 no-scrollbar">
+                {users.map(u => {
+                  const isSelected = u.id === (selectedLoginUser?.id);
+                  const roleColor = 
+                    u.role === 'Admin' ? 'text-purple-400 bg-purple-500/10 border-purple-500/30' :
+                    u.role === 'Manager' ? 'text-blue-400 bg-blue-500/10 border-blue-500/30' :
+                    u.role === 'Cashier' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' :
+                    'text-amber-400 bg-amber-500/10 border-amber-500/30';
+
+                  const hasDelete = u.permissions?.canDeleteData !== undefined ? u.permissions.canDeleteData : (u.role === 'Admin');
+
+                  return (
+                    <div
+                      key={u.id}
+                      onClick={() => {
+                        setLoginUserId(u.id);
+                        setLoginError('');
+                      }}
+                      className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                        isSelected 
+                          ? 'bg-blue-600/20 border-blue-500 shadow-md ring-1 ring-blue-500' 
+                          : 'bg-slate-800/60 border-slate-700/60 hover:bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm ${
+                          u.role === 'Admin' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-200'
+                        }`}>
+                          {u.name[0]}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-white">{u.name}</span>
+                            {isSelected && <span className="w-2 h-2 rounded-full bg-blue-400"></span>}
+                          </div>
+                          <span className="text-[11px] text-slate-400 font-medium">@{u.username}</span>
+                        </div>
+                      </div>
+
+                      <div className="text-right flex flex-col items-end gap-1">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${roleColor}`}>
+                          {u.role}
+                        </span>
+                        <span className="text-[9px] text-slate-400">
+                          {hasDelete ? 'Delete: Allowed' : 'Delete: Blocked'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Password Input Form */}
+            <form onSubmit={handleLogin} className="space-y-4 pt-1">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    Password for @{selectedLoginUser?.username || 'user'}
+                  </label>
+                  <span className="text-[10px] text-slate-400 font-medium">
+                    {canSelectedUserDelete ? '✓ Has Delete Rights' : '🔒 No Delete Rights'}
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
+                    <Lock size={16} />
+                  </div>
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    value={loginPassword}
+                    onChange={e => {
+                      setLoginPassword(e.target.value);
+                      if (loginError) setLoginError('');
+                    }}
+                    placeholder="Enter account password"
+                    className="w-full bg-slate-800/80 border border-slate-700 rounded-2xl pl-10 pr-11 py-3 text-sm font-semibold text-white outline-none focus:border-blue-500 focus:bg-slate-800 transition-all placeholder:text-slate-500"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword(!showLoginPassword)}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+                  >
+                    {showLoginPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Login Submit Button */}
+              <button
+                type="submit"
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-3.5 px-4 rounded-2xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 text-sm shadow-blue-600/30"
+              >
+                <Unlock size={17} />
+                <span>Unlock & Sign In</span>
+              </button>
+            </form>
+
+            {/* Helpful Testing / First-time hint */}
+            <div className="pt-2 border-t border-slate-800 text-center">
+              <p className="text-[11px] text-slate-400 font-medium">
+                Default password for Super Admin: <span className="font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">admin</span>
+              </p>
+              <p className="text-[10px] text-slate-500 mt-1">
+                Admins can change passwords and configure user rights in the Profile tab.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // If not authenticated, require password login
+  if (!isAuthenticated) {
+    return renderLoginScreen();
+  }
 
   let content;
   if (currentView === 'DASHBOARD') content = renderDashboard();

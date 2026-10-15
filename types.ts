@@ -39,6 +39,12 @@ export interface SummaryStats {
 
 export type UserRole = 'Admin' | 'Manager' | 'Cashier' | 'Technician';
 
+export interface UserPermissions {
+  canDeleteData: boolean;    // Delete rights for contacts, service orders, transactions, payments
+  canEditData: boolean;      // Edit rights for orders, records, amounts
+  canManageUsers: boolean;   // Admin rights to manage team users and settings
+}
+
 export interface AppUser {
   id: string;
   name: string;
@@ -47,6 +53,7 @@ export interface AppUser {
   status: 'Active' | 'Inactive';
   phone?: string;
   password?: string;
+  permissions?: UserPermissions;
   createdAt: string;
 }
 
