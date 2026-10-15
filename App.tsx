@@ -502,6 +502,24 @@ export default function App() {
         .filter(t => t.contactId === contact.id)
         .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
+      // Service charges / costs added to this order
+      const chargeTransactions = contactTransactions.filter(t => t.type === 'CREDIT');
+      const chargesToRender = chargeTransactions.length > 0
+        ? chargeTransactions.map(c => ({
+            id: c.id,
+            date: c.date,
+            desc: c.description || 'Service Charge',
+            amount: c.amount
+          }))
+        : ((contact.totalCost || contact.targetAmount || stats?.totalCredit || 0) > 0 ? [{
+            id: 'init-cost',
+            date: contact.orderDate || (contact.lastUpdated ? contact.lastUpdated.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+            desc: 'Device Service & Repair Charge',
+            amount: contact.totalCost || contact.targetAmount || stats?.totalCredit || 0
+          }] : []);
+
+      const totalCalculatedCost = chargesToRender.reduce((sum, c) => sum + c.amount, 0) || totalCost;
+
       const paymentTransactions = contactTransactions.filter(t => t.type === 'PAYMENT');
       const paymentsToRender = paymentTransactions.length > 0
         ? paymentTransactions.map(p => ({
@@ -518,13 +536,13 @@ export default function App() {
           }] : []);
 
       const totalPaid = paymentsToRender.reduce((sum, p) => sum + p.amount, 0);
-      const balanceDue = totalCost - totalPaid;
+      const balanceDue = totalCalculatedCost - totalPaid;
       const orderNo = `SO-${contact.id.slice(0, 6).toUpperCase()}`;
       const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       if (format === 'POS') {
-        const dynamicHeight = Math.max(160, 130 + (paymentsToRender.length * 6) + 35);
+        const dynamicHeight = Math.max(180, 140 + (chargesToRender.length * 6) + (paymentsToRender.length * 6) + 40);
         const doc = new jsPDF({
           orientation: 'portrait',
           unit: 'mm',
@@ -577,15 +595,39 @@ export default function App() {
         y += 4.5;
         doc.text(`Status   : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 6, y);
 
+        // Section: Added Service Charges & Costs
         y += 4;
         doc.text('------------------------------------------', 40, y, { align: 'center' });
+        y += 4;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('SERVICE CHARGES & COSTS', 40, y, { align: 'center' });
+        y += 3.5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(7.5);
 
+        if (chargesToRender.length === 0) {
+          y += 3.5;
+          doc.text('No charges recorded', 40, y, { align: 'center' });
+        } else {
+          chargesToRender.forEach(c => {
+            y += 4.2;
+            const cDate = formatDisplayDate(c.date);
+            const desc = (c.desc || 'Service Charge').slice(0, 16);
+            doc.text(`${cDate} ${desc}`, 6, y);
+            doc.text(`LKR ${c.amount.toLocaleString()}`, 74, y, { align: 'right' });
+          });
+        }
+
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
         y += 4.5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(8.5);
-        doc.text('TOTAL REPAIR COST :', 6, y);
-        doc.text(`LKR ${totalCost.toLocaleString()}`, 74, y, { align: 'right' });
+        doc.text('TOTAL SERVICE COST :', 6, y);
+        doc.text(`LKR ${totalCalculatedCost.toLocaleString()}`, 74, y, { align: 'right' });
 
+        // Section: Payment History
         y += 4;
         doc.text('------------------------------------------', 40, y, { align: 'center' });
         y += 4;
@@ -697,22 +739,32 @@ export default function App() {
         doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 53);
         doc.text(`Receipt Time  : ${timeStr}`, 115, 60);
 
-        // Table 1: Service Charge
+        // Table 1: Service Charges Breakdown
+        const chargeRows = chargesToRender.length > 0
+          ? chargesToRender.map((c, idx) => [
+              (idx + 1).toString(),
+              formatDisplayDate(c.date),
+              c.desc || 'Device Service & Repair Charge',
+              contact.phoneModel || '-',
+              `LKR ${c.amount.toLocaleString()}`
+            ])
+          : [['1', formatDisplayDate(contact.orderDate || new Date().toISOString().slice(0, 10)), 'Device Service & Repair Charge', contact.phoneModel || '-', `LKR ${totalCalculatedCost.toLocaleString()}`]];
+
         autoTable(doc, {
           startY: 68,
-          head: [['#', 'Item / Service Description', 'Device / Model', 'Status', 'Total Charge (LKR)']],
-          body: [
-            ['1', 'Device Service & Repair Charge', contact.phoneModel || '-', contact.serviceStatus || 'Pending', `LKR ${totalCost.toLocaleString()}`],
-          ],
+          head: [['#', 'Date', 'Charge / Item Description', 'Device / Model', 'Charge Amount (LKR)']],
+          body: chargeRows,
           theme: 'striped',
           headStyles: { fillColor: [51, 65, 85], fontStyle: 'bold' },
-          styles: { fontSize: 10, cellPadding: 4 },
+          foot: [['', '', 'Total Service Cost', '', `LKR ${totalCalculatedCost.toLocaleString()}`]],
+          footStyles: { fillColor: [241, 245, 249], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' },
+          styles: { fontSize: 9.5, cellPadding: 3.5 },
           columnStyles: {
-            0: { cellWidth: 12 },
-            1: { cellWidth: 70 },
-            2: { cellWidth: 48 },
-            3: { cellWidth: 32 },
-            4: { cellWidth: 34, halign: 'right' }
+            0: { cellWidth: 10 },
+            1: { cellWidth: 28 },
+            2: { cellWidth: 74 },
+            3: { cellWidth: 42 },
+            4: { cellWidth: 40, halign: 'right' }
           }
         });
 
@@ -741,13 +793,15 @@ export default function App() {
           body: paymentRows,
           theme: 'striped',
           headStyles: { fillColor: [15, 118, 110], fontStyle: 'bold' },
+          foot: [['', '', 'Total Paid to Date', '', `LKR ${totalPaid.toLocaleString()}`]],
+          footStyles: { fillColor: [241, 245, 249], textColor: [21, 128, 61], fontStyle: 'bold', halign: 'right' },
           styles: { fontSize: 9.5, cellPadding: 3.5 },
           columnStyles: {
-            0: { cellWidth: 12 },
-            1: { cellWidth: 35 },
-            2: { cellWidth: 80 },
-            3: { cellWidth: 32 },
-            4: { cellWidth: 37, halign: 'right' }
+            0: { cellWidth: 10 },
+            1: { cellWidth: 32 },
+            2: { cellWidth: 78 },
+            3: { cellWidth: 34 },
+            4: { cellWidth: 40, halign: 'right' }
           }
         });
 
@@ -763,7 +817,7 @@ export default function App() {
         doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
         doc.text('Total Service Cost:', 125, boxY + 8);
-        doc.text(`LKR ${totalCost.toLocaleString()}`, 190, boxY + 8, { align: 'right' });
+        doc.text(`LKR ${totalCalculatedCost.toLocaleString()}`, 190, boxY + 8, { align: 'right' });
 
         doc.text('Total Paid to Date:', 125, boxY + 15);
         doc.text(`LKR ${totalPaid.toLocaleString()}`, 190, boxY + 15, { align: 'right' });
