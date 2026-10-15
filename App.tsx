@@ -66,6 +66,19 @@ const getRentCycleStart = () => {
   return cycleStart;
 };
 
+const formatDisplayDate = (dStr: string | null | undefined) => {
+  if (!dStr) return '-';
+  const parts = dStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (parts) {
+    const y = parseInt(parts[1]);
+    const m = parseInt(parts[2]) - 1;
+    const d = parseInt(parts[3]);
+    const dateObj = new Date(y, m, d);
+    return dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  return dStr;
+};
+
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('DASHBOARD');
   const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
@@ -85,6 +98,8 @@ export default function App() {
   const [addPhoneModel, setAddPhoneModel] = useState('');
   const [addTotalCost, setAddTotalCost] = useState('');
   const [addAdvancePayment, setAddAdvancePayment] = useState('');
+  const [addOrderDate, setAddOrderDate] = useState(new Date().toISOString().slice(0, 10));
+  const [addAdvanceDate, setAddAdvanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [addServiceStatus, setAddServiceStatus] = useState('Pending');
   const [targetAmount, setTargetAmount] = useState('30000');
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -108,6 +123,8 @@ export default function App() {
   const [previewFormat, setPreviewFormat] = useState<'POS' | 'A4'>('POS');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
+  const orderDateInputRef = useRef<HTMLInputElement>(null);
+  const advanceDateInputRef = useRef<HTMLInputElement>(null);
 
   const contactStats = useMemo(() => {
     const stats: Record<string, { totalCredit: number; totalPayment: number; balance: number }> = {};
@@ -324,17 +341,38 @@ export default function App() {
     try {
       const stats = contactStats[contact.id];
       const totalCost = stats?.totalCredit || contact.targetAmount || contact.totalCost || 0;
-      const advancePaid = stats?.totalPayment || contact.advancePayment || 0;
-      const balanceDue = totalCost - advancePaid;
+      
+      const contactTransactions = transactions
+        .filter(t => t.contactId === contact.id)
+        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      const paymentTransactions = contactTransactions.filter(t => t.type === 'PAYMENT');
+      const paymentsToRender = paymentTransactions.length > 0
+        ? paymentTransactions.map(p => ({
+            id: p.id,
+            date: p.date,
+            desc: p.description || 'Payment Received',
+            amount: p.amount
+          }))
+        : ((contact.advancePayment || 0) > 0 ? [{
+            id: 'init-adv',
+            date: contact.advanceDate || (contact.lastUpdated ? contact.lastUpdated.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+            desc: 'Advance Payment',
+            amount: contact.advancePayment || 0
+          }] : []);
+
+      const totalPaid = paymentsToRender.reduce((sum, p) => sum + p.amount, 0);
+      const balanceDue = totalCost - totalPaid;
       const orderNo = `SO-${contact.id.slice(0, 6).toUpperCase()}`;
       const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       if (format === 'POS') {
+        const dynamicHeight = Math.max(160, 130 + (paymentsToRender.length * 6) + 35);
         const doc = new jsPDF({
           orientation: 'portrait',
           unit: 'mm',
-          format: [80, 160]
+          format: [80, dynamicHeight]
         });
 
         let y = 10;
@@ -376,13 +414,40 @@ export default function App() {
         y += 4;
         doc.text('------------------------------------------', 40, y, { align: 'center' });
 
-        y += 5;
-        doc.text('Total Cost   :', 6, y);
+        y += 4.5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('TOTAL REPAIR COST :', 6, y);
         doc.text(`LKR ${totalCost.toLocaleString()}`, 74, y, { align: 'right' });
 
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+        y += 4;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('PAYMENT HISTORY (WITH DATE)', 40, y, { align: 'center' });
+        y += 3.5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(7.5);
+
+        if (paymentsToRender.length === 0) {
+          y += 3.5;
+          doc.text('No payments recorded yet', 40, y, { align: 'center' });
+        } else {
+          paymentsToRender.forEach(p => {
+            y += 4.2;
+            const pDate = formatDisplayDate(p.date);
+            const desc = (p.desc || 'Payment').slice(0, 16);
+            doc.text(`${pDate} ${desc}`, 6, y);
+            doc.text(`LKR ${p.amount.toLocaleString()}`, 74, y, { align: 'right' });
+          });
+        }
+
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
         y += 4.5;
-        doc.text('Advance Paid :', 6, y);
-        doc.text(`LKR ${advancePaid.toLocaleString()}`, 74, y, { align: 'right' });
+        doc.text('Total Paid to Date :', 6, y);
+        doc.text(`LKR ${totalPaid.toLocaleString()}`, 74, y, { align: 'right' });
 
         y += 4;
         doc.text('------------------------------------------', 40, y, { align: 'center' });
@@ -456,12 +521,12 @@ export default function App() {
         doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 53);
         doc.text(`Receipt Time  : ${timeStr}`, 115, 60);
 
+        // Table 1: Service Charge
         autoTable(doc, {
           startY: 68,
-          head: [['#', 'Item / Service Description', 'Device / Model', 'Status', 'Amount (LKR)']],
+          head: [['#', 'Item / Service Description', 'Device / Model', 'Status', 'Total Charge (LKR)']],
           body: [
             ['1', 'Device Service & Repair Charge', contact.phoneModel || '-', contact.serviceStatus || 'Pending', `LKR ${totalCost.toLocaleString()}`],
-            ['2', 'Advance Deposit Paid', '-', 'Received', `- LKR ${advancePaid.toLocaleString()}`],
           ],
           theme: 'striped',
           headStyles: { fillColor: [51, 65, 85], fontStyle: 'bold' },
@@ -475,7 +540,42 @@ export default function App() {
           }
         });
 
-        const finalY = (doc as any).lastAutoTable?.finalY || 105;
+        const table1FinalY = (doc as any).lastAutoTable?.finalY || 85;
+
+        // Payment History Section Heading
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 41, 59);
+        doc.text('Payment History & Receipts (With Dates)', 14, table1FinalY + 8);
+
+        const paymentRows = paymentsToRender.length > 0
+          ? paymentsToRender.map((p, idx) => [
+              (idx + 1).toString(),
+              formatDisplayDate(p.date),
+              p.desc || 'Payment Received',
+              'Confirmed',
+              `LKR ${p.amount.toLocaleString()}`
+            ])
+          : [['-', '-', 'No payment records found', 'Pending', 'LKR 0']];
+
+        // Table 2: Payment History
+        autoTable(doc, {
+          startY: table1FinalY + 11,
+          head: [['#', 'Payment Date', 'Payment Description / Note', 'Status', 'Amount Paid (LKR)']],
+          body: paymentRows,
+          theme: 'striped',
+          headStyles: { fillColor: [15, 118, 110], fontStyle: 'bold' },
+          styles: { fontSize: 9.5, cellPadding: 3.5 },
+          columnStyles: {
+            0: { cellWidth: 12 },
+            1: { cellWidth: 35 },
+            2: { cellWidth: 80 },
+            3: { cellWidth: 32 },
+            4: { cellWidth: 37, halign: 'right' }
+          }
+        });
+
+        const finalY = (doc as any).lastAutoTable?.finalY || (table1FinalY + 35);
 
         // Balance Summary Box
         const boxY = finalY + 8;
@@ -489,8 +589,8 @@ export default function App() {
         doc.text('Total Service Cost:', 125, boxY + 8);
         doc.text(`LKR ${totalCost.toLocaleString()}`, 190, boxY + 8, { align: 'right' });
 
-        doc.text('Advance Paid:', 125, boxY + 15);
-        doc.text(`LKR ${advancePaid.toLocaleString()}`, 190, boxY + 15, { align: 'right' });
+        doc.text('Total Paid to Date:', 125, boxY + 15);
+        doc.text(`LKR ${totalPaid.toLocaleString()}`, 190, boxY + 15, { align: 'right' });
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
@@ -550,6 +650,13 @@ export default function App() {
     setAddAdvancePayment(adv ? adv.toString() : '');
     setAddServiceStatus(contact.serviceStatus || 'Pending');
     setTargetAmount(contact.targetAmount?.toString() || '30000');
+
+    const costTx = transactions.find(t => t.contactId === contact.id && t.description === 'Service Total Cost');
+    setAddOrderDate(costTx?.date || contact.orderDate || new Date().toISOString().slice(0, 10));
+
+    const advTx = transactions.find(t => t.contactId === contact.id && t.description === 'Advance Payment');
+    setAddAdvanceDate(advTx?.date || contact.advanceDate || new Date().toISOString().slice(0, 10));
+
     navigateTo('CONTACT_FORM');
   };
 
@@ -557,8 +664,28 @@ export default function App() {
     if (!isPreviewModalOpen || !previewServiceOrder) return null;
     const stats = contactStats[previewServiceOrder.id];
     const totalCost = stats?.totalCredit || previewServiceOrder.targetAmount || previewServiceOrder.totalCost || 0;
-    const advancePaid = stats?.totalPayment || previewServiceOrder.advancePayment || 0;
-    const balanceDue = totalCost - advancePaid;
+    
+    const contactTransactions = transactions
+      .filter(t => t.contactId === previewServiceOrder.id)
+      .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    const paymentTransactions = contactTransactions.filter(t => t.type === 'PAYMENT');
+    const paymentsToRender = paymentTransactions.length > 0
+      ? paymentTransactions.map(p => ({
+          id: p.id,
+          date: p.date,
+          desc: p.description || 'Payment Received',
+          amount: p.amount
+        }))
+      : ((previewServiceOrder.advancePayment || 0) > 0 ? [{
+          id: 'init-adv',
+          date: previewServiceOrder.advanceDate || (previewServiceOrder.lastUpdated ? previewServiceOrder.lastUpdated.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+          desc: 'Advance Payment',
+          amount: previewServiceOrder.advancePayment || 0
+        }] : []);
+
+    const totalPaid = paymentsToRender.reduce((sum, p) => sum + p.amount, 0);
+    const balanceDue = totalCost - totalPaid;
     const orderNo = `SO-${previewServiceOrder.id.slice(0, 6).toUpperCase()}`;
     const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -635,15 +762,35 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="py-3 border-b border-dashed border-slate-300 space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Total Repair Cost:</span>
-                    <span className="font-bold text-red-600">LKR {totalCost.toLocaleString()}</span>
+                <div className="py-2.5 border-b border-dashed border-slate-300">
+                  <div className="flex justify-between text-xs font-bold text-slate-800 mb-2">
+                    <span>Total Service Cost:</span>
+                    <span className="text-red-600">LKR {totalCost.toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Advance Paid:</span>
-                    <span className="font-bold text-green-600">LKR {advancePaid.toLocaleString()}</span>
+                  
+                  <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                      <span>Payment History (With Date)</span>
+                      <span className="text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold">{paymentsToRender.length} payment(s)</span>
+                    </p>
+                    {paymentsToRender.length === 0 ? (
+                      <p className="text-slate-400 text-[11px] italic text-center py-1">No payments recorded yet</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {paymentsToRender.map((p, idx) => (
+                          <div key={idx} className="flex justify-between items-center text-[11px]">
+                            <span className="text-slate-600 font-medium">{formatDisplayDate(p.date)} • {p.desc}</span>
+                            <span className="font-bold text-green-700">LKR {p.amount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
+                </div>
+
+                <div className="py-2 border-b border-dashed border-slate-300 flex justify-between text-xs font-semibold text-slate-600">
+                  <span>Total Paid to Date:</span>
+                  <span className="font-bold text-green-700">LKR {totalPaid.toLocaleString()}</span>
                 </div>
 
                 <div className="py-3 bg-slate-50 rounded-lg px-3 my-2 border border-slate-200 flex justify-between items-center">
@@ -689,41 +836,74 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Table */}
+                  {/* Table 1: Service Charge */}
                   <div className="border border-slate-200 rounded-xl overflow-hidden">
                     <table className="w-full text-xs text-left">
                       <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
                         <tr>
                           <th className="p-2.5">Item Description</th>
                           <th className="p-2.5">Device</th>
+                          <th className="p-2.5">Status</th>
                           <th className="p-2.5 text-right">Amount</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody>
                         <tr>
                           <td className="p-2.5 font-medium text-slate-800">Phone Repair & Service Charge</td>
                           <td className="p-2.5 text-slate-600">{previewServiceOrder.phoneModel || '-'}</td>
+                          <td className="p-2.5 text-slate-600">{previewServiceOrder.serviceStatus || 'Pending'}</td>
                           <td className="p-2.5 text-right font-bold text-red-600">LKR {totalCost.toLocaleString()}</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2.5 font-medium text-slate-800">Advance Deposit Paid</td>
-                          <td className="p-2.5 text-slate-400">Paid</td>
-                          <td className="p-2.5 text-right font-bold text-green-600">- LKR {advancePaid.toLocaleString()}</td>
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* Table 2: Payment History With Dates */}
+                  <div>
+                    <h5 className="font-bold text-xs text-slate-700 mb-2 flex items-center justify-between">
+                      <span>Payment History & Receipts (With Dates)</span>
+                      <span className="text-[10px] font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">{paymentsToRender.length} recorded</span>
+                    </h5>
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-teal-700 text-white font-bold">
+                          <tr>
+                            <th className="p-2">#</th>
+                            <th className="p-2">Payment Date</th>
+                            <th className="p-2">Description / Note</th>
+                            <th className="p-2 text-right">Amount Paid</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {paymentsToRender.length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="p-3 text-center text-slate-400 italic">No payments recorded yet</td>
+                            </tr>
+                          ) : (
+                            paymentsToRender.map((p, idx) => (
+                              <tr key={idx}>
+                                <td className="p-2 text-slate-400">{idx + 1}</td>
+                                <td className="p-2 font-semibold text-slate-800">{formatDisplayDate(p.date)}</td>
+                                <td className="p-2 text-slate-600">{p.desc}</td>
+                                <td className="p-2 text-right font-bold text-green-600">LKR {p.amount.toLocaleString()}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   {/* Summary */}
                   <div className="flex justify-end">
                     <div className="w-60 bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
                       <div className="flex justify-between text-slate-600">
-                        <span>Total Cost:</span>
+                        <span>Total Service Cost:</span>
                         <span className="font-bold text-slate-900">LKR {totalCost.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between text-slate-600">
-                        <span>Advance Paid:</span>
-                        <span className="font-bold text-slate-900">LKR {advancePaid.toLocaleString()}</span>
+                        <span>Total Paid to Date:</span>
+                        <span className="font-bold text-green-700">LKR {totalPaid.toLocaleString()}</span>
                       </div>
                       <div className="border-t border-slate-200 pt-1.5 flex justify-between items-center">
                         <span className="font-black text-slate-800">BALANCE DUE:</span>
@@ -813,12 +993,16 @@ export default function App() {
         setContacts(contactsRes.data.map((c: any) => {
           let parsedStatus = 'Pending';
           let parsedAdvance = 0;
+          let parsedAdvDate = '';
+          let parsedOrderDate = '';
           if (c.end_date) {
             try {
               if (c.end_date.startsWith('{')) {
                 const parsed = JSON.parse(c.end_date);
                 parsedStatus = parsed.status || 'Pending';
                 parsedAdvance = parsed.advance || 0;
+                parsedAdvDate = parsed.advanceDate || '';
+                parsedOrderDate = parsed.orderDate || '';
               } else {
                 parsedStatus = c.end_date;
               }
@@ -837,6 +1021,8 @@ export default function App() {
             serviceStatus: parsedStatus,
             totalCost: c.target_amount || 0,
             advancePayment: parsedAdvance,
+            advanceDate: parsedAdvDate,
+            orderDate: parsedOrderDate,
             lastUpdated: c.last_updated
           };
         }));
@@ -861,6 +1047,8 @@ export default function App() {
       const isService = editingContact ? editingContact.type === 'SERVICE' : activeTab === 'SERVICE';
       const costVal = isService ? (parseFloat(addTotalCost) || 0) : null;
       const advanceVal = isService ? (parseFloat(addAdvancePayment) || 0) : null;
+      const effectiveOrderDate = addOrderDate || new Date().toISOString().slice(0, 10);
+      const effectiveAdvDate = addAdvanceDate || new Date().toISOString().slice(0, 10);
 
       const payload: any = { 
         name: addName.trim(), 
@@ -868,7 +1056,12 @@ export default function App() {
         type: isService ? 'SERVICE' : activeTab, 
         target_amount: isService ? costVal : (activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null), 
         start_date: isService ? addPhoneModel.trim() : null,
-        end_date: isService ? JSON.stringify({ status: addServiceStatus, advance: advanceVal || 0 }) : null,
+        end_date: isService ? JSON.stringify({ 
+          status: addServiceStatus, 
+          advance: advanceVal || 0,
+          advanceDate: effectiveAdvDate,
+          orderDate: effectiveOrderDate 
+        }) : null,
         last_updated: new Date().toISOString() 
       };
       
@@ -897,18 +1090,19 @@ export default function App() {
           serviceStatus: addServiceStatus,
           totalCost: costVal || 0,
           advancePayment: advanceVal || 0,
+          advanceDate: effectiveAdvDate,
+          orderDate: effectiveOrderDate,
           lastUpdated: savedData.last_updated
         };
 
-        // If it is a new SERVICE order, automatically record transactions for Total Cost & Advance Payment!
+        // If it is a new SERVICE order, automatically record transactions for Total Cost & Advance Payment with explicit dates!
         if (isService && contactId && !editingContact) {
-          const todayDate = new Date().toISOString().slice(0, 10);
           const newTxList: Transaction[] = [];
 
           if (costVal && costVal > 0) {
             const costTx = {
               contact_id: contactId,
-              date: todayDate,
+              date: effectiveOrderDate,
               amount: costVal,
               type: 'CREDIT' as TransactionType,
               description: 'Service Total Cost',
@@ -932,7 +1126,7 @@ export default function App() {
             const balAfter = Math.max(0, (costVal || 0) - advanceVal);
             const advTx = {
               contact_id: contactId,
-              date: todayDate,
+              date: effectiveAdvDate,
               amount: advanceVal,
               type: 'PAYMENT' as TransactionType,
               description: 'Advance Payment',
@@ -956,18 +1150,17 @@ export default function App() {
             setTransactions(prev => [...newTxList, ...prev]);
           }
         } else if (isService && editingContact) {
-          // If editing an existing service order, sync transactions for Total Cost and Advance Payment
-          const todayDate = new Date().toISOString().slice(0, 10);
+          // If editing an existing service order, sync transactions for Total Cost and Advance Payment including updated dates!
           const existingCostTx = transactions.find(t => t.contactId === editingContact.id && t.description === 'Service Total Cost');
           if (existingCostTx) {
-            if (costVal !== null && costVal > 0 && costVal !== existingCostTx.amount) {
-              await supabase.from('transactions').update({ amount: costVal }).eq('id', existingCostTx.id);
-              setTransactions(prev => prev.map(t => t.id === existingCostTx.id ? { ...t, amount: costVal } : t));
+            if (costVal !== null && costVal > 0 && (costVal !== existingCostTx.amount || effectiveOrderDate !== existingCostTx.date)) {
+              await supabase.from('transactions').update({ amount: costVal, date: effectiveOrderDate }).eq('id', existingCostTx.id);
+              setTransactions(prev => prev.map(t => t.id === existingCostTx.id ? { ...t, amount: costVal, date: effectiveOrderDate } : t));
             }
           } else if (costVal && costVal > 0) {
             const costTx = {
               contact_id: editingContact.id,
-              date: todayDate,
+              date: effectiveOrderDate,
               amount: costVal,
               type: 'CREDIT' as TransactionType,
               description: 'Service Total Cost',
@@ -989,9 +1182,9 @@ export default function App() {
 
           const existingAdvTx = transactions.find(t => t.contactId === editingContact.id && t.description === 'Advance Payment');
           if (existingAdvTx) {
-            if (advanceVal !== null && advanceVal > 0 && advanceVal !== existingAdvTx.amount) {
-              await supabase.from('transactions').update({ amount: advanceVal }).eq('id', existingAdvTx.id);
-              setTransactions(prev => prev.map(t => t.id === existingAdvTx.id ? { ...t, amount: advanceVal } : t));
+            if (advanceVal !== null && advanceVal > 0 && (advanceVal !== existingAdvTx.amount || effectiveAdvDate !== existingAdvTx.date)) {
+              await supabase.from('transactions').update({ amount: advanceVal, date: effectiveAdvDate }).eq('id', existingAdvTx.id);
+              setTransactions(prev => prev.map(t => t.id === existingAdvTx.id ? { ...t, amount: advanceVal, date: effectiveAdvDate } : t));
             } else if (advanceVal === 0) {
               await supabase.from('transactions').delete().eq('id', existingAdvTx.id);
               setTransactions(prev => prev.filter(t => t.id !== existingAdvTx.id));
@@ -999,7 +1192,7 @@ export default function App() {
           } else if (advanceVal && advanceVal > 0) {
             const advTx = {
               contact_id: editingContact.id,
-              date: todayDate,
+              date: effectiveAdvDate,
               amount: advanceVal,
               type: 'PAYMENT' as TransactionType,
               description: 'Advance Payment',
@@ -1033,6 +1226,8 @@ export default function App() {
       setAddPhoneModel('');
       setAddTotalCost('');
       setAddAdvancePayment('');
+      setAddOrderDate(new Date().toISOString().slice(0, 10));
+      setAddAdvanceDate(new Date().toISOString().slice(0, 10));
       setAddServiceStatus('Pending');
       setTargetAmount('30000'); 
       setEditingContact(null);
@@ -1650,19 +1845,177 @@ export default function App() {
             )}
           </div>
         </div>
-        <div className="flex-1 bg-white">
-          {computedWithBalance.map(t => (
-            <TransactionRow key={t.id} transaction={t} onClick={(tx) => { setEditingTransaction(tx); setTransType(tx.type); setTransAmount(tx.amount.toString()); setTransDate(tx.date); setTransDesc(tx.description || ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} />
-          ))}
-          {computedWithBalance.length === 0 && <div className="p-16 text-center text-slate-400">No transactions recorded yet</div>}
-        </div>
+        {isService ? (
+          <div className="flex-1 bg-gray-50 p-4 space-y-4">
+            {/* Payment History Card with Date */}
+            <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                    <Receipt size={16} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-sm">Payment History (With Date)</h3>
+                    <p className="text-[10px] text-slate-400 font-medium">All advance & installments paid by customer</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setEditingTransaction(null);
+                    setTransType('PAYMENT');
+                    setTransAmount('');
+                    setTransDate(new Date().toISOString().slice(0, 10));
+                    setTransDesc('Payment');
+                    navigateTo('TRANSACTION_FORM', selectedContact.id);
+                  }}
+                  className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
+                >
+                  <Plus size={14} /> Add Payment
+                </button>
+              </div>
+
+              {/* Payments List */}
+              {contactTransactions.filter(t => t.type === 'PAYMENT').length === 0 ? (
+                <div className="py-6 text-center text-slate-400 text-xs">
+                  <p className="font-medium">No payments recorded yet</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Tap &ldquo;+ Add Payment&rdquo; to record an advance or payment with date.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {contactTransactions.filter(t => t.type === 'PAYMENT').map(p => (
+                    <div 
+                      key={p.id}
+                      onClick={() => {
+                        setEditingTransaction(p);
+                        setTransType(p.type);
+                        setTransAmount(p.amount.toString());
+                        setTransDate(p.date);
+                        setTransDesc(p.description || '');
+                        navigateTo('TRANSACTION_FORM', selectedContact.id);
+                      }}
+                      className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-xs">
+                          ✓
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs text-slate-800">{p.description || 'Payment'}</span>
+                            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
+                              <Calendar size={10} className="text-slate-400" />
+                              {formatDisplayDate(p.date)}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Tap to update date or amount</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-sm text-emerald-700">
+                          + LKR {p.amount.toLocaleString()}
+                        </span>
+                        <div className="p-1.5 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50 rounded-lg transition-colors">
+                          <Pencil size={13} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Total Paid Footer */}
+              <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
+                <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">Total Paid to Date:</span>
+                <span className="font-black text-emerald-700">
+                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT').reduce((sum, p) => sum + p.amount, 0).toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {/* Service & Repair Charges Section */}
+            <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-red-50 text-red-600 flex items-center justify-center">
+                    <Wrench size={16} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-sm">Service Charges & Costs (With Date)</h3>
+                    <p className="text-[10px] text-slate-400 font-medium">Repair fees and parts cost</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setEditingTransaction(null);
+                    setTransType('CREDIT');
+                    setTransAmount('');
+                    setTransDate(new Date().toISOString().slice(0, 10));
+                    setTransDesc('Service Total Cost');
+                    navigateTo('TRANSACTION_FORM', selectedContact.id);
+                  }}
+                  className="py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
+                >
+                  <Plus size={14} /> Add Charge
+                </button>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {contactTransactions.filter(t => t.type === 'CREDIT').map(c => (
+                  <div 
+                    key={c.id}
+                    onClick={() => {
+                      setEditingTransaction(c);
+                      setTransType(c.type);
+                      setTransAmount(c.amount.toString());
+                      setTransDate(c.date);
+                      setTransDesc(c.description || '');
+                      navigateTo('TRANSACTION_FORM', selectedContact.id);
+                    }}
+                    className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-red-100 text-red-700 flex items-center justify-center font-bold text-xs">
+                        🔧
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-slate-800">{c.description || 'Service Charge'}</span>
+                          <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
+                            <Calendar size={10} className="text-slate-400" />
+                            {formatDisplayDate(c.date)}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Tap to update date or cost</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-sm text-red-600">
+                        LKR {c.amount.toLocaleString()}
+                      </span>
+                      <div className="p-1.5 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50 rounded-lg transition-colors">
+                        <Pencil size={13} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 bg-white">
+            {computedWithBalance.map(t => (
+              <TransactionRow key={t.id} transaction={t} onClick={(tx) => { setEditingTransaction(tx); setTransType(tx.type); setTransAmount(tx.amount.toString()); setTransDate(tx.date); setTransDesc(tx.description || ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} />
+            ))}
+            {computedWithBalance.length === 0 && <div className="p-16 text-center text-slate-400">No transactions recorded yet</div>}
+          </div>
+        )}
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
-          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
-          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
-             <span className="text-[10px] opacity-90 uppercase font-black">{labelRight}</span>
+          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(isService ? 'Payment' : ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+             <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowUp size={14} /></span>
           </button>
         </div>
@@ -1675,33 +2028,116 @@ export default function App() {
     const isRent = selectedContact.type === 'RENT';
     const isService = selectedContact.type === 'SERVICE';
     let title = editingTransaction 
-      ? "Edit Record" 
+      ? (isService ? (transType === 'PAYMENT' ? 'Update Payment with Date' : 'Update Service Charge with Date') : 'Edit Record') 
       : (isRent 
           ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") 
           : (isService 
-              ? (transType === 'CREDIT' ? 'Service Charge' : 'Receive Payment') 
+              ? (transType === 'CREDIT' ? 'Add Service Charge' : 'Record Payment with Date') 
               : (transType === 'CREDIT' ? 'Items Sent' : 'Cash Received')
             )
         );
     return (
       <div className="min-h-screen bg-white flex flex-col">
-        <header className="px-4 py-4 border-b flex items-center justify-between"><div className="flex items-center gap-4"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>{editingTransaction && (<button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all"><Trash2 size={20} /></button>)}</header>
+        <header className="px-4 py-4 border-b flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
+            <h1 className="text-lg font-bold">{title}</h1>
+          </div>
+          {editingTransaction && (
+            <button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all">
+              <Trash2 size={20} />
+            </button>
+          )}
+        </header>
         <div className="p-6 flex-1 overflow-y-auto">
           <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Amount</label>
-          <input type="number" value={transAmount} onChange={e => setTransAmount(e.target.value)} placeholder="0.00" className={`w-full text-5xl font-bold mb-8 outline-none border-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} autoFocus />
-          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Transaction Date</label>
-          <div className="flex flex-col gap-3 mb-8">
+          <input 
+            type="number" 
+            value={transAmount} 
+            onChange={e => setTransAmount(e.target.value)} 
+            placeholder="0.00" 
+            className={`w-full text-5xl font-bold mb-8 outline-none border-none ${transType === 'CREDIT' ? 'text-red-600' : 'text-green-600'}`} 
+            autoFocus 
+          />
+          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block flex items-center justify-between">
+            <span>Payment / Transaction Date</span>
+            <span className="text-slate-600 font-bold">{formatDisplayDate(transDate)}</span>
+          </label>
+          <div className="flex flex-col gap-3 mb-6">
             <div className="flex gap-2">
-              <button onClick={() => setTransDate(new Date().toISOString().slice(0, 10))} className={`flex-1 py-2 rounded-lg text-[10px] font-bold transition-all border ${transDate === new Date().toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>TODAY</button>
-              <button onClick={() => { const d = new Date(); d.setDate(d.getDate() - 1); setTransDate(d.toISOString().slice(0, 10)); }} className={`flex-1 py-2 rounded-lg text-[10px] font-bold transition-all border ${transDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}>YESTERDAY</button>
-              <button onClick={() => dateInputRef.current?.showPicker()} className="flex-1 py-2 rounded-lg text-[10px] font-bold bg-white text-slate-500 border border-slate-200 flex items-center justify-center gap-1 active:bg-gray-50 transition-colors shadow-sm"><Calendar size={12} /> CHANGE DATE</button>
+              <button 
+                type="button"
+                onClick={() => setTransDate(new Date().toISOString().slice(0, 10))} 
+                className={`flex-1 py-2 rounded-lg text-[10px] font-bold transition-all border ${transDate === new Date().toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}
+              >
+                TODAY
+              </button>
+              <button 
+                type="button"
+                onClick={() => { const d = new Date(); d.setDate(d.getDate() - 1); setTransDate(d.toISOString().slice(0, 10)); }} 
+                className={`flex-1 py-2 rounded-lg text-[10px] font-bold transition-all border ${transDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200'}`}
+              >
+                YESTERDAY
+              </button>
+              <button 
+                type="button"
+                onClick={() => dateInputRef.current?.showPicker()} 
+                className="flex-1 py-2 rounded-lg text-[10px] font-bold bg-white text-slate-500 border border-slate-200 flex items-center justify-center gap-1 active:bg-gray-50 transition-colors shadow-sm"
+              >
+                <Calendar size={12} /> CHANGE DATE
+              </button>
             </div>
-            <input ref={dateInputRef} type="date" value={transDate} onChange={e => setTransDate(e.target.value)} className="w-full border-b py-3 font-semibold outline-none focus:border-blue-500 transition-colors" />
+            <input 
+              ref={dateInputRef} 
+              type="date" 
+              value={transDate} 
+              onChange={e => setTransDate(e.target.value)} 
+              className="w-full border-b py-3 font-semibold outline-none focus:border-blue-500 transition-colors" 
+            />
           </div>
-          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Notes</label>
-          <textarea value={transDesc} onChange={e => setTransDesc(e.target.value)} placeholder="Add optional details..." className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-24 outline-none focus:border-slate-300 transition-colors" />
+
+          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">
+            {isService ? (transType === 'PAYMENT' ? 'Payment Note / Reference' : 'Charge Description') : 'Notes'}
+          </label>
+          <textarea 
+            value={transDesc} 
+            onChange={e => setTransDesc(e.target.value)} 
+            placeholder={isService ? (transType === 'PAYMENT' ? 'e.g. Advance Payment, Balance Payment...' : 'e.g. Screen Replacement, Battery...') : 'Add optional details...'} 
+            className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 h-20 outline-none focus:border-slate-300 transition-colors text-sm" 
+          />
+
+          {isService && (
+            <div className="mt-3">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Quick Note Suggestions</p>
+              <div className="flex flex-wrap gap-1.5">
+                {(transType === 'PAYMENT' 
+                  ? ['Advance Payment', 'Part Payment', 'Final Balance Payment', 'Cash Payment', 'Bank Transfer']
+                  : ['Service Total Cost', 'Screen Replacement', 'Battery Replacement', 'Charging Port', 'Motherboard Repair']
+                ).map(chip => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => setTransDesc(chip)}
+                    className={`text-xs px-2.5 py-1.5 rounded-xl border font-semibold transition-all ${
+                      transDesc === chip ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 active:scale-95'
+                    }`}
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-        <div className="p-6 pb-12"><button disabled={isSubmitting} onClick={handleSaveTransaction} className={`w-full py-4 rounded-2xl text-white font-bold text-lg shadow-xl flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} active:scale-95 transition-all`}>{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : 'Confirm Record'}</button></div>
+        <div className="p-6 pb-12">
+          <button 
+            disabled={isSubmitting} 
+            onClick={handleSaveTransaction} 
+            className={`w-full py-4 rounded-2xl text-white font-bold text-lg shadow-xl flex items-center justify-center gap-2 ${transType === 'CREDIT' ? 'bg-red-700' : 'bg-green-700'} active:scale-95 transition-all`}
+          >
+            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (isService ? (transType === 'PAYMENT' ? 'Save Payment with Date' : 'Save Charge Record') : 'Confirm Record')}
+          </button>
+        </div>
       </div>
     );
   };
@@ -1736,33 +2172,115 @@ export default function App() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              {/* Total Cost & Order Date */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 flex flex-col gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Cost (LKR)</label>
+                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Repair Cost (LKR)</label>
                   <input 
                     type="number"
                     value={addTotalCost} 
                     onChange={e => setAddTotalCost(e.target.value)} 
                     placeholder="0.00" 
-                    className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors text-red-600" 
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-lg font-bold outline-none focus:border-blue-500 transition-colors text-red-600" 
                   />
                 </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Order / Booking Date</span>
+                    <span className="text-slate-700 font-bold">{formatDisplayDate(addOrderDate)}</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <button 
+                      type="button"
+                      onClick={() => setAddOrderDate(new Date().toISOString().slice(0, 10))} 
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${addOrderDate === new Date().toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'}`}
+                    >
+                      TODAY
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => { const d = new Date(); d.setDate(d.getDate() - 1); setAddOrderDate(d.toISOString().slice(0, 10)); }} 
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${addOrderDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'}`}
+                    >
+                      YESTERDAY
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => orderDateInputRef.current?.showPicker()} 
+                      className="flex-1 py-1.5 rounded-lg text-[10px] font-bold bg-white text-slate-600 border border-slate-200 flex items-center justify-center gap-1 active:bg-slate-100 transition-colors shadow-sm"
+                    >
+                      <Calendar size={12} /> PICK DATE
+                    </button>
+                  </div>
+                  <input 
+                    ref={orderDateInputRef} 
+                    type="date" 
+                    value={addOrderDate} 
+                    onChange={e => setAddOrderDate(e.target.value)} 
+                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold outline-none focus:border-blue-500" 
+                  />
+                </div>
+              </div>
+
+              {/* Advance Payment & Payment Date */}
+              <div className="bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200/80 flex flex-col gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Advance Payment (LKR)</label>
+                  <label className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider flex items-center justify-between">
+                    <span>Advance Payment (LKR)</span>
+                    <span className="text-[10px] text-emerald-600 font-semibold">Records into Payment History</span>
+                  </label>
                   <input 
                     type="number"
                     value={addAdvancePayment} 
                     onChange={e => setAddAdvancePayment(e.target.value)} 
                     placeholder="0.00" 
-                    className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors text-green-600" 
+                    className="w-full bg-white border border-emerald-200 rounded-xl px-3 py-2.5 text-lg font-bold outline-none focus:border-emerald-500 transition-colors text-green-700" 
+                  />
+                </div>
+                
+                {/* Advance Payment Date Selector */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center justify-between">
+                    <span>Advance Payment Date</span>
+                    <span className="text-emerald-950 font-bold">{formatDisplayDate(addAdvanceDate)}</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <button 
+                      type="button"
+                      onClick={() => setAddAdvanceDate(new Date().toISOString().slice(0, 10))} 
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${addAdvanceDate === new Date().toISOString().slice(0, 10) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}
+                    >
+                      TODAY
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => { const d = new Date(); d.setDate(d.getDate() - 1); setAddAdvanceDate(d.toISOString().slice(0, 10)); }} 
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${addAdvanceDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}
+                    >
+                      YESTERDAY
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => advanceDateInputRef.current?.showPicker()} 
+                      className="flex-1 py-1.5 rounded-lg text-[10px] font-bold bg-white text-emerald-700 border border-emerald-200 flex items-center justify-center gap-1 active:bg-emerald-100 transition-colors shadow-sm"
+                    >
+                      <Calendar size={12} /> PICK DATE
+                    </button>
+                  </div>
+                  <input 
+                    ref={advanceDateInputRef} 
+                    type="date" 
+                    value={addAdvanceDate} 
+                    onChange={e => setAddAdvanceDate(e.target.value)} 
+                    className="w-full bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold outline-none focus:border-emerald-500 text-emerald-900" 
                   />
                 </div>
               </div>
 
               {((parseFloat(addTotalCost) || 0) > 0 || (parseFloat(addAdvancePayment) || 0) > 0) && (
-                <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 flex justify-between items-center shadow-inner">
-                  <span className="font-bold text-slate-500 uppercase tracking-wider text-[11px]">Balance Due</span>
-                  <span className="font-bold text-base text-slate-900">
+                <div className="bg-slate-100 border border-slate-200 rounded-xl p-3.5 flex justify-between items-center shadow-inner">
+                  <span className="font-bold text-slate-600 uppercase tracking-wider text-[11px]">Balance Due</span>
+                  <span className="font-black text-lg text-red-600">
                     LKR {Math.max(0, (parseFloat(addTotalCost) || 0) - (parseFloat(addAdvancePayment) || 0)).toLocaleString()}
                   </span>
                 </div>

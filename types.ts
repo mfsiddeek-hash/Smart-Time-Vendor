@@ -13,6 +13,8 @@ export interface Contact {
   serviceStatus?: string;
   totalCost?: number;
   advancePayment?: number;
+  advanceDate?: string;
+  orderDate?: string;
   lastUpdated: string;
 }
 
