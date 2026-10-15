@@ -6,7 +6,7 @@ import {
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
-  RotateCcw
+  RotateCcw, Wrench, Smartphone
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -82,6 +82,8 @@ export default function App() {
 
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
+  const [addPhoneModel, setAddPhoneModel] = useState('');
+  const [addServiceStatus, setAddServiceStatus] = useState('Pending');
   const [targetAmount, setTargetAmount] = useState('30000');
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   
@@ -251,7 +253,7 @@ export default function App() {
       doc.setFontSize(18);
       doc.text(shopName, 14, 20);
       doc.setFontSize(12);
-      doc.text(`Statement for: ${contact.name}`, 14, 30);
+      doc.text(`Statement for: ${contact.name}${contact.phoneModel ? ' (' + contact.phoneModel + ')' : ''}`, 14, 30);
       doc.setFontSize(10);
       doc.text(`Period: ${reportRange.start} to ${reportRange.end} | Generated: ${timestamp}`, 14, 38);
       
@@ -358,6 +360,8 @@ export default function App() {
           type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
           balance: c.balance || 0, 
           targetAmount: c.target_amount,
+          phoneModel: c.start_date || '',
+          serviceStatus: c.end_date || 'Pending',
           lastUpdated: c.last_updated
         })));
       }
@@ -378,11 +382,14 @@ export default function App() {
     if (!addName.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const payload = { 
-        name: addName, 
-        phone: addPhone,
+      const isService = activeTab === 'SERVICE';
+      const payload: any = { 
+        name: addName.trim(), 
+        phone: addPhone.trim(),
         type: activeTab, 
         target_amount: activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null, 
+        start_date: isService ? addPhoneModel.trim() : null,
+        end_date: isService ? addServiceStatus : null,
         last_updated: new Date().toISOString() 
       };
       
@@ -397,13 +404,15 @@ export default function App() {
       if (res.error) throw res.error;
       
       if (res.data) {
-        const updatedContact = {
+        const updatedContact: Contact = {
           id: res.data[0].id,
           name: res.data[0].name,
           phone: res.data[0].phone || '',
           type: res.data[0].type === 'SUPPLIER' ? 'VENDOR' : res.data[0].type,
           balance: res.data[0].balance || 0,
           targetAmount: res.data[0].target_amount,
+          phoneModel: res.data[0].start_date || '',
+          serviceStatus: res.data[0].end_date || 'Pending',
           lastUpdated: res.data[0].last_updated
         };
         
@@ -415,7 +424,12 @@ export default function App() {
         }
       }
       
-      setAddName(''); setAddPhone(''); setTargetAmount('30000'); setEditingContact(null);
+      setAddName(''); 
+      setAddPhone(''); 
+      setAddPhoneModel('');
+      setAddServiceStatus('Pending');
+      setTargetAmount('30000'); 
+      setEditingContact(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
@@ -522,8 +536,8 @@ export default function App() {
                <div className="flex justify-between items-center">
                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
                    {reportTarget === 'CONTACT' ? 
-                     (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : 'Total Items')) :
-                     (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : 'Total Items'))
+                     (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : (selectedContact?.type === 'SERVICE' ? 'Total Charges' : 'Total Items'))) :
+                     (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : (activeTab === 'SERVICE' ? 'Total Charges' : 'Total Items')))
                    }
                  </span>
                  <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
@@ -531,8 +545,8 @@ export default function App() {
                <div className="flex justify-between items-center">
                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
                    {reportTarget === 'CONTACT' ? 
-                     (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : 'Total Paid')) :
-                     (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : 'Total Paid'))
+                     (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : (selectedContact?.type === 'SERVICE' ? 'Total Received' : 'Total Paid'))) :
+                     (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : (activeTab === 'SERVICE' ? 'Total Received' : 'Total Paid')))
                    }
                  </span>
                  <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
@@ -555,7 +569,11 @@ export default function App() {
     const filtered = contacts.filter(c => {
       const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
       const q = searchQuery.toLowerCase();
-      return matchesTab && (c.name.toLowerCase().includes(q) || (c.phone && c.phone.includes(q)));
+      return matchesTab && (
+        c.name.toLowerCase().includes(q) || 
+        (c.phone && c.phone.includes(q)) ||
+        (c.phoneModel && c.phoneModel.toLowerCase().includes(q))
+      );
     });
 
     return (
@@ -564,14 +582,15 @@ export default function App() {
           <div className="flex justify-between items-center mb-2">
             <div><h1 className="text-xl font-bold text-slate-800">Ledger Book</h1><p className="text-xs font-semibold text-slate-500">{shopName}</p></div>
             <div className="flex items-center gap-3">
-               <button onClick={() => navigateTo('CONTACT_FORM')} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
+               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
                <PlayCircle size={24} className="text-blue-600" />
             </div>
           </div>
-          <div className="flex gap-6 mt-4">
-            <button onClick={() => setActiveTab('CUSTOMER')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Users size={18} />Customers</button>
-            <button onClick={() => setActiveTab('VENDOR')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'VENDOR' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Truck size={18} />Vendors</button>
-            <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-3 border-b-2 font-medium transition-colors ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800' : 'border-transparent text-gray-500'}`}><Building size={18} />Rent</button>
+          <div className="flex gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
+            <button onClick={() => setActiveTab('CUSTOMER')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Users size={17} />Customers</button>
+            <button onClick={() => setActiveTab('VENDOR')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'VENDOR' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Truck size={17} />Vendors</button>
+            <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Building size={17} />Rent</button>
+            <button onClick={() => setActiveTab('SERVICE')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'SERVICE' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Wrench size={17} />Service Order</button>
           </div>
         </header>
         <div className="p-4 flex flex-col gap-4">
@@ -587,7 +606,7 @@ export default function App() {
           </div>
           <div className="flex gap-2">
             <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all shadow-sm">
-              <Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder="Search name or number here" className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+              <Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder={activeTab === 'SERVICE' ? "Search name, phone, or model" : "Search name or number here"} className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
             <button onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }} className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm" title="Download Report"><Download size={18} /></button>
             <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"><Filter size={18} /></button>
@@ -596,14 +615,34 @@ export default function App() {
             {filtered.map(c => {
               const stats = contactStats[c.id];
               const displayBal = stats?.balance || 0;
-              const leftLabel = c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out');
-              const rightLabel = c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In');
+              const isService = c.type === 'SERVICE';
+              const leftLabel = isService ? 'Charge' : (c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out'));
+              const rightLabel = isService ? 'Paid' : (c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In'));
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>{c.name[0]}</div>
+                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : (isService ? 'bg-indigo-600' : 'bg-slate-400')}`}>
+                      {isService ? <Smartphone size={18} /> : c.name[0]}
+                    </div>
                     <div className="overflow-hidden">
-                      <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
+                        {isService && c.serviceStatus && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                            c.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
+                            c.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
+                            c.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
+                            'bg-slate-100 text-slate-600'
+                          }`}>
+                            {c.serviceStatus}
+                          </span>
+                        )}
+                      </div>
+                      {isService && c.phoneModel && (
+                        <p className="text-[12px] font-semibold text-indigo-600 flex items-center gap-1 mt-0.5">
+                          <Smartphone size={12} className="shrink-0" /> {c.phoneModel}
+                        </p>
+                      )}
                       <div className="flex items-center gap-3 mt-1.5">
                         <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span><span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span></div>
                         <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span><span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span></div>
@@ -617,6 +656,11 @@ export default function App() {
                 </div>
               );
             })}
+            {filtered.length === 0 && (
+              <div className="p-16 text-center text-slate-400">
+                No {activeTab === 'SERVICE' ? 'service orders' : activeTab.toLowerCase() + 's'} recorded yet
+              </div>
+            )}
           </div>
         </div>
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
@@ -627,12 +671,13 @@ export default function App() {
   const renderDetail = () => {
     if (!selectedContact) return null;
     const isRent = selectedContact.type === 'RENT';
+    const isService = selectedContact.type === 'SERVICE';
     const balance = contactStats[selectedContact.id]?.balance || 0;
     const target = selectedContact.targetAmount || 30000;
     const isTargetAchieved = isRent && balance >= target;
 
-    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : "GAVE ITEMS");
-    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : "GOT MONEY");
+    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : (isService ? "SERVICE CHARGE" : "GAVE ITEMS"));
+    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : (isService ? "PAYMENT RECEIVED" : "GOT MONEY"));
     
     const contactTransactions = transactions
       .filter(t => t.contactId === selectedContact.id)
@@ -657,10 +702,14 @@ export default function App() {
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
           <div className="flex-1 overflow-hidden">
             <h1 className="font-bold text-lg truncate">{selectedContact.name}</h1>
-            <p className="text-[11px] text-slate-400 font-medium">{selectedContact.phone || 'No phone'}</p>
+            <p className="text-[11px] text-slate-400 font-medium truncate">
+              {selectedContact.phone || 'No phone'}
+              {isService && selectedContact.phoneModel ? ` • ${selectedContact.phoneModel}` : ''}
+              {isService && selectedContact.serviceStatus ? ` (${selectedContact.serviceStatus})` : ''}
+            </p>
           </div>
           <button onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm" title="Download Statement"><Download size={18} /></button>
-          <button onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); navigateTo('CONTACT_FORM'); }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
+          <button onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); setAddPhoneModel(selectedContact.phoneModel || ''); setAddServiceStatus(selectedContact.serviceStatus || 'Pending'); navigateTo('CONTACT_FORM'); }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
           <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
@@ -668,8 +717,27 @@ export default function App() {
             {isTargetAchieved && (
               <div className="absolute top-0 right-0 bg-green-100 text-green-700 text-[8px] font-black px-2 py-1 rounded-bl-lg uppercase tracking-widest">Target Met!</div>
             )}
+            {isService && (
+              <div className="flex items-center justify-center gap-2 mb-3">
+                {selectedContact.phoneModel && (
+                  <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
+                    <Smartphone size={13} /> {selectedContact.phoneModel}
+                  </span>
+                )}
+                {selectedContact.serviceStatus && (
+                  <span className={`text-xs px-2.5 py-1 rounded-full font-bold uppercase tracking-wider ${
+                    selectedContact.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
+                    selectedContact.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
+                    selectedContact.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
+                    'bg-slate-100 text-slate-700'
+                  }`}>
+                    {selectedContact.serviceStatus}
+                  </span>
+                )}
+              </div>
+            )}
             <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
-            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : 'Total Balance'}</p>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : (isService ? 'Balance Due' : 'Total Balance')}</p>
             {isTargetAchieved && (
               <button 
                 onClick={() => handleResetRentCycle(selectedContact.id)}
@@ -703,7 +771,16 @@ export default function App() {
   const renderTransactionForm = () => {
     if (!selectedContact) return null;
     const isRent = selectedContact.type === 'RENT';
-    let title = editingTransaction ? "Edit Record" : (isRent ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") : (transType === 'CREDIT' ? 'Items Sent' : 'Cash Received'));
+    const isService = selectedContact.type === 'SERVICE';
+    let title = editingTransaction 
+      ? "Edit Record" 
+      : (isRent 
+          ? (transType === 'PAYMENT' ? "Deposit Savings" : "Withdraw Savings") 
+          : (isService 
+              ? (transType === 'CREDIT' ? 'Service Charge' : 'Receive Payment') 
+              : (transType === 'CREDIT' ? 'Items Sent' : 'Cash Received')
+            )
+        );
     return (
       <div className="min-h-screen bg-white flex flex-col">
         <header className="px-4 py-4 border-b flex items-center justify-between"><div className="flex items-center gap-4"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{title}</h1></div>{editingTransaction && (<button onClick={handleDeleteTransaction} className="p-2 text-red-600 bg-red-50 rounded-full active:scale-90 transition-all"><Trash2 size={20} /></button>)}</header>
@@ -727,17 +804,62 @@ export default function App() {
     );
   };
 
-  const renderContactForm = () => (
-    <div className="min-h-screen bg-white flex flex-col">
-      <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{editingContact ? 'Edit' : 'New'} {activeTab}</h1></header>
-      <div className="p-6 flex flex-col gap-6">
-        <div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Full Name</label><input value={addName} onChange={e => setAddName(e.target.value)} placeholder="Enter Name" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus /></div>
-        <div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Number</label><input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="Enter Phone" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>
-        {activeTab === 'RENT' && (<div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label><input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>)}
-        <button disabled={isSubmitting} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all">{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update Contact' : 'Save Contact')}</button>
+  const renderContactForm = () => {
+    const isService = activeTab === 'SERVICE';
+    const formHeading = editingContact 
+      ? `Edit ${isService ? 'Service Order' : activeTab}` 
+      : `New ${isService ? 'Service Order' : activeTab}`;
+
+    return (
+      <div className="min-h-screen bg-white flex flex-col">
+        <header className="px-4 py-4 flex items-center gap-4 border-b"><button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button><h1 className="text-lg font-bold">{formHeading}</h1></header>
+        <div className="p-6 flex flex-col gap-6">
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">{isService ? 'Customer Name' : 'Full Name'}</label>
+            <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={isService ? "Enter customer name" : "Enter Name"} className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" autoFocus />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Number</label>
+            <input value={addPhone} onChange={e => setAddPhone(e.target.value)} placeholder="Enter Phone" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          {isService && (
+            <>
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Phone Model</label>
+                <input 
+                  value={addPhoneModel} 
+                  onChange={e => setAddPhoneModel(e.target.value)} 
+                  placeholder="e.g. iPhone 13 Pro, Samsung A12" 
+                  className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" 
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Order Status</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {['Pending', 'In Progress', 'Ready', 'Delivered'].map(status => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setAddServiceStatus(status)}
+                      className={`py-2 px-1 text-center rounded-lg text-[11px] font-bold border transition-all ${
+                        addServiceStatus === status 
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm' 
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+          {activeTab === 'RENT' && (<div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label><input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>)}
+          <button disabled={isSubmitting || !addName.trim()} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update ' + (isService ? 'Service Order' : 'Contact') : 'Save ' + (isService ? 'Service Order' : 'Contact'))}</button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderProfile = () => (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">

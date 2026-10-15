@@ -1,4 +1,4 @@
-export type ContactType = 'CUSTOMER' | 'VENDOR' | 'RENT';
+export type ContactType = 'CUSTOMER' | 'VENDOR' | 'RENT' | 'SERVICE';
 
 export interface Contact {
   id: string;
@@ -7,8 +7,10 @@ export interface Contact {
   type: ContactType;
   balance: number; // For RENT: Amount Saved. For Others: Amount Owed/Due
   targetAmount?: number; // Only used for RENT
-  startDate?: string; // ISO date string YYYY-MM-DD
-  endDate?: string;   // ISO date string YYYY-MM-DD
+  startDate?: string; // Stored in DB (used for phoneModel in SERVICE)
+  endDate?: string;   // Stored in DB (used for serviceStatus in SERVICE)
+  phoneModel?: string;
+  serviceStatus?: string;
   lastUpdated: string;
 }
 
