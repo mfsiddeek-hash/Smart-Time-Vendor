@@ -36,3 +36,24 @@ export interface SummaryStats {
   toCollect: number;
   toPay: number;
 }
+
+export type UserRole = 'Admin' | 'Manager' | 'Cashier' | 'Technician';
+
+export interface AppUser {
+  id: string;
+  name: string;
+  username: string;
+  role: UserRole;
+  status: 'Active' | 'Inactive';
+  phone?: string;
+  password?: string;
+  createdAt: string;
+}
+
+export interface StoreProfile {
+  shopName: string;
+  tagline: string;
+  phone: string;
+  address: string;
+  logoUrl?: string | null;
+}

@@ -6,11 +6,12 @@ import {
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
-  RotateCcw, Wrench, Smartphone, Printer
+  RotateCcw, Wrench, Smartphone, Printer, Key, Lock, ShieldCheck, UserPlus, Upload,
+  Image as ImageIcon, CheckCircle2, UserCheck, Shield
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType } from './types';
+import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, StoreProfile } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { supabase } from './supabaseClient';
@@ -90,7 +91,55 @@ export default function App() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const contactsRef = useRef(contacts);
   
-  const [shopName, setShopName] = useState('Smart Time');
+  const [shopName, setShopName] = useState(() => localStorage.getItem('st_shop_name') || 'Smart Time');
+  const [shopTagline, setShopTagline] = useState(() => localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
+  const [shopPhone, setShopPhone] = useState(() => localStorage.getItem('st_shop_phone') || '+94 77 123 4567');
+  const [shopAddress, setShopAddress] = useState(() => localStorage.getItem('st_shop_address') || 'Main Street, Colombo');
+  const [shopLogo, setShopLogo] = useState<string | null>(() => localStorage.getItem('st_shop_logo') || null);
+
+  const [users, setUsers] = useState<AppUser[]>(() => {
+    const saved = localStorage.getItem('st_app_users');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { /* ignore fallback */ }
+    }
+    return [
+      {
+        id: 'admin-1',
+        name: 'Super Admin',
+        username: 'admin',
+        role: 'Admin',
+        status: 'Active',
+        phone: '+94 77 123 4567',
+        password: 'admin',
+        createdAt: new Date().toISOString().slice(0, 10)
+      }
+    ];
+  });
+  const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
+
+  const [profileTab, setProfileTab] = useState<'STORE' | 'ADMIN' | 'USERS' | 'DATA'>('STORE');
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '', showPassword: false });
+  const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<AppUser | null>(null);
+  const [userForm, setUserForm] = useState<{ name: string; username: string; role: UserRole; phone: string; password: string; status: 'Active' | 'Inactive'; showPassword: boolean }>({
+    name: '', username: '', role: 'Cashier', phone: '', password: '', status: 'Active', showPassword: false
+  });
+  const [profileToast, setProfileToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
+  const currentUser = useMemo(() => {
+    return users.find(u => u.id === currentUserId) || users[0] || {
+      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, createdAt: ''
+    };
+  }, [users, currentUserId]);
+
+  const showProfileToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setProfileToast({ text, type });
+    setTimeout(() => setProfileToast(null), 3500);
+  };
+
   const [searchQuery, setSearchQuery] = useState('');
 
   const [addName, setAddName] = useState('');
@@ -376,6 +425,14 @@ export default function App() {
         });
 
         let y = 10;
+        if (shopLogo && shopLogo.startsWith('data:image/')) {
+          try {
+            doc.addImage(shopLogo, 'PNG', 32, 6, 16, 16);
+            y = 26;
+          } catch (e) {
+            console.error('Logo render error', e);
+          }
+        }
         doc.setFont('courier', 'bold');
         doc.setFontSize(13);
         doc.text(shopName.toUpperCase(), 40, y, { align: 'center' });
@@ -383,10 +440,12 @@ export default function App() {
         y += 5;
         doc.setFont('courier', 'normal');
         doc.setFontSize(8);
-        doc.text('MOBILE PHONE REPAIR & SERVICE', 40, y, { align: 'center' });
+        doc.text(shopTagline.toUpperCase().slice(0, 36), 40, y, { align: 'center' });
 
-        y += 4;
-        doc.text('Smart Time Service Center', 40, y, { align: 'center' });
+        if (shopPhone || shopAddress) {
+          y += 4;
+          doc.text(`${shopPhone} • ${shopAddress}`.slice(0, 38), 40, y, { align: 'center' });
+        }
 
         y += 4;
         doc.text('------------------------------------------', 40, y, { align: 'center' });
@@ -488,14 +547,24 @@ export default function App() {
         doc.setFillColor(30, 41, 59); // slate-800
         doc.rect(0, 0, 210, 28, 'F');
 
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(20);
-        doc.setFont('helvetica', 'bold');
-        doc.text(shopName.toUpperCase(), 14, 15);
+        let titleX = 14;
+        if (shopLogo && shopLogo.startsWith('data:image/')) {
+          try {
+            doc.addImage(shopLogo, 'PNG', 12, 5, 18, 18);
+            titleX = 35;
+          } catch (e) {
+            console.error('Logo render error', e);
+          }
+        }
 
-        doc.setFontSize(10);
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(18);
+        doc.setFont('helvetica', 'bold');
+        doc.text(shopName.toUpperCase(), titleX, 14);
+
+        doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
-        doc.text('MOBILE PHONE REPAIR & SERVICE INVOICE', 14, 22);
+        doc.text(shopTagline.toUpperCase(), titleX, 21);
 
         doc.setFontSize(11);
         doc.setFont('helvetica', 'bold');
@@ -742,9 +811,14 @@ export default function App() {
               /* POS 80mm Receipt Style */
               <div className="w-full max-w-[340px] bg-white rounded-xl shadow-lg border border-slate-300 p-5 font-mono text-[13px] leading-relaxed relative text-slate-800">
                 <div className="text-center pb-3 border-b border-dashed border-slate-300">
+                  {shopLogo && (
+                    <img src={shopLogo} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded-lg" />
+                  )}
                   <h4 className="font-black text-base tracking-wider uppercase text-slate-900">{shopName}</h4>
-                  <p className="text-[10px] text-slate-500 font-bold tracking-tight uppercase mt-0.5">Mobile Phone Repair & Service</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Service Center Receipt</p>
+                  <p className="text-[10px] text-slate-500 font-bold tracking-tight uppercase mt-0.5">{shopTagline}</p>
+                  {(shopPhone || shopAddress) && (
+                    <p className="text-[10px] text-slate-400 mt-0.5">{shopPhone} • {shopAddress}</p>
+                  )}
                   <div className="mt-2 text-center inline-block bg-slate-100 px-3 py-1 rounded text-xs font-bold text-slate-700 tracking-wider">
                     SERVICE ORDER #{orderNo}
                   </div>
@@ -809,9 +883,21 @@ export default function App() {
               <div className="w-full bg-white rounded-xl shadow-lg border border-slate-300 overflow-hidden text-slate-800">
                 {/* A4 Header Banner */}
                 <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
-                  <div>
-                    <h4 className="text-lg font-black tracking-wide uppercase">{shopName}</h4>
-                    <p className="text-[11px] text-slate-300 font-medium tracking-wide">MOBILE PHONE REPAIR & SERVICE INVOICE</p>
+                  <div className="flex items-center gap-3">
+                    {shopLogo ? (
+                      <img src={shopLogo} alt="Logo" className="w-12 h-12 object-cover rounded-xl border border-white/20 bg-white" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-slate-800 text-white flex items-center justify-center font-black text-xl border border-white/20">
+                        {shopName[0] || 'S'}
+                      </div>
+                    )}
+                    <div>
+                      <h4 className="text-lg font-black tracking-wide uppercase">{shopName}</h4>
+                      <p className="text-[11px] text-slate-300 font-medium tracking-wide">{shopTagline}</p>
+                      {(shopPhone || shopAddress) && (
+                        <p className="text-[10px] text-slate-400 mt-0.5">{shopPhone} • {shopAddress}</p>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right">
                     <div className="font-bold text-xs bg-slate-800 text-blue-300 px-2 py-0.5 rounded uppercase">JOB #{orderNo}</div>
@@ -1388,10 +1474,33 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
         <header className="bg-white px-4 py-3 pb-0 shadow-sm z-20 sticky top-0">
           <div className="flex justify-between items-center mb-2">
-            <div><h1 className="text-xl font-bold text-slate-800">Ledger Book</h1><p className="text-xs font-semibold text-slate-500">{shopName}</p></div>
-            <div className="flex items-center gap-3">
-               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
-               <PlayCircle size={24} className="text-blue-600" />
+            <div 
+              onClick={() => navigateTo('PROFILE')} 
+              className="flex items-center gap-2.5 cursor-pointer group"
+              title="Click to view & edit Profile"
+            >
+              {shopLogo ? (
+                <img src={shopLogo} alt="Logo" className="w-10 h-10 rounded-xl object-cover border border-slate-200 shadow-sm group-hover:scale-105 transition-transform" />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-slate-800 text-white flex items-center justify-center font-bold text-sm shadow-sm group-hover:bg-slate-900 transition-colors">
+                  <Store size={20} />
+                </div>
+              )}
+              <div>
+                <h1 className="text-xl font-bold text-slate-800 leading-tight group-hover:text-blue-600 transition-colors">Ledger Book</h1>
+                <p className="text-xs font-semibold text-slate-500 truncate max-w-[160px]">{shopName}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+               <button 
+                 onClick={() => navigateTo('PROFILE')}
+                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-full text-xs font-bold text-slate-700 transition-colors border border-slate-200"
+                 title={`Logged in as ${currentUser.name} (${currentUser.role})`}
+               >
+                 <UserCheck size={14} className="text-blue-600" />
+                 <span className="hidden sm:inline max-w-[80px] truncate">{currentUser.name.split(' ')[0]}</span>
+               </button>
+               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
             </div>
           </div>
           <div className="flex gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
@@ -2314,16 +2423,931 @@ export default function App() {
     );
   };
 
-  const renderProfile = () => (
-    <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
-      <header className="bg-white px-6 py-8 shadow-sm flex flex-col items-center gap-4">
-        <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center text-white shadow-xl"><Store size={40} /></div>
-        <div className="text-center"><h1 className="text-xl font-bold">{shopName}</h1><p className="text-sm text-slate-400">Ledger Profile</p></div>
-      </header>
-      <div className="p-6"><button onClick={async () => { if(!window.confirm("RESET APP? All data will be deleted.")) return; await Promise.all([supabase.from('transactions').delete().neq('id', '0'), supabase.from('contacts').delete().neq('id', '0')]); window.location.reload(); }} className="w-full flex items-center gap-4 p-4 rounded-xl bg-red-50 text-red-700 active:bg-red-100 transition-colors border border-red-100 shadow-sm"><ShieldAlert size={20} /><div className="text-left font-bold">Wipe Ledger Data</div></button></div>
-      <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
-    </div>
-  );
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showProfileToast('Please choose an image file (PNG, JPG, WebP)', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX = 240;
+        let w = img.width;
+        let h = img.height;
+        if (w > h) {
+          if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
+        } else {
+          if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/png', 0.85);
+          setShopLogo(dataUrl);
+          localStorage.setItem('st_shop_logo', dataUrl);
+          showProfileToast('Logo uploaded and saved successfully!');
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = () => {
+    setShopLogo(null);
+    localStorage.removeItem('st_shop_logo');
+    showProfileToast('Store logo removed');
+  };
+
+  const handleSaveStoreProfile = () => {
+    if (!shopName.trim()) {
+      showProfileToast('Store name cannot be empty', 'error');
+      return;
+    }
+    localStorage.setItem('st_shop_name', shopName.trim());
+    localStorage.setItem('st_shop_tagline', shopTagline.trim());
+    localStorage.setItem('st_shop_phone', shopPhone.trim());
+    localStorage.setItem('st_shop_address', shopAddress.trim());
+    if (shopLogo) {
+      localStorage.setItem('st_shop_logo', shopLogo);
+    }
+    showProfileToast('Store profile details saved successfully!');
+  };
+
+  const handleUpdateAdminPassword = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!passwordForm.newPassword) {
+      showProfileToast('Please enter a new password', 'error');
+      return;
+    }
+    if (passwordForm.newPassword.length < 4) {
+      showProfileToast('Password must be at least 4 characters long', 'error');
+      return;
+    }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      showProfileToast('Passwords do not match. Please verify.', 'error');
+      return;
+    }
+    if (currentUser.password && passwordForm.currentPassword !== currentUser.password) {
+      showProfileToast('Current password is incorrect!', 'error');
+      return;
+    }
+
+    const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, password: passwordForm.newPassword } : u);
+    setUsers(updatedUsers);
+    localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+    setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '', showPassword: false });
+    setIsPasswordModalOpen(false);
+    showProfileToast('Admin password updated successfully!');
+  };
+
+  const handleOpenAddUser = () => {
+    setEditingUser(null);
+    setUserForm({ name: '', username: '', role: 'Cashier', phone: '', password: '', status: 'Active', showPassword: false });
+    setIsUserModalOpen(true);
+  };
+
+  const handleOpenEditUser = (user: AppUser) => {
+    setEditingUser(user);
+    setUserForm({
+      name: user.name,
+      username: user.username,
+      role: user.role,
+      phone: user.phone || '',
+      password: '',
+      status: user.status,
+      showPassword: false
+    });
+    setIsUserModalOpen(true);
+  };
+
+  const handleSaveUser = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!userForm.name.trim()) {
+      showProfileToast('Please enter the user full name', 'error');
+      return;
+    }
+    if (!userForm.username.trim()) {
+      showProfileToast('Please enter a username', 'error');
+      return;
+    }
+    const cleanUsername = userForm.username.trim().toLowerCase();
+    const exists = users.find(u => u.username.toLowerCase() === cleanUsername && u.id !== editingUser?.id);
+    if (exists) {
+      showProfileToast(`Username "${cleanUsername}" is already taken!`, 'error');
+      return;
+    }
+
+    if (editingUser) {
+      const updatedUsers = users.map(u => {
+        if (u.id === editingUser.id) {
+          return {
+            ...u,
+            name: userForm.name.trim(),
+            username: cleanUsername,
+            role: userForm.role,
+            phone: userForm.phone.trim(),
+            status: userForm.status,
+            password: userForm.password ? userForm.password : u.password
+          };
+        }
+        return u;
+      });
+      setUsers(updatedUsers);
+      localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+      showProfileToast(`User "${userForm.name}" updated!`);
+    } else {
+      const newUser: AppUser = {
+        id: generateUUID(),
+        name: userForm.name.trim(),
+        username: cleanUsername,
+        role: userForm.role,
+        phone: userForm.phone.trim(),
+        status: userForm.status,
+        password: userForm.password || '1234',
+        createdAt: new Date().toISOString().slice(0, 10)
+      };
+      const updatedUsers = [...users, newUser];
+      setUsers(updatedUsers);
+      localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+      showProfileToast(`New user "${newUser.name}" added successfully!`);
+    }
+    setIsUserModalOpen(false);
+    setEditingUser(null);
+  };
+
+  const handleDeleteUser = (userId: string) => {
+    const user = users.find(u => u.id === userId);
+    if (!user) return;
+    if (user.role === 'Admin' && users.filter(u => u.role === 'Admin').length <= 1) {
+      showProfileToast('Cannot delete the last Administrator account!', 'error');
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete user "${user.name}" (@${user.username})?`)) return;
+    const updated = users.filter(u => u.id !== userId);
+    setUsers(updated);
+    localStorage.setItem('st_app_users', JSON.stringify(updated));
+    if (currentUserId === userId && updated.length > 0) {
+      setCurrentUserId(updated[0].id);
+      localStorage.setItem('st_current_user_id', updated[0].id);
+    }
+    showProfileToast(`User "${user.name}" deleted`);
+  };
+
+  const handleExportBackup = () => {
+    try {
+      const backupData = {
+        version: '1.0',
+        exportDate: new Date().toISOString(),
+        shopName,
+        shopTagline,
+        shopPhone,
+        shopAddress,
+        contacts,
+        transactions,
+        users: users.map(u => ({ ...u, password: '***' }))
+      };
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${shopName.replace(/[^a-z0-9]/gi, '_')}_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showProfileToast('Backup exported successfully!');
+    } catch (e) {
+      showProfileToast('Failed to export backup', 'error');
+    }
+  };
+
+  const renderPasswordModal = () => {
+    if (!isPasswordModalOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200">
+          <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white">
+                <Lock size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base">Edit Admin Password</h3>
+                <p className="text-xs text-slate-400">Account: @{currentUser.username}</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsPasswordModalOpen(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <form onSubmit={handleUpdateAdminPassword} className="p-6 space-y-4">
+            {currentUser.password && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Current Password</label>
+                <input 
+                  type={passwordForm.showPassword ? 'text' : 'password'}
+                  value={passwordForm.currentPassword}
+                  onChange={e => setPasswordForm(prev => ({ ...prev, currentPassword: e.target.value }))}
+                  placeholder="Enter current password"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  autoFocus
+                />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">New Password</label>
+              <input 
+                type={passwordForm.showPassword ? 'text' : 'password'}
+                value={passwordForm.newPassword}
+                onChange={e => setPasswordForm(prev => ({ ...prev, newPassword: e.target.value }))}
+                placeholder="Enter new password (min. 4 characters)"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Confirm New Password</label>
+              <input 
+                type={passwordForm.showPassword ? 'text' : 'password'}
+                value={passwordForm.confirmPassword}
+                onChange={e => setPasswordForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+                placeholder="Re-enter new password"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600">
+                <input 
+                  type="checkbox" 
+                  checked={passwordForm.showPassword}
+                  onChange={e => setPasswordForm(prev => ({ ...prev, showPassword: e.target.checked }))}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span>Show passwords</span>
+              </label>
+            </div>
+
+            <div className="pt-3 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsPasswordModalOpen(false)}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Check size={16} /> Save Password
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const renderUserModal = () => {
+    if (!isUserModalOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200">
+          <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-purple-600 flex items-center justify-center text-white">
+                <UserPlus size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base">{editingUser ? 'Edit User' : 'Add New User'}</h3>
+                <p className="text-xs text-slate-400">Team member account access</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsUserModalOpen(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <form onSubmit={handleSaveUser} className="p-6 space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Full Name</label>
+              <input 
+                type="text"
+                value={userForm.name}
+                onChange={e => setUserForm(prev => ({ ...prev, name: e.target.value }))}
+                placeholder="e.g. Kasun Perera"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Username</label>
+                <input 
+                  type="text"
+                  value={userForm.username}
+                  onChange={e => setUserForm(prev => ({ ...prev, username: e.target.value }))}
+                  placeholder="e.g. kasun"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Phone</label>
+                <input 
+                  type="text"
+                  value={userForm.phone}
+                  onChange={e => setUserForm(prev => ({ ...prev, phone: e.target.value }))}
+                  placeholder="e.g. 0771234567"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Role & Permission</label>
+              <select
+                value={userForm.role}
+                onChange={e => setUserForm(prev => ({ ...prev, role: e.target.value as UserRole }))}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+              >
+                <option value="Admin">Administrator (Full Access)</option>
+                <option value="Manager">Manager (Ledger, Service & Reports)</option>
+                <option value="Cashier">Cashier (Payments & Receipts)</option>
+                <option value="Technician">Technician (Repairs & Status)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                {editingUser ? 'Change Password (Leave blank to keep current)' : 'Password'}
+              </label>
+              <div className="relative">
+                <input 
+                  type={userForm.showPassword ? 'text' : 'password'}
+                  value={userForm.password}
+                  onChange={e => setUserForm(prev => ({ ...prev, password: e.target.value }))}
+                  placeholder={editingUser ? 'Enter new password or leave blank' : 'Enter user password (min. 4 chars)'}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setUserForm(prev => ({ ...prev, showPassword: !prev.showPassword }))}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <Eye size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Account Status</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUserForm(prev => ({ ...prev, status: 'Active' }))}
+                  className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                    userForm.status === 'Active' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'
+                  }`}
+                >
+                  ● Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserForm(prev => ({ ...prev, status: 'Inactive' }))}
+                  className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                    userForm.status === 'Inactive' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200'
+                  }`}
+                >
+                  ○ Inactive
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-3 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsUserModalOpen(false)}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Check size={16} /> {editingUser ? 'Save User' : 'Add User'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const renderProfile = () => {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col pb-24 no-scrollbar">
+        {/* Profile Toast Notification */}
+        {profileToast && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-sm animate-in fade-in slide-in-from-top-4 duration-200">
+            <div className={`p-3.5 rounded-2xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${
+              profileToast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+            }`}>
+              {profileToast.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+              <span className="flex-1">{profileToast.text}</span>
+              <button onClick={() => setProfileToast(null)} className="opacity-80 hover:opacity-100">
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Profile Top Hero Card */}
+        <header className="bg-slate-900 text-white px-5 pt-7 pb-6 shadow-md">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3.5">
+              <div className="relative group">
+                {shopLogo ? (
+                  <img 
+                    src={shopLogo} 
+                    alt="Logo" 
+                    className="w-16 h-16 rounded-2xl object-cover border-2 border-white/20 bg-white shadow-lg" 
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg font-black text-2xl border border-white/20">
+                    {shopName[0] || 'S'}
+                  </div>
+                )}
+                <button 
+                  onClick={() => logoInputRef.current?.click()}
+                  className="absolute -bottom-1.5 -right-1.5 p-1.5 bg-blue-600 hover:bg-blue-500 rounded-full text-white shadow-md transition-transform active:scale-90"
+                  title="Upload Logo"
+                >
+                  <Camera size={13} />
+                </button>
+              </div>
+              <div className="overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-xl font-black tracking-tight leading-tight truncate">{shopName}</h1>
+                </div>
+                <p className="text-xs text-slate-300 font-medium truncate mt-0.5">{shopTagline}</p>
+                <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-400">
+                  <span className="flex items-center gap-1 font-semibold text-blue-400">
+                    <ShieldCheck size={13} /> {currentUser.name}
+                  </span>
+                  <span>•</span>
+                  <span className="bg-white/10 px-2 py-0.5 rounded-full text-[10px] font-bold text-slate-200">
+                    {currentUser.role}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Switch user selector */}
+            {users.length > 1 && (
+              <div className="relative">
+                <select
+                  value={currentUserId}
+                  onChange={(e) => {
+                    setCurrentUserId(e.target.value);
+                    localStorage.setItem('st_current_user_id', e.target.value);
+                    const switched = users.find(u => u.id === e.target.value);
+                    showProfileToast(`Active user switched to ${switched?.name}`);
+                  }}
+                  className="bg-slate-800 text-slate-200 border border-slate-700 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer hover:bg-slate-700"
+                >
+                  {users.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Sub Navigation Tabs */}
+          <div className="flex gap-2 border-t border-slate-800/80 pt-3 overflow-x-auto no-scrollbar">
+            <button
+              onClick={() => setProfileTab('STORE')}
+              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
+                profileTab === 'STORE' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              <Store size={15} /> Store & Logo
+            </button>
+            <button
+              onClick={() => setProfileTab('ADMIN')}
+              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
+                profileTab === 'ADMIN' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              <Key size={15} /> Edit Password
+            </button>
+            <button
+              onClick={() => setProfileTab('USERS')}
+              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
+                profileTab === 'USERS' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              <Users size={15} /> Users ({users.length})
+            </button>
+            <button
+              onClick={() => setProfileTab('DATA')}
+              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
+                profileTab === 'DATA' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              <Database size={15} /> Backup & Data
+            </button>
+          </div>
+        </header>
+
+        {/* Hidden Logo File Input */}
+        <input 
+          ref={logoInputRef} 
+          type="file" 
+          accept="image/*" 
+          onChange={handleLogoFileChange} 
+          className="hidden" 
+        />
+
+        {/* Tab 1: Store Profile & Logo */}
+        {profileTab === 'STORE' && (
+          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
+            {/* Logo Manager Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-sm text-slate-800">Store Logo</h3>
+                  <p className="text-xs text-slate-400">Used across receipts, A4 invoices, and app header</p>
+                </div>
+                {shopLogo && (
+                  <button
+                    onClick={handleRemoveLogo}
+                    className="text-xs text-red-600 hover:text-red-700 font-bold flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-lg"
+                  >
+                    <Trash2 size={13} /> Remove Logo
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-4 p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                <div className="w-20 h-20 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center overflow-hidden shrink-0">
+                  {shopLogo ? (
+                    <img src={shopLogo} alt="Store Logo Preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-400 gap-1">
+                      <ImageIcon size={24} />
+                      <span className="text-[9px] font-bold uppercase">No Logo</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 space-y-2">
+                  <p className="text-xs text-slate-600 font-medium">
+                    Upload your shop logo or brand image (PNG, JPG, SVG). It will be auto-optimized for invoices and thermal receipts.
+                  </p>
+                  <button
+                    onClick={() => logoInputRef.current?.click()}
+                    className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-2 px-3.5 rounded-xl shadow-sm flex items-center gap-1.5 active:scale-95 transition-all"
+                  >
+                    <Upload size={14} /> Upload Custom Logo
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Store Details Form Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+              <div className="border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-sm text-slate-800">Store & Business Details</h3>
+                <p className="text-xs text-slate-400">Update store name and contact info displayed to customers</p>
+              </div>
+
+              <div className="space-y-3.5">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Name</label>
+                  <input 
+                    type="text"
+                    value={shopName}
+                    onChange={e => setShopName(e.target.value)}
+                    placeholder="e.g. Smart Time Service Center"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-900 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Business Tagline / Subtitle</label>
+                  <input 
+                    type="text"
+                    value={shopTagline}
+                    onChange={e => setShopTagline(e.target.value)}
+                    placeholder="e.g. Mobile Phone Repair & Service"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Phone Number</label>
+                    <input 
+                      type="text"
+                      value={shopPhone}
+                      onChange={e => setShopPhone(e.target.value)}
+                      placeholder="e.g. +94 77 123 4567"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Address / City</label>
+                    <input 
+                      type="text"
+                      value={shopAddress}
+                      onChange={e => setShopAddress(e.target.value)}
+                      placeholder="e.g. Main Street, Colombo"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={handleSaveStoreProfile}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-sm"
+                >
+                  <Check size={16} /> Save Store Details
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 2: Admin & Password */}
+        {profileTab === 'ADMIN' && (
+          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
+            {/* Admin Info Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-lg">
+                    {currentUser.name[0]}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-base">{currentUser.name}</h3>
+                    <p className="text-xs text-slate-400">@{currentUser.username} • {currentUser.phone || 'No phone'}</p>
+                  </div>
+                </div>
+                <span className="bg-purple-100 text-purple-800 border border-purple-200 text-xs px-2.5 py-1 rounded-full font-bold">
+                  {currentUser.role}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Access Level</span>
+                  <span className="font-bold text-slate-800">Full System Control</span>
+                </div>
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Status</span>
+                  <span className="font-bold text-emerald-600 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Change Password Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+              <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
+                    <Lock size={16} className="text-blue-600" /> Edit Admin Password
+                  </h3>
+                  <p className="text-xs text-slate-400">Update your login security credentials</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleUpdateAdminPassword} className="space-y-3.5">
+                {currentUser.password && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Current Password</label>
+                    <input 
+                      type={passwordForm.showPassword ? 'text' : 'password'}
+                      value={passwordForm.currentPassword}
+                      onChange={e => setPasswordForm(prev => ({ ...prev, currentPassword: e.target.value }))}
+                      placeholder="Enter current password"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                    />
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">New Password</label>
+                  <input 
+                    type={passwordForm.showPassword ? 'text' : 'password'}
+                    value={passwordForm.newPassword}
+                    onChange={e => setPasswordForm(prev => ({ ...prev, newPassword: e.target.value }))}
+                    placeholder="Enter new password (min. 4 characters)"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Confirm New Password</label>
+                  <input 
+                    type={passwordForm.showPassword ? 'text' : 'password'}
+                    value={passwordForm.confirmPassword}
+                    onChange={e => setPasswordForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+                    placeholder="Re-type new password"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600">
+                    <input 
+                      type="checkbox" 
+                      checked={passwordForm.showPassword}
+                      onChange={e => setPasswordForm(prev => ({ ...prev, showPassword: e.target.checked }))}
+                      className="rounded text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>Show password characters</span>
+                  </label>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-sm"
+                >
+                  <Lock size={16} /> Update Admin Password
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 3: Users & Staff Management */}
+        {profileTab === 'USERS' && (
+          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
+            {/* Header with Add User button */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-base text-slate-800">User Management</h3>
+                <p className="text-xs text-slate-400">Admin can add staff, technicians, and cashiers</p>
+              </div>
+              <button
+                onClick={handleOpenAddUser}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl shadow-md flex items-center gap-1.5 active:scale-95 transition-all"
+              >
+                <UserPlus size={15} /> Add User
+              </button>
+            </div>
+
+            {/* Users List */}
+            <div className="space-y-2.5">
+              {users.map(u => {
+                const isCurrent = u.id === currentUserId;
+                const roleBadgeColor = 
+                  u.role === 'Admin' ? 'bg-purple-100 text-purple-800 border-purple-200' :
+                  u.role === 'Manager' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                  u.role === 'Cashier' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
+                  'bg-amber-100 text-amber-800 border-amber-200';
+
+                return (
+                  <div 
+                    key={u.id}
+                    className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col gap-3 transition-all hover:border-slate-300"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-sm ${
+                          u.role === 'Admin' ? 'bg-purple-600' : (u.role === 'Manager' ? 'bg-blue-600' : 'bg-slate-700')
+                        }`}>
+                          {u.name[0]}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-sm text-slate-800">{u.name}</h4>
+                            {isCurrent && (
+                              <span className="text-[10px] bg-green-50 text-green-700 font-bold px-2 py-0.5 rounded-full border border-green-200">
+                                Active You
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 font-medium">@{u.username} {u.phone ? `• ${u.phone}` : ''}</p>
+                        </div>
+                      </div>
+
+                      <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold border ${roleBadgeColor}`}>
+                        {u.role}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${u.status === 'Active' ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                        <span className="text-[11px] font-semibold text-slate-500">{u.status}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {!isCurrent && (
+                          <button
+                            onClick={() => {
+                              setCurrentUserId(u.id);
+                              localStorage.setItem('st_current_user_id', u.id);
+                              showProfileToast(`Switched active user to ${u.name}`);
+                            }}
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors"
+                          >
+                            Switch
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleOpenEditUser(u)}
+                          className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Edit User"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        {users.length > 1 && (
+                          <button
+                            onClick={() => handleDeleteUser(u.id)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete User"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 4: Backup & Data */}
+        {profileTab === 'DATA' && (
+          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
+              <h3 className="font-bold text-sm text-slate-800">Export & Backup Ledger Data</h3>
+              <p className="text-xs text-slate-500">
+                Download a complete JSON backup file of all customer records, vendor accounts, rent cycles, service orders, and payment transactions.
+              </p>
+              <button
+                onClick={handleExportBackup}
+                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
+              >
+                <Download size={16} /> Download Full Ledger Backup (JSON)
+              </button>
+            </div>
+
+            <div className="bg-red-50/70 p-5 rounded-2xl border border-red-200 shadow-sm space-y-3">
+              <div className="flex items-center gap-2 text-red-700 font-bold text-sm">
+                <ShieldAlert size={18} /> Danger Zone: Wipe Ledger Data
+              </div>
+              <p className="text-xs text-red-600 leading-relaxed">
+                Permanently deletes all transactions and contacts from the Supabase database. This action cannot be undone.
+              </p>
+              <button 
+                onClick={async () => { 
+                  if (!window.confirm("RESET APP? All database data will be permanently wiped.")) return; 
+                  await Promise.all([
+                    supabase.from('transactions').delete().neq('id', '0'), 
+                    supabase.from('contacts').delete().neq('id', '0')
+                  ]); 
+                  window.location.reload(); 
+                }} 
+                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all text-xs"
+              >
+                Wipe All Ledger Records
+              </button>
+            </div>
+          </div>
+        )}
+
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
+      </div>
+    );
+  };
 
   let content;
   if (currentView === 'DASHBOARD') content = renderDashboard();
@@ -2338,6 +3362,8 @@ export default function App() {
       {content}
       {renderReportModal()}
       {renderPreviewModal()}
+      {renderUserModal()}
+      {renderPasswordModal()}
     </>
   );
 }
