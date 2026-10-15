@@ -6,7 +6,7 @@ import {
   Camera, Eye, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
-  RotateCcw, Wrench, Smartphone
+  RotateCcw, Wrench, Smartphone, Printer
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -83,6 +83,8 @@ export default function App() {
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
   const [addPhoneModel, setAddPhoneModel] = useState('');
+  const [addTotalCost, setAddTotalCost] = useState('');
+  const [addAdvancePayment, setAddAdvancePayment] = useState('');
   const [addServiceStatus, setAddServiceStatus] = useState('Pending');
   const [targetAmount, setTargetAmount] = useState('30000');
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -99,6 +101,11 @@ export default function App() {
     end: new Date().toISOString().slice(0, 10)
   });
   const [reportTarget, setReportTarget] = useState<'CATEGORY' | 'CONTACT'>('CATEGORY');
+
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [previewServiceOrder, setPreviewServiceOrder] = useState<Contact | null>(null);
+  const [printMenuContactId, setPrintMenuContactId] = useState<string | null>(null);
+  const [previewFormat, setPreviewFormat] = useState<'POS' | 'A4'>('POS');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
 
@@ -313,6 +320,456 @@ export default function App() {
     }
   };
 
+  const generateServicePDF = (contact: Contact, format: 'POS' | 'A4', action: 'download' | 'print' = 'download') => {
+    try {
+      const stats = contactStats[contact.id];
+      const totalCost = stats?.totalCredit || contact.targetAmount || contact.totalCost || 0;
+      const advancePaid = stats?.totalPayment || contact.advancePayment || 0;
+      const balanceDue = totalCost - advancePaid;
+      const orderNo = `SO-${contact.id.slice(0, 6).toUpperCase()}`;
+      const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (format === 'POS') {
+        const doc = new jsPDF({
+          orientation: 'portrait',
+          unit: 'mm',
+          format: [80, 160]
+        });
+
+        let y = 10;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(13);
+        doc.text(shopName.toUpperCase(), 40, y, { align: 'center' });
+
+        y += 5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(8);
+        doc.text('MOBILE PHONE REPAIR & SERVICE', 40, y, { align: 'center' });
+
+        y += 4;
+        doc.text('Smart Time Service Center', 40, y, { align: 'center' });
+
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+
+        y += 4;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(9);
+        doc.text('SERVICE ORDER RECEIPT', 40, y, { align: 'center' });
+
+        y += 5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(8);
+        doc.text(`Order No : #${orderNo}`, 6, y);
+        y += 4.5;
+        doc.text(`Date     : ${dateStr} ${timeStr}`, 6, y);
+        y += 4.5;
+        doc.text(`Customer : ${contact.name}`, 6, y);
+        y += 4.5;
+        doc.text(`Phone    : ${contact.phone || '-'}`, 6, y);
+        y += 4.5;
+        doc.text(`Device   : ${contact.phoneModel || '-'}`, 6, y);
+        y += 4.5;
+        doc.text(`Status   : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 6, y);
+
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+
+        y += 5;
+        doc.text('Total Cost   :', 6, y);
+        doc.text(`LKR ${totalCost.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 4.5;
+        doc.text('Advance Paid :', 6, y);
+        doc.text(`LKR ${advancePaid.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 4;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+
+        y += 5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(10);
+        doc.text('BALANCE DUE  :', 6, y);
+        doc.text(`LKR ${Math.abs(balanceDue).toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 6;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(7);
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+        y += 4;
+        doc.text('* Please present this receipt upon pickup', 40, y, { align: 'center' });
+        y += 3.5;
+        doc.text('* Repaired devices kept up to 30 days', 40, y, { align: 'center' });
+        y += 4;
+        doc.text('*** THANK YOU FOR YOUR BUSINESS! ***', 40, y, { align: 'center' });
+
+        const safeName = `POS_${orderNo}_${contact.name.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+        if (action === 'print') {
+          doc.autoPrint();
+          const blobUrl = doc.output('bloburl');
+          window.open(blobUrl, '_blank');
+        } else {
+          doc.save(safeName);
+        }
+      } else {
+        const doc = new jsPDF({
+          orientation: 'portrait',
+          unit: 'mm',
+          format: 'a4'
+        });
+
+        // Top Header
+        doc.setFillColor(30, 41, 59); // slate-800
+        doc.rect(0, 0, 210, 28, 'F');
+
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(20);
+        doc.setFont('helvetica', 'bold');
+        doc.text(shopName.toUpperCase(), 14, 15);
+
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'normal');
+        doc.text('MOBILE PHONE REPAIR & SERVICE INVOICE', 14, 22);
+
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`JOB NO: #${orderNo}`, 196, 15, { align: 'right' });
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.text(`Date: ${dateStr}`, 196, 22, { align: 'right' });
+
+        // Customer & Device Box
+        doc.setTextColor(30, 41, 59);
+        doc.setFontSize(11);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Customer Information', 14, 38);
+        doc.text('Device & Service Details', 115, 38);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.text(`Customer Name : ${contact.name}`, 14, 46);
+        doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 53);
+        doc.text(`Service Type  : Walk-in Repair Order`, 14, 60);
+
+        doc.text(`Phone Model   : ${contact.phoneModel || 'N/A'}`, 115, 46);
+        doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 53);
+        doc.text(`Receipt Time  : ${timeStr}`, 115, 60);
+
+        autoTable(doc, {
+          startY: 68,
+          head: [['#', 'Item / Service Description', 'Device / Model', 'Status', 'Amount (LKR)']],
+          body: [
+            ['1', 'Device Service & Repair Charge', contact.phoneModel || '-', contact.serviceStatus || 'Pending', `LKR ${totalCost.toLocaleString()}`],
+            ['2', 'Advance Deposit Paid', '-', 'Received', `- LKR ${advancePaid.toLocaleString()}`],
+          ],
+          theme: 'striped',
+          headStyles: { fillColor: [51, 65, 85], fontStyle: 'bold' },
+          styles: { fontSize: 10, cellPadding: 4 },
+          columnStyles: {
+            0: { cellWidth: 12 },
+            1: { cellWidth: 70 },
+            2: { cellWidth: 48 },
+            3: { cellWidth: 32 },
+            4: { cellWidth: 34, halign: 'right' }
+          }
+        });
+
+        const finalY = (doc as any).lastAutoTable?.finalY || 105;
+
+        // Balance Summary Box
+        const boxY = finalY + 8;
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(120, boxY, 76, 32, 2, 2, 'F');
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(120, boxY, 76, 32, 2, 2, 'D');
+
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Total Service Cost:', 125, boxY + 8);
+        doc.text(`LKR ${totalCost.toLocaleString()}`, 190, boxY + 8, { align: 'right' });
+
+        doc.text('Advance Paid:', 125, boxY + 15);
+        doc.text(`LKR ${advancePaid.toLocaleString()}`, 190, boxY + 15, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(balanceDue > 0 ? 185 : 21, balanceDue > 0 ? 28 : 128, balanceDue > 0 ? 28 : 61);
+        doc.text('BALANCE DUE:', 125, boxY + 25);
+        doc.text(`LKR ${Math.abs(balanceDue).toLocaleString()}`, 190, boxY + 25, { align: 'right' });
+
+        // Terms and Signatures
+        doc.setTextColor(100, 116, 139);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.text('TERMS & CONDITIONS:', 14, boxY + 45);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        doc.text('1. Please produce this receipt when collecting your repaired device.', 14, boxY + 51);
+        doc.text('2. Repaired items not claimed within 30 days are subject to storage charges.', 14, boxY + 56);
+        doc.text('3. Warranty applies exclusively to parts replaced during this repair.', 14, boxY + 61);
+
+        doc.setDrawColor(203, 213, 225);
+        doc.line(14, boxY + 85, 75, boxY + 85);
+        doc.text('Customer Signature', 14, boxY + 90);
+
+        doc.line(135, boxY + 85, 196, boxY + 85);
+        doc.text('Authorized Store Signature', 135, boxY + 90);
+
+        const safeName = `Invoice_${orderNo}_${contact.name.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+        if (action === 'print') {
+          doc.autoPrint();
+          const blobUrl = doc.output('bloburl');
+          window.open(blobUrl, '_blank');
+        } else {
+          doc.save(safeName);
+        }
+      }
+    } catch (err) {
+      console.error('PDF Generation Error:', err);
+      alert('Failed to generate PDF. Please try again.');
+    }
+  };
+
+  const openPreview = (contact: Contact, initialFormat: 'POS' | 'A4' = 'POS') => {
+    setPreviewServiceOrder(contact);
+    setPreviewFormat(initialFormat);
+    setIsPreviewModalOpen(true);
+    setPrintMenuContactId(null);
+  };
+
+  const handleEditServiceOrder = (contact: Contact) => {
+    setEditingContact(contact);
+    setAddName(contact.name);
+    setAddPhone(contact.phone || '');
+    setAddPhoneModel(contact.phoneModel || '');
+    const stats = contactStats[contact.id];
+    const cost = contact.totalCost || contact.targetAmount || stats?.totalCredit || '';
+    const adv = contact.advancePayment || stats?.totalPayment || '';
+    setAddTotalCost(cost ? cost.toString() : '');
+    setAddAdvancePayment(adv ? adv.toString() : '');
+    setAddServiceStatus(contact.serviceStatus || 'Pending');
+    setTargetAmount(contact.targetAmount?.toString() || '30000');
+    navigateTo('CONTACT_FORM');
+  };
+
+  const renderPreviewModal = () => {
+    if (!isPreviewModalOpen || !previewServiceOrder) return null;
+    const stats = contactStats[previewServiceOrder.id];
+    const totalCost = stats?.totalCredit || previewServiceOrder.targetAmount || previewServiceOrder.totalCost || 0;
+    const advancePaid = stats?.totalPayment || previewServiceOrder.advancePayment || 0;
+    const balanceDue = totalCost - advancePaid;
+    const orderNo = `SO-${previewServiceOrder.id.slice(0, 6).toUpperCase()}`;
+    const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[110] flex items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+        <div className="bg-slate-100 w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh] border border-slate-200">
+          {/* Header */}
+          <div className="bg-white px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-slate-800 text-lg">Service Order Preview</h3>
+                <span className="text-[11px] font-mono bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full font-bold">
+                  #{orderNo}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-medium">{previewServiceOrder.name} • {previewServiceOrder.phoneModel || 'Device'}</p>
+            </div>
+            <button 
+              onClick={() => setIsPreviewModalOpen(false)}
+              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Format Switcher Tabs */}
+          <div className="bg-white px-5 py-2.5 border-b border-slate-200 flex gap-2 shrink-0">
+            <button
+              onClick={() => setPreviewFormat('POS')}
+              className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all ${
+                previewFormat === 'POS'
+                  ? 'bg-slate-900 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <Receipt size={15} /> POS Thermal (80mm)
+            </button>
+            <button
+              onClick={() => setPreviewFormat('A4')}
+              className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all ${
+                previewFormat === 'A4'
+                  ? 'bg-slate-900 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <FileText size={15} /> A4 Invoice PDF
+            </button>
+          </div>
+
+          {/* Scrollable Preview Body */}
+          <div className="p-4 sm:p-6 overflow-y-auto flex-1 flex justify-center items-start bg-slate-200/70">
+            {previewFormat === 'POS' ? (
+              /* POS 80mm Receipt Style */
+              <div className="w-full max-w-[340px] bg-white rounded-xl shadow-lg border border-slate-300 p-5 font-mono text-[13px] leading-relaxed relative text-slate-800">
+                <div className="text-center pb-3 border-b border-dashed border-slate-300">
+                  <h4 className="font-black text-base tracking-wider uppercase text-slate-900">{shopName}</h4>
+                  <p className="text-[10px] text-slate-500 font-bold tracking-tight uppercase mt-0.5">Mobile Phone Repair & Service</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Service Center Receipt</p>
+                  <div className="mt-2 text-center inline-block bg-slate-100 px-3 py-1 rounded text-xs font-bold text-slate-700 tracking-wider">
+                    SERVICE ORDER #{orderNo}
+                  </div>
+                </div>
+
+                <div className="py-3 border-b border-dashed border-slate-300 space-y-1.5 text-xs">
+                  <div className="flex justify-between"><span className="text-slate-500">Date/Time:</span><span className="font-semibold">{dateStr} {timeStr}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Customer:</span><span className="font-bold text-slate-900">{previewServiceOrder.name}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Phone:</span><span>{previewServiceOrder.phone || '-'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Device:</span><span className="font-bold text-indigo-700">{previewServiceOrder.phoneModel || '-'}</span></div>
+                  <div className="flex justify-between items-center"><span className="text-slate-500">Status:</span>
+                    <span className="font-bold uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-800">
+                      {previewServiceOrder.serviceStatus || 'Pending'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="py-3 border-b border-dashed border-slate-300 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Repair Cost:</span>
+                    <span className="font-bold text-red-600">LKR {totalCost.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Advance Paid:</span>
+                    <span className="font-bold text-green-600">LKR {advancePaid.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="py-3 bg-slate-50 rounded-lg px-3 my-2 border border-slate-200 flex justify-between items-center">
+                  <span className="font-black text-xs uppercase text-slate-700">BALANCE DUE:</span>
+                  <span className="font-black text-base text-red-700">LKR {Math.abs(balanceDue).toLocaleString()}</span>
+                </div>
+
+                <div className="pt-2 text-center text-[10px] text-slate-400 space-y-1 font-sans">
+                  <p>• Please present this receipt upon pickup</p>
+                  <p>• Repaired devices kept up to 30 days</p>
+                  <p className="font-bold text-slate-600 mt-2">*** THANK YOU FOR YOUR BUSINESS! ***</p>
+                </div>
+              </div>
+            ) : (
+              /* A4 Invoice Style */
+              <div className="w-full bg-white rounded-xl shadow-lg border border-slate-300 overflow-hidden text-slate-800">
+                {/* A4 Header Banner */}
+                <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
+                  <div>
+                    <h4 className="text-lg font-black tracking-wide uppercase">{shopName}</h4>
+                    <p className="text-[11px] text-slate-300 font-medium tracking-wide">MOBILE PHONE REPAIR & SERVICE INVOICE</p>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-bold text-xs bg-slate-800 text-blue-300 px-2 py-0.5 rounded uppercase">JOB #{orderNo}</div>
+                    <p className="text-[11px] text-slate-400 mt-1">Date: {dateStr}</p>
+                  </div>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  {/* Two columns */}
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Customer Details</p>
+                      <p className="font-bold text-sm text-slate-900">{previewServiceOrder.name}</p>
+                      <p className="text-slate-600 mt-0.5">{previewServiceOrder.phone || 'No phone'}</p>
+                      <p className="text-slate-400 text-[11px] mt-1">Walk-in Repair Order</p>
+                    </div>
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Device Details</p>
+                      <p className="font-bold text-sm text-indigo-700">{previewServiceOrder.phoneModel || 'Device'}</p>
+                      <p className="text-slate-600 mt-0.5 font-semibold">Status: <span className="uppercase text-slate-800">{previewServiceOrder.serviceStatus || 'Pending'}</span></p>
+                      <p className="text-slate-400 text-[11px] mt-1">{timeStr}</p>
+                    </div>
+                  </div>
+
+                  {/* Table */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                        <tr>
+                          <th className="p-2.5">Item Description</th>
+                          <th className="p-2.5">Device</th>
+                          <th className="p-2.5 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        <tr>
+                          <td className="p-2.5 font-medium text-slate-800">Phone Repair & Service Charge</td>
+                          <td className="p-2.5 text-slate-600">{previewServiceOrder.phoneModel || '-'}</td>
+                          <td className="p-2.5 text-right font-bold text-red-600">LKR {totalCost.toLocaleString()}</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2.5 font-medium text-slate-800">Advance Deposit Paid</td>
+                          <td className="p-2.5 text-slate-400">Paid</td>
+                          <td className="p-2.5 text-right font-bold text-green-600">- LKR {advancePaid.toLocaleString()}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Summary */}
+                  <div className="flex justify-end">
+                    <div className="w-60 bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
+                      <div className="flex justify-between text-slate-600">
+                        <span>Total Cost:</span>
+                        <span className="font-bold text-slate-900">LKR {totalCost.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600">
+                        <span>Advance Paid:</span>
+                        <span className="font-bold text-slate-900">LKR {advancePaid.toLocaleString()}</span>
+                      </div>
+                      <div className="border-t border-slate-200 pt-1.5 flex justify-between items-center">
+                        <span className="font-black text-slate-800">BALANCE DUE:</span>
+                        <span className="font-black text-sm text-red-600">LKR {Math.abs(balanceDue).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Terms */}
+                  <div className="border-t border-slate-100 pt-3 text-[10px] text-slate-400 space-y-0.5">
+                    <p className="font-bold text-slate-500 uppercase">Terms & Conditions:</p>
+                    <p>1. Please present this receipt upon pickup.</p>
+                    <p>2. Repaired items not claimed within 30 days are subject to storage charges.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action Bar Footer */}
+          <div className="bg-white p-4 border-t border-slate-200 flex flex-wrap gap-2.5 shrink-0 justify-between items-center">
+            <button
+              onClick={() => generateServicePDF(previewServiceOrder, 'POS')}
+              className="flex-1 min-w-[120px] bg-slate-800 hover:bg-slate-900 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
+            >
+              <Download size={14} /> Download POS (80mm)
+            </button>
+            <button
+              onClick={() => generateServicePDF(previewServiceOrder, 'A4')}
+              className="flex-1 min-w-[120px] bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
+            >
+              <Download size={14} /> Download A4 PDF
+            </button>
+            <button
+              onClick={() => generateServicePDF(previewServiceOrder, previewFormat, 'print')}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
+              title="Print document"
+            >
+              <Printer size={15} /> Print {previewFormat}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   useEffect(() => { contactsRef.current = contacts; }, [contacts]);
 
   useEffect(() => {
@@ -353,17 +810,36 @@ export default function App() {
         supabase.from('transactions').select('*').order('date', { ascending: false })
       ]);
       if (contactsRes.data) {
-        setContacts(contactsRes.data.map((c: any) => ({
-          id: c.id, 
-          name: c.name, 
-          phone: c.phone || '', 
-          type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
-          balance: c.balance || 0, 
-          targetAmount: c.target_amount,
-          phoneModel: c.start_date || '',
-          serviceStatus: c.end_date || 'Pending',
-          lastUpdated: c.last_updated
-        })));
+        setContacts(contactsRes.data.map((c: any) => {
+          let parsedStatus = 'Pending';
+          let parsedAdvance = 0;
+          if (c.end_date) {
+            try {
+              if (c.end_date.startsWith('{')) {
+                const parsed = JSON.parse(c.end_date);
+                parsedStatus = parsed.status || 'Pending';
+                parsedAdvance = parsed.advance || 0;
+              } else {
+                parsedStatus = c.end_date;
+              }
+            } catch {
+              parsedStatus = c.end_date;
+            }
+          }
+          return {
+            id: c.id, 
+            name: c.name, 
+            phone: c.phone || '', 
+            type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
+            balance: c.balance || 0, 
+            targetAmount: c.target_amount,
+            phoneModel: c.start_date || '',
+            serviceStatus: parsedStatus,
+            totalCost: c.target_amount || 0,
+            advancePayment: parsedAdvance,
+            lastUpdated: c.last_updated
+          };
+        }));
       }
       if (transRes.data) {
         setTransactions(transRes.data.map((t: any) => ({
@@ -382,39 +858,167 @@ export default function App() {
     if (!addName.trim() || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const isService = activeTab === 'SERVICE';
+      const isService = editingContact ? editingContact.type === 'SERVICE' : activeTab === 'SERVICE';
+      const costVal = isService ? (parseFloat(addTotalCost) || 0) : null;
+      const advanceVal = isService ? (parseFloat(addAdvancePayment) || 0) : null;
+
       const payload: any = { 
         name: addName.trim(), 
         phone: addPhone.trim(),
-        type: activeTab, 
-        target_amount: activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null, 
+        type: isService ? 'SERVICE' : activeTab, 
+        target_amount: isService ? costVal : (activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null), 
         start_date: isService ? addPhoneModel.trim() : null,
-        end_date: isService ? addServiceStatus : null,
+        end_date: isService ? JSON.stringify({ status: addServiceStatus, advance: advanceVal || 0 }) : null,
         last_updated: new Date().toISOString() 
       };
       
       let res;
+      let contactId = editingContact?.id;
       if (editingContact) {
         res = await supabase.from('contacts').update(payload).eq('id', editingContact.id).select();
       } else {
         const newId = generateUUID();
+        contactId = newId;
         res = await supabase.from('contacts').insert([{ ...payload, id: newId, balance: 0 }]).select();
       }
 
       if (res.error) throw res.error;
       
       if (res.data) {
+        const savedData = res.data[0];
         const updatedContact: Contact = {
-          id: res.data[0].id,
-          name: res.data[0].name,
-          phone: res.data[0].phone || '',
-          type: res.data[0].type === 'SUPPLIER' ? 'VENDOR' : res.data[0].type,
-          balance: res.data[0].balance || 0,
-          targetAmount: res.data[0].target_amount,
-          phoneModel: res.data[0].start_date || '',
-          serviceStatus: res.data[0].end_date || 'Pending',
-          lastUpdated: res.data[0].last_updated
+          id: savedData.id,
+          name: savedData.name,
+          phone: savedData.phone || '',
+          type: savedData.type === 'SUPPLIER' ? 'VENDOR' : savedData.type,
+          balance: savedData.balance || 0,
+          targetAmount: savedData.target_amount,
+          phoneModel: savedData.start_date || '',
+          serviceStatus: addServiceStatus,
+          totalCost: costVal || 0,
+          advancePayment: advanceVal || 0,
+          lastUpdated: savedData.last_updated
         };
+
+        // If it is a new SERVICE order, automatically record transactions for Total Cost & Advance Payment!
+        if (isService && contactId && !editingContact) {
+          const todayDate = new Date().toISOString().slice(0, 10);
+          const newTxList: Transaction[] = [];
+
+          if (costVal && costVal > 0) {
+            const costTx = {
+              contact_id: contactId,
+              date: todayDate,
+              amount: costVal,
+              type: 'CREDIT' as TransactionType,
+              description: 'Service Total Cost',
+              balance_after: costVal
+            };
+            const costRes = await supabase.from('transactions').insert([costTx]).select();
+            if (costRes.data?.[0]) {
+              newTxList.push({
+                id: costRes.data[0].id,
+                contactId: costRes.data[0].contact_id,
+                date: costRes.data[0].date,
+                description: costRes.data[0].description,
+                amount: costRes.data[0].amount,
+                type: costRes.data[0].type,
+                balanceAfter: costRes.data[0].balance_after
+              });
+            }
+          }
+
+          if (advanceVal && advanceVal > 0) {
+            const balAfter = Math.max(0, (costVal || 0) - advanceVal);
+            const advTx = {
+              contact_id: contactId,
+              date: todayDate,
+              amount: advanceVal,
+              type: 'PAYMENT' as TransactionType,
+              description: 'Advance Payment',
+              balance_after: balAfter
+            };
+            const advRes = await supabase.from('transactions').insert([advTx]).select();
+            if (advRes.data?.[0]) {
+              newTxList.push({
+                id: advRes.data[0].id,
+                contactId: advRes.data[0].contact_id,
+                date: advRes.data[0].date,
+                description: advRes.data[0].description,
+                amount: advRes.data[0].amount,
+                type: advRes.data[0].type,
+                balanceAfter: advRes.data[0].balance_after
+              });
+            }
+          }
+
+          if (newTxList.length > 0) {
+            setTransactions(prev => [...newTxList, ...prev]);
+          }
+        } else if (isService && editingContact) {
+          // If editing an existing service order, sync transactions for Total Cost and Advance Payment
+          const todayDate = new Date().toISOString().slice(0, 10);
+          const existingCostTx = transactions.find(t => t.contactId === editingContact.id && t.description === 'Service Total Cost');
+          if (existingCostTx) {
+            if (costVal !== null && costVal > 0 && costVal !== existingCostTx.amount) {
+              await supabase.from('transactions').update({ amount: costVal }).eq('id', existingCostTx.id);
+              setTransactions(prev => prev.map(t => t.id === existingCostTx.id ? { ...t, amount: costVal } : t));
+            }
+          } else if (costVal && costVal > 0) {
+            const costTx = {
+              contact_id: editingContact.id,
+              date: todayDate,
+              amount: costVal,
+              type: 'CREDIT' as TransactionType,
+              description: 'Service Total Cost',
+              balance_after: costVal
+            };
+            const cRes = await supabase.from('transactions').insert([costTx]).select();
+            if (cRes.data?.[0]) {
+              setTransactions(prev => [{
+                id: cRes.data[0].id,
+                contactId: cRes.data[0].contact_id,
+                date: cRes.data[0].date,
+                description: cRes.data[0].description,
+                amount: cRes.data[0].amount,
+                type: cRes.data[0].type,
+                balanceAfter: cRes.data[0].balance_after
+              }, ...prev]);
+            }
+          }
+
+          const existingAdvTx = transactions.find(t => t.contactId === editingContact.id && t.description === 'Advance Payment');
+          if (existingAdvTx) {
+            if (advanceVal !== null && advanceVal > 0 && advanceVal !== existingAdvTx.amount) {
+              await supabase.from('transactions').update({ amount: advanceVal }).eq('id', existingAdvTx.id);
+              setTransactions(prev => prev.map(t => t.id === existingAdvTx.id ? { ...t, amount: advanceVal } : t));
+            } else if (advanceVal === 0) {
+              await supabase.from('transactions').delete().eq('id', existingAdvTx.id);
+              setTransactions(prev => prev.filter(t => t.id !== existingAdvTx.id));
+            }
+          } else if (advanceVal && advanceVal > 0) {
+            const advTx = {
+              contact_id: editingContact.id,
+              date: todayDate,
+              amount: advanceVal,
+              type: 'PAYMENT' as TransactionType,
+              description: 'Advance Payment',
+              balance_after: 0
+            };
+            const aRes = await supabase.from('transactions').insert([advTx]).select();
+            if (aRes.data?.[0]) {
+              setTransactions(prev => [{
+                id: aRes.data[0].id,
+                contactId: aRes.data[0].contact_id,
+                date: aRes.data[0].date,
+                description: aRes.data[0].description,
+                amount: aRes.data[0].amount,
+                type: aRes.data[0].type,
+                balanceAfter: aRes.data[0].balance_after
+              }, ...prev]);
+            }
+          }
+        }
         
         if (editingContact) {
           setContacts(contacts.map(c => c.id === editingContact.id ? updatedContact : c));
@@ -427,6 +1031,8 @@ export default function App() {
       setAddName(''); 
       setAddPhone(''); 
       setAddPhoneModel('');
+      setAddTotalCost('');
+      setAddAdvancePayment('');
       setAddServiceStatus('Pending');
       setTargetAmount('30000'); 
       setEditingContact(null);
@@ -435,15 +1041,22 @@ export default function App() {
     finally { setIsSubmitting(false); }
   };
 
-  const handleDeleteContact = async (id: string) => {
-    if (!window.confirm("Delete this contact entirely? All transactions will be lost.")) return;
+  const handleDeleteContact = async (id: string, isFromDetail: boolean = true) => {
+    const contact = contacts.find(c => c.id === id);
+    const itemLabel = contact?.type === 'SERVICE' ? 'Service Order' : (contact?.type === 'RENT' ? 'Rent Record' : 'Contact');
+    if (!window.confirm(`Delete this ${itemLabel} entirely? All transactions will be lost.`)) return;
     setIsSubmitting(true);
     try {
       await supabase.from('transactions').delete().eq('contact_id', id);
       await supabase.from('contacts').delete().eq('id', id);
-      setContacts(contacts.filter(c => c.id !== id));
-      setTransactions(transactions.filter(t => t.contactId !== id));
-      handleBack();
+      setContacts(prev => prev.filter(c => c.id !== id));
+      setTransactions(prev => prev.filter(t => t.contactId !== id));
+      if (selectedContact?.id === id) {
+        setSelectedContact(null);
+      }
+      if (isFromDetail) {
+        handleBack();
+      }
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
   };
@@ -582,7 +1195,7 @@ export default function App() {
           <div className="flex justify-between items-center mb-2">
             <div><h1 className="text-xl font-bold text-slate-800">Ledger Book</h1><p className="text-xs font-semibold text-slate-500">{shopName}</p></div>
             <div className="flex items-center gap-3">
-               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
+               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 text-white p-2 rounded-full shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={22} /></button>
                <PlayCircle size={24} className="text-blue-600" />
             </div>
           </div>
@@ -616,33 +1229,185 @@ export default function App() {
               const stats = contactStats[c.id];
               const displayBal = stats?.balance || 0;
               const isService = c.type === 'SERVICE';
-              const leftLabel = isService ? 'Charge' : (c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out'));
-              const rightLabel = isService ? 'Paid' : (c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In'));
+              const leftLabel = isService ? 'Total Cost' : (c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out'));
+              const rightLabel = isService ? 'Advance' : (c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In'));
+              
+              if (isService) {
+                const totalCost = stats.totalCredit || c.totalCost || c.targetAmount || 0;
+                const advancePaid = stats.totalPayment || c.advancePayment || 0;
+                const balanceDue = totalCost - advancePaid;
+                const isPrintMenuOpen = printMenuContactId === c.id;
+
+                return (
+                  <div 
+                    key={c.id} 
+                    onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} 
+                    className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex flex-col gap-3 active:bg-gray-50/70 cursor-pointer transition-all relative hover:border-slate-300"
+                  >
+                    {/* Top: Customer Name, Status Badge, Phone, Model, and Balance Due */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="w-11 h-11 shrink-0 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-sm">
+                          <Smartphone size={20} />
+                        </div>
+                        <div className="overflow-hidden">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
+                            {c.serviceStatus && (
+                              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                c.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
+                                c.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
+                                c.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
+                                'bg-slate-100 text-slate-600'
+                              }`}>
+                                {c.serviceStatus}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            {c.phone && <span className="text-xs text-slate-500 font-medium">{c.phone}</span>}
+                            {c.phone && c.phoneModel && <span className="text-slate-300">•</span>}
+                            {c.phoneModel && (
+                              <span className="text-xs font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md">
+                                {c.phoneModel}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-0.5">Balance Due</p>
+                        <p className={`font-black text-lg ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          LKR {Math.abs(balanceDue).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Cost and Advance breakdown */}
+                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-100 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase">Total Cost:</span>
+                        <span className="font-bold text-red-600">LKR {totalCost.toLocaleString()}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase">Advance Paid:</span>
+                        <span className="font-bold text-green-600">LKR {advancePaid.toLocaleString()}</span>
+                      </div>
+                    </div>
+
+                    {/* 4 Action Buttons: Preview, Print (POS/A4), Edit, Delete */}
+                    <div className="flex items-center gap-2 pt-1 border-t border-slate-100 relative">
+                      {/* Preview Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openPreview(c);
+                        }}
+                        className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
+                        title="Preview Receipt & Invoice"
+                      >
+                        <Eye size={14} className="text-slate-600" />
+                        <span>Preview</span>
+                      </button>
+
+                      {/* Print Button with Dropdown for POS and A4 */}
+                      <div className="relative flex-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPrintMenuContactId(isPrintMenuOpen ? null : c.id);
+                          }}
+                          className={`w-full py-1.5 px-2 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95 ${
+                            isPrintMenuOpen ? 'bg-blue-600 text-white' : 'bg-blue-50 hover:bg-blue-100 text-blue-700'
+                          }`}
+                          title="Print POS or A4 PDF"
+                        >
+                          <Printer size={14} />
+                          <span>Print</span>
+                          <ChevronDown size={12} className={isPrintMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                        </button>
+
+                        {/* Print Dropdown Menu */}
+                        {isPrintMenuOpen && (
+                          <div 
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute bottom-full mb-1 left-0 right-0 sm:w-56 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 z-30 animate-in fade-in zoom-in-95 duration-150"
+                          >
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1">Choose PDF Format</p>
+                            <button
+                              onClick={() => {
+                                setPrintMenuContactId(null);
+                                generateServicePDF(c, 'POS');
+                              }}
+                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                            >
+                              <Receipt size={14} className="text-indigo-600" />
+                              <span>POS Receipt (80mm)</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setPrintMenuContactId(null);
+                                generateServicePDF(c, 'A4');
+                              }}
+                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                            >
+                              <FileText size={14} className="text-blue-600" />
+                              <span>A4 Invoice PDF</span>
+                            </button>
+                            <div className="border-t border-slate-100 mt-1 pt-1">
+                              <button
+                                onClick={() => {
+                                  openPreview(c);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:bg-slate-50 flex items-center gap-1.5"
+                              >
+                                <Eye size={12} />
+                                <span>Preview Both First</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Edit Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditServiceOrder(c);
+                        }}
+                        className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
+                        title="Edit Service Order"
+                      >
+                        <Pencil size={14} className="text-slate-600" />
+                        <span>Edit</span>
+                      </button>
+
+                      {/* Delete Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteContact(c.id, false);
+                        }}
+                        className="py-1.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
+                        title="Delete Service Order"
+                      >
+                        <Trash2 size={14} />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
               return (
                 <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : (isService ? 'bg-indigo-600' : 'bg-slate-400')}`}>
-                      {isService ? <Smartphone size={18} /> : c.name[0]}
+                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
+                      {c.name[0]}
                     </div>
                     <div className="overflow-hidden">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
-                        {isService && c.serviceStatus && (
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                            c.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
-                            c.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
-                            c.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
-                            'bg-slate-100 text-slate-600'
-                          }`}>
-                            {c.serviceStatus}
-                          </span>
-                        )}
-                      </div>
-                      {isService && c.phoneModel && (
-                        <p className="text-[12px] font-semibold text-indigo-600 flex items-center gap-1 mt-0.5">
-                          <Smartphone size={12} className="shrink-0" /> {c.phoneModel}
-                        </p>
-                      )}
+                      <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
                       <div className="flex items-center gap-3 mt-1.5">
                         <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span><span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span></div>
                         <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span><span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span></div>
@@ -708,9 +1473,99 @@ export default function App() {
               {isService && selectedContact.serviceStatus ? ` (${selectedContact.serviceStatus})` : ''}
             </p>
           </div>
-          <button onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm" title="Download Statement"><Download size={18} /></button>
-          <button onClick={() => { setEditingContact(selectedContact); setAddName(selectedContact.name); setAddPhone(selectedContact.phone); setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); setAddPhoneModel(selectedContact.phoneModel || ''); setAddServiceStatus(selectedContact.serviceStatus || 'Pending'); navigateTo('CONTACT_FORM'); }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
-          <button onClick={() => handleDeleteContact(selectedContact.id)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
+          {isService ? (
+            <div className="flex items-center gap-1.5 relative">
+              <button 
+                onClick={() => openPreview(selectedContact)} 
+                className="p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-full active:scale-90 shadow-sm transition-colors" 
+                title="Preview Service Order"
+              >
+                <Eye size={18} />
+              </button>
+
+              <button 
+                onClick={() => setPrintMenuContactId(printMenuContactId === selectedContact.id ? null : selectedContact.id)} 
+                className={`p-2 rounded-full active:scale-90 shadow-sm transition-colors ${
+                  printMenuContactId === selectedContact.id ? 'bg-blue-600 text-white' : 'text-blue-600 bg-blue-50 hover:bg-blue-100'
+                }`} 
+                title="Print Service Order (POS / A4)"
+              >
+                <Printer size={18} />
+              </button>
+
+              {printMenuContactId === selectedContact.id && (
+                <div 
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-full right-0 mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-200 p-2 z-50 animate-in fade-in zoom-in-95 duration-150"
+                >
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1">Choose PDF Format</p>
+                  <button
+                    onClick={() => {
+                      setPrintMenuContactId(null);
+                      generateServicePDF(selectedContact, 'POS');
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                  >
+                    <Receipt size={15} className="text-indigo-600" />
+                    <span>POS Receipt (80mm)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPrintMenuContactId(null);
+                      generateServicePDF(selectedContact, 'A4');
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
+                  >
+                    <FileText size={15} className="text-blue-600" />
+                    <span>A4 Invoice PDF</span>
+                  </button>
+                  <div className="border-t border-slate-100 mt-1 pt-1">
+                    <button
+                      onClick={() => {
+                        setPrintMenuContactId(null);
+                        openPreview(selectedContact);
+                      }}
+                      className="w-full text-left px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:bg-slate-50 flex items-center gap-1.5"
+                    >
+                      <Eye size={12} />
+                      <span>Preview Both First</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <button 
+                onClick={() => handleEditServiceOrder(selectedContact)} 
+                className="p-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full active:scale-90 shadow-sm transition-colors" 
+                title="Edit Service Order"
+              >
+                <Pencil size={18} />
+              </button>
+              <button 
+                onClick={() => handleDeleteContact(selectedContact.id, true)} 
+                className="p-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-full active:scale-90 shadow-sm transition-colors"
+                title="Delete Service Order"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => { setReportTarget('CONTACT'); setIsReportModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90 shadow-sm" title="Download Statement"><Download size={18} /></button>
+              <button onClick={() => { 
+                setEditingContact(selectedContact); 
+                setAddName(selectedContact.name); 
+                setAddPhone(selectedContact.phone); 
+                setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); 
+                setAddPhoneModel(selectedContact.phoneModel || ''); 
+                setAddTotalCost(selectedContact.totalCost?.toString() || selectedContact.targetAmount?.toString() || (contactStats[selectedContact.id]?.totalCredit ? contactStats[selectedContact.id].totalCredit.toString() : '')); 
+                setAddAdvancePayment(selectedContact.advancePayment?.toString() || (contactStats[selectedContact.id]?.totalPayment ? contactStats[selectedContact.id].totalPayment.toString() : '')); 
+                setAddServiceStatus(selectedContact.serviceStatus || 'Pending'); 
+                navigateTo('CONTACT_FORM'); 
+              }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
+              <button onClick={() => handleDeleteContact(selectedContact.id, true)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90 shadow-sm"><Trash2 size={18} /></button>
+            </div>
+          )}
         </header>
         <div className="p-4 bg-white mb-2 shadow-sm text-center">
           <div className="bg-[#f8fafc] rounded-2xl p-6 border border-slate-100 shadow-inner relative overflow-hidden">
@@ -718,26 +1573,73 @@ export default function App() {
               <div className="absolute top-0 right-0 bg-green-100 text-green-700 text-[8px] font-black px-2 py-1 rounded-bl-lg uppercase tracking-widest">Target Met!</div>
             )}
             {isService && (
-              <div className="flex items-center justify-center gap-2 mb-3">
-                {selectedContact.phoneModel && (
-                  <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
-                    <Smartphone size={13} /> {selectedContact.phoneModel}
-                  </span>
-                )}
-                {selectedContact.serviceStatus && (
-                  <span className={`text-xs px-2.5 py-1 rounded-full font-bold uppercase tracking-wider ${
-                    selectedContact.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
-                    selectedContact.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
-                    selectedContact.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
-                    'bg-slate-100 text-slate-700'
-                  }`}>
-                    {selectedContact.serviceStatus}
-                  </span>
-                )}
+              <div className="flex flex-col items-center gap-2 mb-3">
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  {selectedContact.phoneModel && (
+                    <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
+                      <Smartphone size={13} /> {selectedContact.phoneModel}
+                    </span>
+                  )}
+                  {selectedContact.serviceStatus && (
+                    <span className={`text-xs px-2.5 py-1 rounded-full font-bold uppercase tracking-wider ${
+                      selectedContact.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
+                      selectedContact.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
+                      selectedContact.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
+                      'bg-slate-100 text-slate-700'
+                    }`}>
+                      {selectedContact.serviceStatus}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-xs font-bold mt-1 bg-slate-100/70 px-3 py-1.5 rounded-xl">
+                  <span className="text-red-600">Total: LKR {(contactStats[selectedContact.id]?.totalCredit || selectedContact.targetAmount || selectedContact.totalCost || 0).toLocaleString()}</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-green-600">Advance/Paid: LKR {(contactStats[selectedContact.id]?.totalPayment || selectedContact.advancePayment || 0).toLocaleString()}</span>
+                </div>
               </div>
             )}
             <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : (isService ? 'Balance Due' : 'Total Balance')}</p>
+
+            {isService && (
+              <div className="flex items-center justify-center gap-2 flex-wrap mt-4 pt-4 border-t border-slate-200">
+                <button
+                  onClick={() => openPreview(selectedContact)}
+                  className="py-2 px-3 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                  title="Preview Receipt & Invoice"
+                >
+                  <Eye size={14} className="text-indigo-600" /> Preview
+                </button>
+                <button
+                  onClick={() => generateServicePDF(selectedContact, 'POS')}
+                  className="py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                  title="Download / Print POS 80mm Receipt"
+                >
+                  <Receipt size={14} /> POS Receipt (80mm)
+                </button>
+                <button
+                  onClick={() => generateServicePDF(selectedContact, 'A4')}
+                  className="py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                  title="Download / Print A4 Invoice PDF"
+                >
+                  <FileText size={14} /> A4 Invoice PDF
+                </button>
+                <button
+                  onClick={() => handleEditServiceOrder(selectedContact)}
+                  className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                  title="Edit Service Order"
+                >
+                  <Pencil size={14} /> Edit
+                </button>
+                <button
+                  onClick={() => handleDeleteContact(selectedContact.id, true)}
+                  className="py-2 px-3 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                  title="Delete Service Order"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            )}
             {isTargetAchieved && (
               <button 
                 onClick={() => handleResetRentCycle(selectedContact.id)}
@@ -833,6 +1735,39 @@ export default function App() {
                   className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" 
                 />
               </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Cost (LKR)</label>
+                  <input 
+                    type="number"
+                    value={addTotalCost} 
+                    onChange={e => setAddTotalCost(e.target.value)} 
+                    placeholder="0.00" 
+                    className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors text-red-600" 
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Advance Payment (LKR)</label>
+                  <input 
+                    type="number"
+                    value={addAdvancePayment} 
+                    onChange={e => setAddAdvancePayment(e.target.value)} 
+                    placeholder="0.00" 
+                    className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors text-green-600" 
+                  />
+                </div>
+              </div>
+
+              {((parseFloat(addTotalCost) || 0) > 0 || (parseFloat(addAdvancePayment) || 0) > 0) && (
+                <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5 flex justify-between items-center shadow-inner">
+                  <span className="font-bold text-slate-500 uppercase tracking-wider text-[11px]">Balance Due</span>
+                  <span className="font-bold text-base text-slate-900">
+                    LKR {Math.max(0, (parseFloat(addTotalCost) || 0) - (parseFloat(addAdvancePayment) || 0)).toLocaleString()}
+                  </span>
+                </div>
+              )}
+
               <div className="flex flex-col gap-2">
                 <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Order Status</label>
                 <div className="grid grid-cols-4 gap-2">
@@ -884,6 +1819,7 @@ export default function App() {
     <>
       {content}
       {renderReportModal()}
+      {renderPreviewModal()}
     </>
   );
 }
