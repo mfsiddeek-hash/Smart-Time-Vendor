@@ -7,7 +7,7 @@ import {
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
-  Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash
+  Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -15,6 +15,17 @@ import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, 
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
+
+export const DEFAULT_COLLECTED_ITEMS = [
+  'SIM Card',
+  'SIM Tray',
+  'Back Cover',
+  'Battery',
+  'Back Panel',
+  'Memory Card (SD)',
+  'Charger / Cable',
+  'Original Box'
+] as const;
 
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
 
@@ -320,6 +331,8 @@ export default function App() {
   const [addOrderDate, setAddOrderDate] = useState(new Date().toISOString().slice(0, 10));
   const [addAdvanceDate, setAddAdvanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [addServiceStatus, setAddServiceStatus] = useState('Pending');
+  const [addCollectedItems, setAddCollectedItems] = useState<string[]>([]);
+  const [addOtherCollectedItems, setAddOtherCollectedItems] = useState<string>('');
   const [targetAmount, setTargetAmount] = useState('30000');
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   
@@ -657,6 +670,12 @@ export default function App() {
         doc.text(`Device   : ${contact.phoneModel || '-'}`, 6, y);
         y += 4.5;
         doc.text(`Status   : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 6, y);
+        y += 4.5;
+        const posItems = contact.collectedItems || [];
+        const posItemsStr = posItems.length > 0 
+          ? (posItems.join(', ') + (contact.otherCollectedItems ? `, ${contact.otherCollectedItems}` : ''))
+          : (contact.otherCollectedItems || 'Device Only');
+        doc.text(`Items In : ${posItemsStr.length > 34 ? posItemsStr.slice(0, 31) + '...' : posItemsStr}`, 6, y);
 
         // Section: Added Service Charges & Costs
         y += 4;
@@ -798,9 +817,15 @@ export default function App() {
         doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 53);
         doc.text(`Service Type  : Walk-in Repair Order`, 14, 60);
 
+        const itemsArr = contact.collectedItems || [];
+        const itemsStr = itemsArr.length > 0 
+          ? (itemsArr.join(', ') + (contact.otherCollectedItems ? `, ${contact.otherCollectedItems}` : ''))
+          : (contact.otherCollectedItems || 'Device Only');
+
         doc.text(`Phone Model   : ${contact.phoneModel || 'N/A'}`, 115, 46);
-        doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 53);
-        doc.text(`Receipt Time  : ${timeStr}`, 115, 60);
+        doc.text(`Items Taken   : ${itemsStr.length > 38 ? itemsStr.slice(0, 35) + '...' : itemsStr}`, 115, 52);
+        doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 58);
+        doc.text(`Receipt Time  : ${timeStr}`, 115, 64);
 
         // Table 1: Service Charges Breakdown
         const chargeRows = chargesToRender.length > 0
@@ -814,7 +839,7 @@ export default function App() {
           : [['1', formatDisplayDate(contact.orderDate || new Date().toISOString().slice(0, 10)), 'Device Service & Repair Charge', contact.phoneModel || '-', `LKR ${totalCalculatedCost.toLocaleString()}`]];
 
         autoTable(doc, {
-          startY: 68,
+          startY: 72,
           head: [['#', 'Date', 'Charge / Item Description', 'Device / Model', 'Charge Amount (LKR)']],
           body: chargeRows,
           theme: 'striped',
@@ -950,6 +975,9 @@ export default function App() {
     const advTx = transactions.find(t => t.contactId === contact.id && t.description === 'Advance Payment');
     setAddAdvanceDate(advTx?.date || contact.advanceDate || new Date().toISOString().slice(0, 10));
 
+    setAddCollectedItems(contact.collectedItems || []);
+    setAddOtherCollectedItems(contact.otherCollectedItems || '');
+
     navigateTo('CONTACT_FORM');
   };
 
@@ -1076,6 +1104,14 @@ export default function App() {
                       {previewServiceOrder.serviceStatus || 'Pending'}
                     </span>
                   </div>
+                  <div className="pt-1.5 border-t border-dotted border-slate-300">
+                    <span className="text-slate-500 text-[11px] font-bold block mb-0.5">Items Collected:</span>
+                    <span className="font-bold text-slate-800 text-[11px] block bg-slate-50 p-1.5 rounded border border-slate-200/80">
+                      {previewServiceOrder.collectedItems && previewServiceOrder.collectedItems.length > 0
+                        ? previewServiceOrder.collectedItems.join(', ') + (previewServiceOrder.otherCollectedItems ? `, ${previewServiceOrder.otherCollectedItems}` : '')
+                        : (previewServiceOrder.otherCollectedItems || 'Device Only')}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="py-2.5 border-b border-dashed border-slate-300 space-y-2">
@@ -1182,7 +1218,14 @@ export default function App() {
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Device Details</p>
                       <p className="font-bold text-sm text-indigo-700">{previewServiceOrder.phoneModel || 'Device'}</p>
                       <p className="text-slate-600 mt-0.5 font-semibold">Status: <span className="uppercase text-slate-800">{previewServiceOrder.serviceStatus || 'Pending'}</span></p>
-                      <p className="text-slate-400 text-[11px] mt-1">{timeStr}</p>
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-[11px]">
+                        <span className="font-bold text-slate-500">Items Received: </span>
+                        <span className="font-bold text-slate-800">
+                          {previewServiceOrder.collectedItems && previewServiceOrder.collectedItems.length > 0
+                            ? previewServiceOrder.collectedItems.join(', ') + (previewServiceOrder.otherCollectedItems ? `, ${previewServiceOrder.otherCollectedItems}` : '')
+                            : (previewServiceOrder.otherCollectedItems || 'Device Only')}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -1384,6 +1427,8 @@ export default function App() {
           let parsedAdvance = 0;
           let parsedAdvDate = '';
           let parsedOrderDate = '';
+          let parsedCollectedItems: string[] = [];
+          let parsedOtherCollectedItems = '';
           if (c.end_date) {
             try {
               if (c.end_date.startsWith('{')) {
@@ -1392,6 +1437,8 @@ export default function App() {
                 parsedAdvance = parsed.advance || 0;
                 parsedAdvDate = parsed.advanceDate || '';
                 parsedOrderDate = parsed.orderDate || '';
+                parsedCollectedItems = Array.isArray(parsed.collectedItems) ? parsed.collectedItems : [];
+                parsedOtherCollectedItems = parsed.otherCollectedItems || '';
               } else {
                 parsedStatus = c.end_date;
               }
@@ -1412,6 +1459,8 @@ export default function App() {
             advancePayment: parsedAdvance,
             advanceDate: parsedAdvDate,
             orderDate: parsedOrderDate,
+            collectedItems: parsedCollectedItems,
+            otherCollectedItems: parsedOtherCollectedItems,
             lastUpdated: c.last_updated
           };
         });
@@ -1459,7 +1508,9 @@ export default function App() {
           status: addServiceStatus, 
           advance: advanceVal || 0,
           advanceDate: effectiveAdvDate,
-          orderDate: effectiveOrderDate 
+          orderDate: effectiveOrderDate,
+          collectedItems: addCollectedItems,
+          otherCollectedItems: addOtherCollectedItems.trim()
         }) : null,
         last_updated: new Date().toISOString() 
       };
@@ -1490,6 +1541,8 @@ export default function App() {
             advancePayment: advanceVal || 0,
             advanceDate: effectiveAdvDate,
             orderDate: effectiveOrderDate,
+            collectedItems: isService ? addCollectedItems : undefined,
+            otherCollectedItems: isService ? addOtherCollectedItems.trim() : undefined,
             lastUpdated: new Date().toISOString()
           };
           if (editingContact) {
@@ -1513,6 +1566,8 @@ export default function App() {
           setAddOrderDate(new Date().toISOString().slice(0, 10));
           setAddAdvanceDate(new Date().toISOString().slice(0, 10));
           setAddServiceStatus('Pending');
+          setAddCollectedItems([]);
+          setAddOtherCollectedItems('');
           setTargetAmount('30000'); 
           setEditingContact(null);
           handleBack();
@@ -1536,6 +1591,8 @@ export default function App() {
           advancePayment: advanceVal || 0,
           advanceDate: effectiveAdvDate,
           orderDate: effectiveOrderDate,
+          collectedItems: isService ? addCollectedItems : undefined,
+          otherCollectedItems: isService ? addOtherCollectedItems.trim() : undefined,
           lastUpdated: savedData.last_updated
         };
 
@@ -1673,6 +1730,8 @@ export default function App() {
       setAddOrderDate(new Date().toISOString().slice(0, 10));
       setAddAdvanceDate(new Date().toISOString().slice(0, 10));
       setAddServiceStatus('Pending');
+      setAddCollectedItems([]);
+      setAddOtherCollectedItems('');
       setTargetAmount('30000'); 
       setEditingContact(null);
       handleBack();
@@ -1908,7 +1967,7 @@ export default function App() {
                  <LogOut size={14} />
                  <span className="hidden sm:inline">Logout</span>
                </button>
-               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={20} /></button>
+               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={20} /></button>
             </div>
           </div>
           <div className="flex gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
@@ -2014,6 +2073,14 @@ export default function App() {
                               </span>
                             )}
                           </div>
+                          {(c.collectedItems && c.collectedItems.length > 0) && (
+                            <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-500 font-medium">
+                              <Package size={11} className="text-indigo-600 shrink-0" />
+                              <span className="truncate max-w-[220px]">
+                                {c.collectedItems.join(', ')}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -2306,6 +2373,8 @@ export default function App() {
                 setAddTotalCost(selectedContact.totalCost?.toString() || selectedContact.targetAmount?.toString() || (contactStats[selectedContact.id]?.totalCredit ? contactStats[selectedContact.id].totalCredit.toString() : '')); 
                 setAddAdvancePayment(selectedContact.advancePayment?.toString() || (contactStats[selectedContact.id]?.totalPayment ? contactStats[selectedContact.id].totalPayment.toString() : '')); 
                 setAddServiceStatus(selectedContact.serviceStatus || 'Pending'); 
+                setAddCollectedItems(selectedContact.collectedItems || []);
+                setAddOtherCollectedItems(selectedContact.otherCollectedItems || '');
                 navigateTo('CONTACT_FORM'); 
               }} className="p-2 text-slate-600 bg-slate-100 rounded-full active:scale-90 shadow-sm" title="Edit Contact"><Pencil size={18} /></button>
               {userCanDelete && (
@@ -2342,6 +2411,38 @@ export default function App() {
                   <span className="text-red-600">Total: LKR {(contactStats[selectedContact.id]?.totalCredit || selectedContact.targetAmount || selectedContact.totalCost || 0).toLocaleString()}</span>
                   <span className="text-slate-300">•</span>
                   <span className="text-green-600">Advance/Paid: LKR {(contactStats[selectedContact.id]?.totalPayment || selectedContact.advancePayment || 0).toLocaleString()}</span>
+                </div>
+
+                {/* Collected Items with Device Banner */}
+                <div className="w-full bg-white/90 border border-slate-200/90 rounded-xl p-2.5 mt-2 text-left">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                      <Package size={12} className="text-indigo-600" />
+                      Received Items with Phone
+                    </span>
+                    <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.2 rounded font-semibold">
+                      {(selectedContact.collectedItems?.length || 0) + (selectedContact.otherCollectedItems ? 1 : 0)} Item(s)
+                    </span>
+                  </div>
+                  {selectedContact.collectedItems && selectedContact.collectedItems.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedContact.collectedItems.map(item => (
+                        <span key={item} className="inline-flex items-center gap-1 text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-lg border border-slate-200">
+                          <Check size={11} className="text-emerald-600 stroke-[3]" />
+                          {item}
+                        </span>
+                      ))}
+                      {selectedContact.otherCollectedItems && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-50 text-amber-800 px-2 py-0.5 rounded-lg border border-amber-200">
+                          + {selectedContact.otherCollectedItems}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 font-medium italic">
+                      {selectedContact.otherCollectedItems ? `Other: ${selectedContact.otherCollectedItems}` : 'Device Only (No external accessories or SIM/tray recorded)'}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -2724,6 +2825,90 @@ export default function App() {
                   placeholder="e.g. iPhone 13 Pro, Samsung A12" 
                   className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" 
                 />
+              </div>
+
+              {/* Collected Items with Device Checklist */}
+              <div className="bg-indigo-50/40 p-4 rounded-2xl border border-indigo-200/70 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                    <Package size={14} className="text-indigo-600" />
+                    <span>Collecting Items with Phone (Tick Checkbox)</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-indigo-700 bg-white px-2 py-0.5 rounded-full border border-indigo-200">
+                    {addCollectedItems.length} Selected
+                  </span>
+                </div>
+
+                {/* Quick select presets */}
+                <div className="flex gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setAddCollectedItems(['SIM Card', 'SIM Tray', 'Back Cover', 'Battery', 'Back Panel'])}
+                    className="text-[10px] font-bold bg-white text-indigo-700 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition-colors"
+                  >
+                    + Standard 5 (SIM, Tray, Cover, Battery, Panel)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddCollectedItems([...DEFAULT_COLLECTED_ITEMS])}
+                    className="text-[10px] font-bold bg-white text-slate-700 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAddCollectedItems([]); setAddOtherCollectedItems(''); }}
+                    className="text-[10px] font-bold bg-white text-slate-500 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition-colors"
+                  >
+                    Device Only (Clear)
+                  </button>
+                </div>
+
+                {/* Grid of Tick Mark Checkbox Items */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                  {DEFAULT_COLLECTED_ITEMS.map(item => {
+                    const isChecked = addCollectedItems.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => {
+                          if (isChecked) {
+                            setAddCollectedItems(prev => prev.filter(i => i !== item));
+                          } else {
+                            setAddCollectedItems(prev => [...prev, item]);
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2.5 active:scale-95 ${
+                          isChecked
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-md ring-1 ring-emerald-500'
+                            : 'bg-white text-slate-700 border-slate-200/90 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border transition-colors ${
+                          isChecked ? 'bg-white text-emerald-700 border-white' : 'border-slate-300 bg-slate-50 text-transparent'
+                        }`}>
+                          <Check size={12} className="stroke-[3]" />
+                        </div>
+                        <span className="font-bold text-xs leading-tight truncate">{item}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Other Custom Items input */}
+                <div className="pt-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                    Other Accessories / Items (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={addOtherCollectedItems}
+                    onChange={e => setAddOtherCollectedItems(e.target.value)}
+                    placeholder="e.g. Stylus pen, pouch, power adapter, earphones..."
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
               </div>
 
               {/* Total Cost & Order Date */}

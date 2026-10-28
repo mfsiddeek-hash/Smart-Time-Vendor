@@ -15,6 +15,8 @@ export interface Contact {
   advancePayment?: number;
   advanceDate?: string;
   orderDate?: string;
+  collectedItems?: string[]; // e.g. ['SIM', 'SIM Tray', 'Back Cover', 'Battery', 'Back Panel']
+  otherCollectedItems?: string;
   lastUpdated: string;
 }
 
