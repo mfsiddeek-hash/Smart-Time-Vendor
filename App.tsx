@@ -7,14 +7,14 @@ import {
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, Lock, Unlock, ShieldCheck, UserPlus, Upload,
-  Image as ImageIcon, CheckCircle2, UserCheck, Shield
+  Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow } from './components/TransactionRow';
-import { supabase } from './supabaseClient';
+import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
 
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
 
@@ -86,10 +86,27 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>(() => {
+    try {
+      const saved = localStorage.getItem('st_cached_contacts');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+    try {
+      const saved = localStorage.getItem('st_cached_transactions');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const contactsRef = useRef(contacts);
+
+  const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'needs_tables' | 'error'>('checking');
+  const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
+  const [dismissDbAlert, setDismissDbAlert] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   
   const [shopName, setShopName] = useState(() => localStorage.getItem('st_shop_name') || 'Smart Time');
   const [shopTagline, setShopTagline] = useState(() => localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
@@ -899,6 +916,24 @@ export default function App() {
       .filter(t => t.contactId === previewServiceOrder.id)
       .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
+    // Service charges / costs added to this order
+    const chargeTransactions = contactTransactions.filter(t => t.type === 'CREDIT');
+    const chargesToRender = chargeTransactions.length > 0
+      ? chargeTransactions.map(c => ({
+          id: c.id,
+          date: c.date,
+          desc: c.description || 'Service Charge',
+          amount: c.amount
+        }))
+      : ((previewServiceOrder.totalCost || previewServiceOrder.targetAmount || stats?.totalCredit || 0) > 0 ? [{
+          id: 'init-cost',
+          date: previewServiceOrder.orderDate || (previewServiceOrder.lastUpdated ? previewServiceOrder.lastUpdated.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+          desc: 'Device Service & Repair Charge',
+          amount: previewServiceOrder.totalCost || previewServiceOrder.targetAmount || stats?.totalCredit || 0
+        }] : []);
+
+    const totalCalculatedCost = chargesToRender.reduce((sum, c) => sum + c.amount, 0) || totalCost;
+
     const paymentTransactions = contactTransactions.filter(t => t.type === 'PAYMENT');
     const paymentsToRender = paymentTransactions.length > 0
       ? paymentTransactions.map(p => ({
@@ -915,7 +950,7 @@ export default function App() {
         }] : []);
 
     const totalPaid = paymentsToRender.reduce((sum, p) => sum + p.amount, 0);
-    const balanceDue = totalCost - totalPaid;
+    const balanceDue = totalCalculatedCost - totalPaid;
     const orderNo = `SO-${previewServiceOrder.id.slice(0, 6).toUpperCase()}`;
     const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -997,12 +1032,34 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="py-2.5 border-b border-dashed border-slate-300">
-                  <div className="flex justify-between text-xs font-bold text-slate-800 mb-2">
-                    <span>Total Service Cost:</span>
-                    <span className="text-red-600">LKR {totalCost.toLocaleString()}</span>
+                <div className="py-2.5 border-b border-dashed border-slate-300 space-y-2">
+                  {/* Itemized Service Charges & Costs */}
+                  <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                      <span>Service Charges & Costs</span>
+                      <span className="text-[9px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">{chargesToRender.length} item(s)</span>
+                    </p>
+                    {chargesToRender.length === 0 ? (
+                      <p className="text-slate-400 text-[11px] italic text-center py-1">No service charges recorded</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {chargesToRender.map((c, idx) => (
+                          <div key={idx} className="flex justify-between items-start text-[11px]">
+                            <span className="text-slate-600 font-medium truncate max-w-[190px]">
+                              {formatDisplayDate(c.date)} • {c.desc}
+                            </span>
+                            <span className="font-bold text-slate-800 ml-1 shrink-0">LKR {c.amount.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="border-t border-slate-200 mt-2 pt-1.5 flex justify-between text-xs font-bold text-slate-800">
+                      <span>Total Service Cost:</span>
+                      <span className="text-red-600">LKR {totalCalculatedCost.toLocaleString()}</span>
+                    </div>
                   </div>
                   
+                  {/* Payment History */}
                   <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
                       <span>Payment History (With Date)</span>
@@ -1013,9 +1070,9 @@ export default function App() {
                     ) : (
                       <div className="space-y-1">
                         {paymentsToRender.map((p, idx) => (
-                          <div key={idx} className="flex justify-between items-center text-[11px]">
-                            <span className="text-slate-600 font-medium">{formatDisplayDate(p.date)} • {p.desc}</span>
-                            <span className="font-bold text-green-700">LKR {p.amount.toLocaleString()}</span>
+                          <div key={idx} className="flex justify-between items-start text-[11px]">
+                            <span className="text-slate-600 font-medium truncate max-w-[190px]">{formatDisplayDate(p.date)} • {p.desc}</span>
+                            <span className="font-bold text-green-700 ml-1 shrink-0">LKR {p.amount.toLocaleString()}</span>
                           </div>
                         ))}
                       </div>
@@ -1083,26 +1140,48 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Table 1: Service Charge */}
-                  <div className="border border-slate-200 rounded-xl overflow-hidden">
-                    <table className="w-full text-xs text-left">
-                      <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
-                        <tr>
-                          <th className="p-2.5">Item Description</th>
-                          <th className="p-2.5">Device</th>
-                          <th className="p-2.5">Status</th>
-                          <th className="p-2.5 text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td className="p-2.5 font-medium text-slate-800">Phone Repair & Service Charge</td>
-                          <td className="p-2.5 text-slate-600">{previewServiceOrder.phoneModel || '-'}</td>
-                          <td className="p-2.5 text-slate-600">{previewServiceOrder.serviceStatus || 'Pending'}</td>
-                          <td className="p-2.5 text-right font-bold text-red-600">LKR {totalCost.toLocaleString()}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  {/* Table 1: Service Charges & Costs */}
+                  <div>
+                    <h5 className="font-bold text-xs text-slate-700 mb-2 flex items-center justify-between">
+                      <span>Service Charges & Costs (Itemized)</span>
+                      <span className="text-[10px] font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">{chargesToRender.length} item(s)</span>
+                    </h5>
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-slate-800 text-white font-bold">
+                          <tr>
+                            <th className="p-2.5">#</th>
+                            <th className="p-2.5">Date</th>
+                            <th className="p-2.5">Item Description</th>
+                            <th className="p-2.5">Device</th>
+                            <th className="p-2.5 text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {chargesToRender.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="p-3 text-center text-slate-400 italic">No charges recorded yet</td>
+                            </tr>
+                          ) : (
+                            chargesToRender.map((c, idx) => (
+                              <tr key={idx}>
+                                <td className="p-2.5 text-slate-400">{idx + 1}</td>
+                                <td className="p-2.5 text-slate-600">{formatDisplayDate(c.date)}</td>
+                                <td className="p-2.5 font-medium text-slate-800">{c.desc}</td>
+                                <td className="p-2.5 text-slate-600">{previewServiceOrder.phoneModel || '-'}</td>
+                                <td className="p-2.5 text-right font-bold text-slate-900">LKR {c.amount.toLocaleString()}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                        <tfoot className="bg-slate-50 border-t border-slate-200 font-bold text-slate-800">
+                          <tr>
+                            <td colSpan={4} className="p-2.5 text-right text-xs">Total Service Cost:</td>
+                            <td className="p-2.5 text-right text-xs text-red-600">LKR {totalCalculatedCost.toLocaleString()}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
                   </div>
 
                   {/* Table 2: Payment History With Dates */}
@@ -1146,7 +1225,7 @@ export default function App() {
                     <div className="w-60 bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
                       <div className="flex justify-between text-slate-600">
                         <span>Total Service Cost:</span>
-                        <span className="font-bold text-slate-900">LKR {totalCost.toLocaleString()}</span>
+                        <span className="font-bold text-slate-900">LKR {totalCalculatedCost.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between text-slate-600">
                         <span>Total Paid to Date:</span>
@@ -1231,13 +1310,30 @@ export default function App() {
 
   const fetchData = async () => {
     setIsLoading(true);
+    setDbStatus('checking');
     try {
       const [contactsRes, transRes] = await Promise.all([
         supabase.from('contacts').select('*'),
         supabase.from('transactions').select('*').order('date', { ascending: false })
       ]);
+
+      if (contactsRes.error) {
+        console.warn('Supabase contacts query status:', contactsRes.error);
+        if (
+          contactsRes.error.code === 'PGRST205' || 
+          contactsRes.error.message?.includes('schema cache') || 
+          contactsRes.error.message?.includes('not find')
+        ) {
+          setDbStatus('needs_tables');
+        } else {
+          setDbStatus('error');
+        }
+      } else {
+        setDbStatus('connected');
+      }
+
       if (contactsRes.data) {
-        setContacts(contactsRes.data.map((c: any) => {
+        const mappedContacts = contactsRes.data.map((c: any) => {
           let parsedStatus = 'Pending';
           let parsedAdvance = 0;
           let parsedAdvDate = '';
@@ -1272,15 +1368,25 @@ export default function App() {
             orderDate: parsedOrderDate,
             lastUpdated: c.last_updated
           };
-        }));
+        });
+        setContacts(mappedContacts);
+        try { localStorage.setItem('st_cached_contacts', JSON.stringify(mappedContacts)); } catch {}
       }
+
       if (transRes.data) {
-        setTransactions(transRes.data.map((t: any) => ({
+        const mappedTx = transRes.data.map((t: any) => ({
           id: t.id, contactId: t.contact_id, date: t.date, description: t.description,
           amount: t.amount, type: t.type, balanceAfter: t.balance_after
-        })));
+        }));
+        setTransactions(mappedTx);
+        try { localStorage.setItem('st_cached_transactions', JSON.stringify(mappedTx)); } catch {}
       }
-    } catch (err) { console.error(err); } finally { setIsLoading(false); }
+    } catch (err: any) { 
+      console.error(err); 
+      setDbStatus('error');
+    } finally { 
+      setIsLoading(false); 
+    }
   };
 
   useEffect(() => { fetchData(); }, []);
@@ -1322,7 +1428,52 @@ export default function App() {
         res = await supabase.from('contacts').insert([{ ...payload, id: newId, balance: 0 }]).select();
       }
 
-      if (res.error) throw res.error;
+      if (res.error) {
+        if (res.error.code === 'PGRST205' || res.error.message?.includes('schema cache') || res.error.message?.includes('not find')) {
+          setDbStatus('needs_tables');
+          const fallbackContact: Contact = {
+            id: contactId || generateUUID(),
+            name: addName.trim(),
+            phone: addPhone.trim(),
+            type: isService ? 'SERVICE' : activeTab,
+            balance: 0,
+            targetAmount: isService ? costVal : (activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null),
+            phoneModel: isService ? addPhoneModel.trim() : '',
+            serviceStatus: addServiceStatus,
+            totalCost: costVal || 0,
+            advancePayment: advanceVal || 0,
+            advanceDate: effectiveAdvDate,
+            orderDate: effectiveOrderDate,
+            lastUpdated: new Date().toISOString()
+          };
+          if (editingContact) {
+            setContacts(prev => prev.map(c => c.id === editingContact.id ? fallbackContact : c));
+          } else {
+            setContacts(prev => [...prev, fallbackContact]);
+          }
+          try {
+            const currentCache = JSON.parse(localStorage.getItem('st_cached_contacts') || '[]');
+            const nextCache = editingContact 
+              ? currentCache.map((c: any) => c.id === editingContact.id ? fallbackContact : c)
+              : [...currentCache, fallbackContact];
+            localStorage.setItem('st_cached_contacts', JSON.stringify(nextCache));
+          } catch {}
+          showProfileToast("Saved locally! Run Supabase SQL setup to sync to cloud.", "error");
+          setAddName(''); 
+          setAddPhone(''); 
+          setAddPhoneModel('');
+          setAddTotalCost('');
+          setAddAdvancePayment('');
+          setAddOrderDate(new Date().toISOString().slice(0, 10));
+          setAddAdvanceDate(new Date().toISOString().slice(0, 10));
+          setAddServiceStatus('Pending');
+          setTargetAmount('30000'); 
+          setEditingContact(null);
+          handleBack();
+          return;
+        }
+        throw res.error;
+      }
       
       if (res.data) {
         const savedData = res.data[0];
@@ -1556,7 +1707,37 @@ export default function App() {
       } else { 
         res = await supabase.from('transactions').insert([txPayload]).select(); 
       }
-      if (res.error) throw res.error;
+      if (res.error) {
+        if (res.error.code === 'PGRST205' || res.error.message?.includes('schema cache') || res.error.message?.includes('not find')) {
+          setDbStatus('needs_tables');
+          const fallbackTx: Transaction = {
+            id: editingTransaction ? editingTransaction.id : generateUUID(),
+            contactId: selectedContact.id,
+            date: transDate,
+            amount: amountVal,
+            type: transType,
+            description: transDesc,
+            balanceAfter: 0
+          };
+          if (editingTransaction) {
+            setTransactions(prev => prev.map(t => t.id === editingTransaction.id ? fallbackTx : t));
+          } else {
+            setTransactions(prev => [fallbackTx, ...prev]);
+          }
+          try {
+            const currentTx = JSON.parse(localStorage.getItem('st_cached_transactions') || '[]');
+            const nextTx = editingTransaction 
+              ? currentTx.map((t: any) => t.id === editingTransaction.id ? fallbackTx : t)
+              : [fallbackTx, ...currentTx];
+            localStorage.setItem('st_cached_transactions', JSON.stringify(nextTx));
+          } catch {}
+          showProfileToast("Saved locally! Run Supabase SQL setup to sync to cloud.", "error");
+          setEditingTransaction(null);
+          handleBack();
+          return;
+        }
+        throw res.error;
+      }
       if (res.data) {
         const saved = { 
           id: res.data[0].id, contactId: res.data[0].contact_id, date: res.data[0].date, 
@@ -1691,6 +1872,35 @@ export default function App() {
             <button onClick={() => setActiveTab('SERVICE')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'SERVICE' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Wrench size={17} />Service Order</button>
           </div>
         </header>
+
+        {/* Supabase Table Initialization Alert Banner */}
+        {dbStatus === 'needs_tables' && !dismissDbAlert && (
+          <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2.5 text-xs flex items-center justify-between shadow-sm animate-in fade-in duration-200">
+            <div className="flex items-center gap-2">
+              <Database size={15} className="shrink-0 animate-pulse text-amber-200" />
+              <div>
+                <span className="font-bold">Supabase: {SUPABASE_PROJECT_NAME}</span>
+                <span className="hidden sm:inline opacity-90 ml-1.5">• Tables need to be initialized in your Supabase SQL Editor.</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button 
+                onClick={() => setIsSqlModalOpen(true)}
+                className="bg-white text-orange-900 font-bold px-2.5 py-1 rounded-lg text-[10px] shadow-sm hover:bg-orange-50 active:scale-95 transition-all flex items-center gap-1"
+              >
+                <Copy size={11} /> Copy SQL
+              </button>
+              <button 
+                onClick={() => setDismissDbAlert(true)}
+                className="text-white/80 hover:text-white p-1"
+                title="Dismiss banner"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="p-4 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
@@ -3171,6 +3381,146 @@ export default function App() {
     );
   };
 
+  const renderSqlModal = () => {
+    if (!isSqlModalOpen) return null;
+    const sqlScript = `-- =========================================================
+-- SQL Schema for Ledger Book (actfubmcannmqvbsmmgv)
+-- Run this in your Supabase Project -> SQL Editor
+-- =========================================================
+
+-- 1. Create Contacts Table (Customers, Vendors, Rent, Service Orders)
+CREATE TABLE IF NOT EXISTS public.contacts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone TEXT,
+    type TEXT NOT NULL,
+    balance NUMERIC DEFAULT 0,
+    target_amount NUMERIC,
+    start_date TEXT,
+    end_date TEXT,
+    last_updated TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Create Transactions Table (Credit Charges, Payments, Receipts)
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    contact_id TEXT NOT NULL REFERENCES public.contacts(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    type TEXT NOT NULL,
+    description TEXT,
+    balance_after NUMERIC DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Create Indexes for High Performance
+CREATE INDEX IF NOT EXISTS idx_contacts_type ON public.contacts(type);
+CREATE INDEX IF NOT EXISTS idx_transactions_contact_id ON public.transactions(contact_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
+
+-- 4. Enable Row Level Security (RLS) and Allow Access with Anon Key
+ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public contacts access" ON public.contacts;
+CREATE POLICY "Public contacts access" ON public.contacts
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public transactions access" ON public.transactions;
+CREATE POLICY "Public transactions access" ON public.transactions
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+`;
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
+          {/* Header */}
+          <div className="bg-slate-900 text-white p-5 flex justify-between items-center shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white">
+                <Database size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base">Supabase Database Setup</h3>
+                <p className="text-xs text-slate-400">Project: {SUPABASE_PROJECT_NAME} ({SUPABASE_PROJECT_ID})</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsSqlModalOpen(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 flex-1">
+            <div className="bg-emerald-50 p-3.5 rounded-2xl border border-emerald-200 text-emerald-900 space-y-1.5">
+              <p className="font-bold flex items-center gap-1.5">
+                <CheckCircle2 size={15} className="text-emerald-700" />
+                Initialize Tables in 3 Easy Steps:
+              </p>
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-emerald-800 font-medium pl-1">
+                <li>Click <strong>Copy SQL Script</strong> below.</li>
+                <li>In your Supabase project dashboard, open <strong>SQL Editor</strong>.</li>
+                <li>Paste and click <strong>Run</strong>. Then tap <strong>Re-test Sync</strong>!</li>
+              </ol>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                <span>SQL Script (Contacts & Transactions)</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(sqlScript);
+                    setCopiedSql(true);
+                    setTimeout(() => setCopiedSql(false), 2500);
+                  }}
+                  className="text-blue-600 hover:text-blue-700 flex items-center gap-1 normal-case font-bold"
+                >
+                  <Copy size={12} /> {copiedSql ? 'Copied to Clipboard!' : 'Copy Script'}
+                </button>
+              </div>
+              <pre className="bg-slate-900 text-emerald-300 p-3.5 rounded-2xl font-mono text-[11px] overflow-x-auto max-h-64 leading-relaxed border border-slate-800 select-all">
+                {sqlScript}
+              </pre>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 flex gap-2.5 shrink-0">
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(sqlScript);
+                setCopiedSql(true);
+                setTimeout(() => setCopiedSql(false), 2500);
+                showProfileToast('SQL script copied to clipboard!');
+              }}
+              className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <Copy size={14} /> {copiedSql ? 'Copied to Clipboard!' : 'Copy SQL Script'}
+            </button>
+            <button
+              onClick={async () => {
+                await fetchData();
+                if (dbStatus === 'connected') {
+                  setIsSqlModalOpen(false);
+                  showProfileToast('Connected and synced with Supabase!');
+                } else if (dbStatus === 'needs_tables') {
+                  showProfileToast('Tables not detected yet. Make sure you clicked Run in SQL Editor.', 'error');
+                }
+              }}
+              className="py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center gap-1.5"
+            >
+              <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /> Re-test Sync
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderProfile = () => {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col pb-24 no-scrollbar">
@@ -3675,6 +4025,70 @@ export default function App() {
         {/* Tab 4: Backup & Data */}
         {profileTab === 'DATA' && (
           <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
+            {/* Supabase Database Connection Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm">
+                    <Database size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-800">Supabase Cloud Database</h3>
+                    <p className="text-xs text-slate-400">PostgreSQL backend & cloud sync</p>
+                  </div>
+                </div>
+
+                <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
+                  dbStatus === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                  dbStatus === 'needs_tables' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                  dbStatus === 'checking' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                  'bg-red-50 text-red-700 border-red-200'
+                }`}>
+                  {dbStatus === 'connected' ? '● Connected & Synced' :
+                   dbStatus === 'needs_tables' ? '▲ Needs Tables Setup' :
+                   dbStatus === 'checking' ? '↻ Checking...' : '✕ Connection Error'}
+                </span>
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-400 font-medium">Project Name:</span>
+                  <span className="font-bold text-slate-800">{SUPABASE_PROJECT_NAME}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-400 font-medium">Project ID:</span>
+                  <span className="font-mono font-bold text-slate-800">{SUPABASE_PROJECT_ID}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-400 font-medium">Project URL:</span>
+                  <span className="font-mono text-[11px] text-slate-600 truncate max-w-[210px]">{SUPABASE_URL}</span>
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsSqlModalOpen(true)}
+                  className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                >
+                  <Copy size={13} /> View / Copy SQL Setup
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetchData();
+                    if (dbStatus === 'connected') {
+                      showProfileToast('Connected and synced with Supabase!');
+                    } else if (dbStatus === 'needs_tables') {
+                      showProfileToast('Project connected! Run SQL script in Supabase to create tables.', 'error');
+                    }
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-3.5 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
+                >
+                  <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} /> Test Sync
+                </button>
+              </div>
+            </div>
             <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
               <h3 className="font-bold text-sm text-slate-800">Export & Backup Ledger Data</h3>
               <p className="text-xs text-slate-500">
@@ -3939,6 +4353,7 @@ export default function App() {
       {renderPreviewModal()}
       {renderUserModal()}
       {renderPasswordModal()}
+      {renderSqlModal()}
     </>
   );
 }
