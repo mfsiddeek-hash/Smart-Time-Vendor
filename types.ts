@@ -21,12 +21,14 @@ export interface Contact {
 }
 
 export type TransactionType = 'CREDIT' | 'PAYMENT';
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card';
 
 export interface Transaction {
   id: string;
   contactId: string;
   date: string; // ISO string or formatted string
   description?: string;
+  paymentMethod?: PaymentMethod;
   amount: number;
   type: TransactionType;
   balanceAfter: number;

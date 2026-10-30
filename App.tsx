@@ -7,13 +7,14 @@ import {
   Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
-  Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package
+  Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
+  Banknote, CreditCard, Building2
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
+import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
 
 export const DEFAULT_COLLECTED_ITEMS = [
@@ -341,6 +342,7 @@ export default function App() {
   const [transAmount, setTransAmount] = useState('');
   const [transDate, setTransDate] = useState(new Date().toISOString().slice(0, 10));
   const [transDesc, setTransDesc] = useState('');
+  const [transPaymentMethod, setTransPaymentMethod] = useState<PaymentMethod>('Cash');
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportRange, setReportRange] = useState({
@@ -1802,9 +1804,17 @@ export default function App() {
     const amountVal = parseFloat(transAmount) || 0;
     setIsSubmitting(true);
     try {
+      const formattedDesc = transType === 'PAYMENT'
+        ? (transDesc.trim() ? `${transPaymentMethod} • ${transDesc.trim()}` : transPaymentMethod)
+        : transDesc.trim();
+
       const txPayload = { 
-        contact_id: selectedContact.id, date: transDate, amount: amountVal, 
-        type: transType, description: transDesc, balance_after: 0 
+        contact_id: selectedContact.id, 
+        date: transDate, 
+        amount: amountVal, 
+        type: transType, 
+        description: formattedDesc, 
+        balance_after: 0 
       };
       let res;
       if (editingTransaction) { 
@@ -1821,7 +1831,8 @@ export default function App() {
             date: transDate,
             amount: amountVal,
             type: transType,
-            description: transDesc,
+            paymentMethod: transType === 'PAYMENT' ? transPaymentMethod : undefined,
+            description: formattedDesc,
             balanceAfter: 0
           };
           if (editingTransaction) {
@@ -1844,10 +1855,15 @@ export default function App() {
         throw res.error;
       }
       if (res.data) {
-        const saved = { 
-          id: res.data[0].id, contactId: res.data[0].contact_id, date: res.data[0].date, 
-          description: res.data[0].description, amount: res.data[0].amount, 
-          type: res.data[0].type, balanceAfter: 0 
+        const saved: Transaction = { 
+          id: res.data[0].id, 
+          contactId: res.data[0].contact_id, 
+          date: res.data[0].date, 
+          description: res.data[0].description, 
+          amount: res.data[0].amount, 
+          type: res.data[0].type, 
+          paymentMethod: transType === 'PAYMENT' ? transPaymentMethod : undefined,
+          balanceAfter: 0 
         };
         if (editingTransaction) { 
           setTransactions(transactions.map(t => t.id === editingTransaction.id ? saved : t)); 
@@ -2521,6 +2537,7 @@ export default function App() {
                     setTransAmount('');
                     setTransDate(new Date().toISOString().slice(0, 10));
                     setTransDesc('Payment');
+                    setTransPaymentMethod('Cash');
                     navigateTo('TRANSACTION_FORM', selectedContact.id);
                   }}
                   className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
@@ -2537,44 +2554,60 @@ export default function App() {
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100">
-                  {contactTransactions.filter(t => t.type === 'PAYMENT').map(p => (
-                    <div 
-                      key={p.id}
-                      onClick={() => {
-                        setEditingTransaction(p);
-                        setTransType(p.type);
-                        setTransAmount(p.amount.toString());
-                        setTransDate(p.date);
-                        setTransDesc(p.description || '');
-                        navigateTo('TRANSACTION_FORM', selectedContact.id);
-                      }}
-                      className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-xs">
-                          ✓
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-xs text-slate-800">{p.description || 'Payment'}</span>
-                            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
-                              <Calendar size={10} className="text-slate-400" />
-                              {formatDisplayDate(p.date)}
-                            </span>
+                  {contactTransactions.filter(t => t.type === 'PAYMENT').map(p => {
+                    const parsed = parsePaymentMethod(p.description, p.paymentMethod);
+                    return (
+                      <div 
+                        key={p.id}
+                        onClick={() => {
+                          setEditingTransaction(p);
+                          setTransType(p.type);
+                          setTransAmount(p.amount.toString());
+                          setTransDate(p.date);
+                          setTransPaymentMethod(parsed.method || 'Cash');
+                          setTransDesc(parsed.cleanNotes);
+                          navigateTo('TRANSACTION_FORM', selectedContact.id);
+                        }}
+                        className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-xs">
+                            ✓
                           </div>
-                          <p className="text-[10px] text-slate-400 mt-0.5">Tap to update date or amount</p>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {parsed.method && (
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${
+                                  parsed.method === 'Bank Transfer'
+                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                    : parsed.method === 'Card'
+                                    ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                }`}>
+                                  {parsed.method === 'Bank Transfer' ? <Building2 size={11} /> : parsed.method === 'Card' ? <CreditCard size={11} /> : <Banknote size={11} />}
+                                  {parsed.method}
+                                </span>
+                              )}
+                              <span className="font-bold text-xs text-slate-800">{parsed.cleanNotes || p.description || 'Payment'}</span>
+                              <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
+                                <Calendar size={10} className="text-slate-400" />
+                                {formatDisplayDate(p.date)}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">Tap to update date, payment method, or amount</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-sm text-emerald-700">
+                            + LKR {p.amount.toLocaleString()}
+                          </span>
+                          <div className="p-1.5 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50 rounded-lg transition-colors">
+                            <Pencil size={13} />
+                          </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-black text-sm text-emerald-700">
-                          + LKR {p.amount.toLocaleString()}
-                        </span>
-                        <div className="p-1.5 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50 rounded-lg transition-colors">
-                          <Pencil size={13} />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -2606,6 +2639,7 @@ export default function App() {
                     setTransAmount('');
                     setTransDate(new Date().toISOString().slice(0, 10));
                     setTransDesc('Service Total Cost');
+                    setTransPaymentMethod('Cash');
                     navigateTo('TRANSACTION_FORM', selectedContact.id);
                   }}
                   className="py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
@@ -2624,6 +2658,7 @@ export default function App() {
                       setTransAmount(c.amount.toString());
                       setTransDate(c.date);
                       setTransDesc(c.description || '');
+                      setTransPaymentMethod('Cash');
                       navigateTo('TRANSACTION_FORM', selectedContact.id);
                     }}
                     className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
@@ -2659,17 +2694,30 @@ export default function App() {
         ) : (
           <div className="flex-1 bg-white">
             {computedWithBalance.map(t => (
-              <TransactionRow key={t.id} transaction={t} onClick={(tx) => { setEditingTransaction(tx); setTransType(tx.type); setTransAmount(tx.amount.toString()); setTransDate(tx.date); setTransDesc(tx.description || ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} />
+              <TransactionRow 
+                key={t.id} 
+                transaction={t} 
+                onClick={(tx) => { 
+                  const parsed = parsePaymentMethod(tx.description, tx.paymentMethod);
+                  setEditingTransaction(tx); 
+                  setTransType(tx.type); 
+                  setTransAmount(tx.amount.toString()); 
+                  setTransDate(tx.date); 
+                  setTransPaymentMethod(parsed.method || 'Cash');
+                  setTransDesc(parsed.cleanNotes || (parsed.method ? '' : (tx.description || ''))); 
+                  navigateTo('TRANSACTION_FORM', selectedContact.id); 
+                }} 
+              />
             ))}
             {computedWithBalance.length === 0 && <div className="p-16 text-center text-slate-400">No transactions recorded yet</div>}
           </div>
         )}
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
-          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
-          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(isService ? 'Payment' : ''); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowUp size={14} /></span>
           </button>
@@ -2780,6 +2828,77 @@ export default function App() {
                     {chip}
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Type of Payment Selection (Cash, Bank Transfer, Card) - Below Notes Section */}
+          {transType === 'PAYMENT' && (
+            <div className="mt-6 pt-5 border-t border-slate-100">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 block flex items-center justify-between">
+                <span>Type of Payment</span>
+                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 ${
+                  transPaymentMethod === 'Bank Transfer' 
+                    ? 'bg-blue-50 text-blue-700 border-blue-200' 
+                    : transPaymentMethod === 'Card'
+                    ? 'bg-purple-50 text-purple-700 border-purple-200'
+                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                }`}>
+                  ✓ {transPaymentMethod}
+                </span>
+              </label>
+              
+              <div className="grid grid-cols-3 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setTransPaymentMethod('Cash')}
+                  className={`py-3.5 px-2 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 shadow-sm ${
+                    transPaymentMethod === 'Cash'
+                      ? 'border-emerald-600 bg-emerald-50/90 text-emerald-900 ring-2 ring-emerald-400/40'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    transPaymentMethod === 'Cash' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    <Banknote size={20} />
+                  </div>
+                  <span className="text-xs font-bold tracking-tight">Cash</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTransPaymentMethod('Bank Transfer')}
+                  className={`py-3.5 px-2 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 shadow-sm ${
+                    transPaymentMethod === 'Bank Transfer'
+                      ? 'border-blue-600 bg-blue-50/90 text-blue-900 ring-2 ring-blue-400/40'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    transPaymentMethod === 'Bank Transfer' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    <Building2 size={20} />
+                  </div>
+                  <span className="text-xs font-bold tracking-tight text-center leading-tight">Bank Transfer</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTransPaymentMethod('Card')}
+                  className={`py-3.5 px-2 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 shadow-sm ${
+                    transPaymentMethod === 'Card'
+                      ? 'border-purple-600 bg-purple-50/90 text-purple-900 ring-2 ring-purple-400/40'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    transPaymentMethod === 'Card' ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    <CreditCard size={20} />
+                  </div>
+                  <span className="text-xs font-bold tracking-tight">Card</span>
+                </button>
               </div>
             </div>
           )}
