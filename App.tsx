@@ -8,13 +8,13 @@ import {
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
-  Banknote, CreditCard, Building2
+  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
+import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow, parsePaymentMethod } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod, isPendingCheque } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
 
 export const DEFAULT_COLLECTED_ITEMS = [
@@ -343,6 +343,9 @@ export default function App() {
   const [transDate, setTransDate] = useState(new Date().toISOString().slice(0, 10));
   const [transDesc, setTransDesc] = useState('');
   const [transPaymentMethod, setTransPaymentMethod] = useState<PaymentMethod>('Cash');
+  const [transChequeNumber, setTransChequeNumber] = useState('');
+  const [transChequeDate, setTransChequeDate] = useState(new Date().toISOString().slice(0, 10));
+  const [transChequeStatus, setTransChequeStatus] = useState<ChequeStatus>('PENDING');
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportRange, setReportRange] = useState({
@@ -357,15 +360,28 @@ export default function App() {
   const [previewFormat, setPreviewFormat] = useState<'POS' | 'A4'>('POS');
 
   const dateInputRef = useRef<HTMLInputElement>(null);
+  const chequeDateInputRef = useRef<HTMLInputElement>(null);
   const orderDateInputRef = useRef<HTMLInputElement>(null);
   const advanceDateInputRef = useRef<HTMLInputElement>(null);
 
   const contactStats = useMemo(() => {
-    const stats: Record<string, { totalCredit: number; totalPayment: number; balance: number }> = {};
-    contacts.forEach(c => stats[c.id] = { totalCredit: 0, totalPayment: 0, balance: 0 });
+    const stats: Record<string, { 
+      totalCredit: number; 
+      totalPayment: number; 
+      balance: number;
+      pendingChequesCount: number;
+      pendingChequesAmount: number;
+    }> = {};
+    contacts.forEach(c => stats[c.id] = { totalCredit: 0, totalPayment: 0, balance: 0, pendingChequesCount: 0, pendingChequesAmount: 0 });
     
     transactions.forEach(t => {
       if (!stats[t.contactId]) return;
+      // Pending Cheques: DO NOT change balance or totals until passed
+      if (isPendingCheque(t)) {
+        stats[t.contactId].pendingChequesCount += 1;
+        stats[t.contactId].pendingChequesAmount += t.amount;
+        return;
+      }
       if (t.type === 'CREDIT') stats[t.contactId].totalCredit += t.amount;
       else stats[t.contactId].totalPayment += t.amount;
     });
@@ -387,7 +403,7 @@ export default function App() {
     
     contacts.filter(c => c.type === 'RENT').forEach(c => {
       savings[c.id] = transactions
-        .filter(t => t.contactId === c.id && normalizeToLocalMidnight(t.date) >= cycleStart)
+        .filter(t => t.contactId === c.id && !isPendingCheque(t) && normalizeToLocalMidnight(t.date) >= cycleStart)
         .reduce((sum, t) => sum + (t.type === 'PAYMENT' ? t.amount : -t.amount), 0);
     });
     return savings;
@@ -1804,9 +1820,18 @@ export default function App() {
     const amountVal = parseFloat(transAmount) || 0;
     setIsSubmitting(true);
     try {
-      const formattedDesc = transType === 'PAYMENT'
-        ? (transDesc.trim() ? `${transPaymentMethod} • ${transDesc.trim()}` : transPaymentMethod)
-        : transDesc.trim();
+      let formattedDesc = transDesc.trim();
+      if (transType === 'PAYMENT' || transPaymentMethod === 'Cheque') {
+        if (transPaymentMethod === 'Cheque') {
+          const parts: string[] = [`Cheque [${transChequeStatus}]`];
+          if (transChequeDate) parts.push(`Due: ${transChequeDate}`);
+          if (transChequeNumber.trim()) parts.push(`#${transChequeNumber.trim()}`);
+          if (transDesc.trim()) parts.push(transDesc.trim());
+          formattedDesc = parts.join(' • ');
+        } else {
+          formattedDesc = transDesc.trim() ? `${transPaymentMethod} • ${transDesc.trim()}` : transPaymentMethod;
+        }
+      }
 
       const txPayload = { 
         contact_id: selectedContact.id, 
@@ -1831,7 +1856,10 @@ export default function App() {
             date: transDate,
             amount: amountVal,
             type: transType,
-            paymentMethod: transType === 'PAYMENT' ? transPaymentMethod : undefined,
+            paymentMethod: transPaymentMethod,
+            chequeStatus: transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
+            chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
+            chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
             description: formattedDesc,
             balanceAfter: 0
           };
@@ -1862,7 +1890,10 @@ export default function App() {
           description: res.data[0].description, 
           amount: res.data[0].amount, 
           type: res.data[0].type, 
-          paymentMethod: transType === 'PAYMENT' ? transPaymentMethod : undefined,
+          paymentMethod: transPaymentMethod,
+          chequeStatus: transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
+          chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
+          chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
           balanceAfter: 0 
         };
         if (editingTransaction) { 
@@ -1875,6 +1906,50 @@ export default function App() {
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
+  };
+
+  const handleQuickPassCheque = async (tx: Transaction) => {
+    const contact = contacts.find(c => c.id === tx.contactId);
+    const contactName = contact ? contact.name : 'contact';
+    if (!window.confirm(`Pass and clear this cheque for LKR ${tx.amount.toLocaleString()} (${contactName})?\n\nThis will apply the amount to the balance.`)) {
+      return;
+    }
+
+    const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus);
+    let updatedDesc = tx.description || '';
+    if (updatedDesc.includes('[PENDING]')) {
+      updatedDesc = updatedDesc.replace(/\[PENDING\]/gi, '[PASSED]');
+    } else if (updatedDesc.includes('[BOUNCED]')) {
+      updatedDesc = updatedDesc.replace(/\[BOUNCED\]/gi, '[PASSED]');
+    } else if (updatedDesc.startsWith('Cheque')) {
+      updatedDesc = updatedDesc.replace(/^Cheque/i, 'Cheque [PASSED]');
+    } else {
+      updatedDesc = `Cheque [PASSED]${parsed.chequeNumber ? ` • #${parsed.chequeNumber}` : ''}${updatedDesc ? ` • ${updatedDesc}` : ''}`;
+    }
+
+    const updatedTx: Transaction = {
+      ...tx,
+      paymentMethod: 'Cheque',
+      chequeStatus: 'PASSED',
+      description: updatedDesc
+    };
+
+    setTransactions(prev => prev.map(t => t.id === tx.id ? updatedTx : t));
+    try {
+      const currentTx = JSON.parse(localStorage.getItem('st_cached_transactions') || '[]');
+      const nextTx = currentTx.map((t: any) => t.id === tx.id ? updatedTx : t);
+      localStorage.setItem('st_cached_transactions', JSON.stringify(nextTx));
+    } catch {}
+
+    try {
+      await supabase.from('transactions').update({
+        description: updatedDesc
+      }).eq('id', tx.id);
+    } catch (e) {
+      console.warn('Supabase update cheque status error:', e);
+    }
+
+    showProfileToast(`Cheque for LKR ${tx.amount.toLocaleString()} is now PASSED! Balance updated.`);
   };
 
   const renderReportModal = () => {
@@ -2243,6 +2318,11 @@ export default function App() {
                   <div className="text-right shrink-0 ml-2">
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
                     <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>LKR {Math.abs(displayBal).toLocaleString()}</p>
+                    {stats.pendingChequesCount > 0 && (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded mt-0.5">
+                        <Clock size={9} /> {stats.pendingChequesCount} Cheque on hold
+                      </span>
+                    )}
                   </div>
                 </div>
               );
@@ -2282,8 +2362,11 @@ export default function App() {
     
     let currentSum = 0;
     const computedWithBalance = contactTransactions.map(t => {
-      if (isRent) { currentSum += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
-      else { currentSum += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+      // Pending Cheques do NOT alter the balance!
+      if (!isPendingCheque(t)) {
+        if (isRent) { currentSum += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
+        else { currentSum += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+      }
       return { ...t, balanceAfter: currentSum };
     }).reverse();
 
@@ -2465,6 +2548,25 @@ export default function App() {
             <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
             <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : (isService ? 'Balance Due' : 'Total Balance')}</p>
 
+            {contactStats[selectedContact.id]?.pendingChequesCount > 0 && (
+              <div className="mt-3.5 bg-amber-50 border border-amber-200/90 rounded-2xl p-3 text-left flex items-start gap-2.5 shadow-xs">
+                <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center shrink-0 text-amber-800 mt-0.5">
+                  <Clock size={16} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-extrabold text-xs text-amber-900">
+                      {contactStats[selectedContact.id].pendingChequesCount} Pending Cheque{contactStats[selectedContact.id].pendingChequesCount > 1 ? 's' : ''} (LKR {contactStats[selectedContact.id].pendingChequesAmount.toLocaleString()})
+                    </span>
+                    <span className="text-[10px] font-extrabold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full uppercase">On Hold</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 mt-0.5 font-medium leading-tight">
+                    Post-dated or pending cheques do not change the balance until passed. Tap &ldquo;Pass Cheque&rdquo; on any cheque below once cleared.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {isService && (
               <div className="flex items-center justify-center gap-2 flex-wrap mt-4 pt-4 border-t border-slate-200">
                 <button
@@ -2555,7 +2657,9 @@ export default function App() {
               ) : (
                 <div className="divide-y divide-slate-100">
                   {contactTransactions.filter(t => t.type === 'PAYMENT').map(p => {
-                    const parsed = parsePaymentMethod(p.description, p.paymentMethod);
+                    const parsed = parsePaymentMethod(p.description, p.paymentMethod, p.chequeStatus);
+                    const pendingChq = isPendingCheque(p);
+                    const isChq = parsed.method === 'Cheque' || p.paymentMethod === 'Cheque';
                     return (
                       <div 
                         key={p.id}
@@ -2565,28 +2669,47 @@ export default function App() {
                           setTransAmount(p.amount.toString());
                           setTransDate(p.date);
                           setTransPaymentMethod(parsed.method || 'Cash');
+                          setTransChequeStatus(parsed.chequeStatus || p.chequeStatus || 'PENDING');
+                          setTransChequeNumber(parsed.chequeNumber || p.chequeNumber || '');
+                          setTransChequeDate(parsed.chequeDate || p.chequeDate || p.date);
                           setTransDesc(parsed.cleanNotes);
                           navigateTo('TRANSACTION_FORM', selectedContact.id);
                         }}
-                        className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
+                        className={`py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group ${
+                          pendingChq ? 'bg-amber-50/50 border border-amber-200/80 my-1' : ''
+                        }`}
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-xs">
-                            ✓
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
+                            pendingChq ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {pendingChq ? <Clock size={14} /> : '✓'}
                           </div>
                           <div>
                             <div className="flex items-center gap-2 flex-wrap">
-                              {parsed.method && (
+                              {isChq ? (
                                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${
-                                  parsed.method === 'Bank Transfer'
-                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                    : parsed.method === 'Card'
-                                    ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  pendingChq
+                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                    : 'bg-emerald-100 text-emerald-900 border-emerald-300'
                                 }`}>
-                                  {parsed.method === 'Bank Transfer' ? <Building2 size={11} /> : parsed.method === 'Card' ? <CreditCard size={11} /> : <Banknote size={11} />}
-                                  {parsed.method}
+                                  {pendingChq ? <Clock size={11} className="text-amber-700" /> : <CheckCircle2 size={11} className="text-emerald-700" />}
+                                  <span>Cheque {pendingChq ? '(Pending)' : '(Passed)'}</span>
+                                  {parsed.chequeNumber && <span className="font-mono">#{parsed.chequeNumber}</span>}
                                 </span>
+                              ) : (
+                                parsed.method && (
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${
+                                    parsed.method === 'Bank Transfer'
+                                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                      : parsed.method === 'Card'
+                                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  }`}>
+                                    {parsed.method === 'Bank Transfer' ? <Building2 size={11} /> : parsed.method === 'Card' ? <CreditCard size={11} /> : <Banknote size={11} />}
+                                    {parsed.method}
+                                  </span>
+                                )
                               )}
                               <span className="font-bold text-xs text-slate-800">{parsed.cleanNotes || p.description || 'Payment'}</span>
                               <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
@@ -2594,13 +2717,29 @@ export default function App() {
                                 {formatDisplayDate(p.date)}
                               </span>
                             </div>
-                            <p className="text-[10px] text-slate-400 mt-0.5">Tap to update date, payment method, or amount</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {pendingChq ? '⏳ Post-dated cheque • Amount not added until passed' : 'Tap to update date, payment method, or amount'}
+                            </p>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="font-black text-sm text-emerald-700">
-                            + LKR {p.amount.toLocaleString()}
+                          <span className={`font-black text-sm ${pendingChq ? 'text-amber-700' : 'text-emerald-700'}`}>
+                            {pendingChq ? '⏳ ' : '+ '}LKR {p.amount.toLocaleString()}
                           </span>
+                          {pendingChq && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleQuickPassCheque(p);
+                              }}
+                              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 shadow-sm active:scale-95"
+                              title="Pass Cheque"
+                            >
+                              <CheckCircle2 size={12} />
+                              <span>Pass</span>
+                            </button>
+                          )}
                           <div className="p-1.5 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50 rounded-lg transition-colors">
                             <Pencil size={13} />
                           </div>
@@ -2615,7 +2754,7 @@ export default function App() {
               <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
                 <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">Total Paid to Date:</span>
                 <span className="font-black text-emerald-700">
-                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT').reduce((sum, p) => sum + p.amount, 0).toLocaleString()}
+                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT' && !isPendingCheque(t)).reduce((sum, p) => sum + p.amount, 0).toLocaleString()}
                 </span>
               </div>
             </div>
@@ -2640,6 +2779,9 @@ export default function App() {
                     setTransDate(new Date().toISOString().slice(0, 10));
                     setTransDesc('Service Total Cost');
                     setTransPaymentMethod('Cash');
+                    setTransChequeStatus('PENDING');
+                    setTransChequeNumber('');
+                    setTransChequeDate(new Date().toISOString().slice(0, 10));
                     navigateTo('TRANSACTION_FORM', selectedContact.id);
                   }}
                   className="py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
@@ -2659,6 +2801,9 @@ export default function App() {
                       setTransDate(c.date);
                       setTransDesc(c.description || '');
                       setTransPaymentMethod('Cash');
+                      setTransChequeStatus('PENDING');
+                      setTransChequeNumber('');
+                      setTransChequeDate(new Date().toISOString().slice(0, 10));
                       navigateTo('TRANSACTION_FORM', selectedContact.id);
                     }}
                     className="py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group"
@@ -2697,13 +2842,17 @@ export default function App() {
               <TransactionRow 
                 key={t.id} 
                 transaction={t} 
+                onPassCheque={handleQuickPassCheque}
                 onClick={(tx) => { 
-                  const parsed = parsePaymentMethod(tx.description, tx.paymentMethod);
+                  const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus);
                   setEditingTransaction(tx); 
                   setTransType(tx.type); 
                   setTransAmount(tx.amount.toString()); 
                   setTransDate(tx.date); 
                   setTransPaymentMethod(parsed.method || 'Cash');
+                  setTransChequeStatus(parsed.chequeStatus || tx.chequeStatus || 'PENDING');
+                  setTransChequeNumber(parsed.chequeNumber || tx.chequeNumber || '');
+                  setTransChequeDate(parsed.chequeDate || tx.chequeDate || tx.date);
                   setTransDesc(parsed.cleanNotes || (parsed.method ? '' : (tx.description || ''))); 
                   navigateTo('TRANSACTION_FORM', selectedContact.id); 
                 }} 
@@ -2713,11 +2862,11 @@ export default function App() {
           </div>
         )}
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
-          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
-          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowUp size={14} /></span>
           </button>
@@ -2832,8 +2981,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Type of Payment Selection (Cash, Bank Transfer, Card) - Below Notes Section */}
-          {transType === 'PAYMENT' && (
+          {/* Type of Payment Selection (Cash, Bank Transfer, Card, Cheque) - Below Notes Section */}
+          {(transType === 'PAYMENT' || transPaymentMethod === 'Cheque') && (
             <div className="mt-6 pt-5 border-t border-slate-100">
               <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 block flex items-center justify-between">
                 <span>Type of Payment</span>
@@ -2842,13 +2991,15 @@ export default function App() {
                     ? 'bg-blue-50 text-blue-700 border-blue-200' 
                     : transPaymentMethod === 'Card'
                     ? 'bg-purple-50 text-purple-700 border-purple-200'
+                    : transPaymentMethod === 'Cheque'
+                    ? (transChequeStatus === 'PENDING' ? 'bg-amber-50 text-amber-800 border-amber-300' : 'bg-emerald-50 text-emerald-800 border-emerald-300')
                     : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                 }`}>
-                  ✓ {transPaymentMethod}
+                  {transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING' ? '⏳' : '✓'} {transPaymentMethod} {transPaymentMethod === 'Cheque' ? (transChequeStatus === 'PENDING' ? '(Pending Hold)' : '(Passed)') : ''}
                 </span>
               </label>
               
-              <div className="grid grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                 <button
                   type="button"
                   onClick={() => setTransPaymentMethod('Cash')}
@@ -2858,10 +3009,10 @@ export default function App() {
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                   }`}
                 >
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
                     transPaymentMethod === 'Cash' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
                   }`}>
-                    <Banknote size={20} />
+                    <Banknote size={18} />
                   </div>
                   <span className="text-xs font-bold tracking-tight">Cash</span>
                 </button>
@@ -2875,10 +3026,10 @@ export default function App() {
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                   }`}
                 >
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
                     transPaymentMethod === 'Bank Transfer' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
                   }`}>
-                    <Building2 size={20} />
+                    <Building2 size={18} />
                   </div>
                   <span className="text-xs font-bold tracking-tight text-center leading-tight">Bank Transfer</span>
                 </button>
@@ -2892,14 +3043,164 @@ export default function App() {
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                   }`}
                 >
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
                     transPaymentMethod === 'Card' ? 'bg-purple-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
                   }`}>
-                    <CreditCard size={20} />
+                    <CreditCard size={18} />
                   </div>
                   <span className="text-xs font-bold tracking-tight">Card</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTransPaymentMethod('Cheque')}
+                  className={`py-3.5 px-2 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 shadow-sm ${
+                    transPaymentMethod === 'Cheque'
+                      ? 'border-amber-600 bg-amber-50/90 text-amber-900 ring-2 ring-amber-400/40'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                    transPaymentMethod === 'Cheque' ? 'bg-amber-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    <Landmark size={18} />
+                  </div>
+                  <span className="text-xs font-bold tracking-tight">Cheque</span>
+                </button>
               </div>
+
+              {/* Dedicated Cheque Details & Maturity Date */}
+              {transPaymentMethod === 'Cheque' && (
+                <div className="mt-4 p-4 bg-amber-50/80 border border-amber-200/90 rounded-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between pb-2 border-b border-amber-200/70">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center text-amber-800">
+                        <Landmark size={15} />
+                      </div>
+                      <h4 className="font-extrabold text-xs text-amber-900 uppercase tracking-wider">Cheque Management</h4>
+                    </div>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border ${
+                      transChequeStatus === 'PENDING'
+                        ? 'bg-amber-100 text-amber-900 border-amber-300'
+                        : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                    }`}>
+                      {transChequeStatus === 'PENDING' ? '⏳ On Hold (No Balance Change)' : '✓ Passed (Updates Balance)'}
+                    </span>
+                  </div>
+
+                  {/* Cheque Clearance Status Toggle */}
+                  <div>
+                    <label className="text-[10px] font-bold text-amber-950 uppercase tracking-wider mb-1.5 block">
+                      Cheque Clearance Status
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTransChequeStatus('PENDING')}
+                        className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
+                          transChequeStatus === 'PENDING'
+                            ? 'bg-amber-700 text-white border-amber-800 shadow-sm ring-2 ring-amber-400/40'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Clock size={14} />
+                        <span>Pending (On Hold)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setTransChequeStatus('PASSED')}
+                        className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
+                          transChequeStatus === 'PASSED'
+                            ? 'bg-emerald-700 text-white border-emerald-800 shadow-sm ring-2 ring-emerald-400/40'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <CheckCircle2 size={14} />
+                        <span>Passed / Cleared</span>
+                      </button>
+                    </div>
+
+                    <div className="mt-2 bg-amber-100/70 rounded-xl p-2.5 text-[11px] text-amber-900 font-medium border border-amber-200 flex items-start gap-2">
+                      <span className="text-amber-800 shrink-0 font-bold">ℹ️</span>
+                      <span>
+                        {transChequeStatus === 'PENDING'
+                          ? 'Until this cheque is passed, the contact balance will NOT change. The amount stays securely on hold.'
+                          : 'This cheque is marked as cleared and will immediately update the contact balance.'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Future Clearance Date / Maturity Date */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] font-bold text-amber-950 uppercase tracking-wider block">
+                        Cheque Date / Future Clearance Date
+                      </label>
+                      <span className="text-xs font-bold text-slate-800">{formatDisplayDate(transChequeDate)}</span>
+                    </div>
+
+                    {/* Quick Date Presets */}
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {[
+                        { label: 'Today', days: 0 },
+                        { label: '+7 Days', days: 7 },
+                        { label: '+15 Days', days: 15 },
+                        { label: '+30 Days', days: 30 },
+                        { label: '+60 Days', days: 60 }
+                      ].map(preset => {
+                        const targetDate = new Date();
+                        targetDate.setDate(targetDate.getDate() + preset.days);
+                        const dateStr = targetDate.toISOString().slice(0, 10);
+                        const isSelected = transChequeDate === dateStr;
+                        return (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => setTransChequeDate(dateStr)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-lg border transition-all active:scale-95 ${
+                              isSelected
+                                ? 'bg-amber-800 text-white border-amber-900 shadow-xs'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => chequeDateInputRef.current?.showPicker()}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg border bg-white text-slate-700 border-slate-200 flex items-center gap-1 hover:bg-slate-50 shadow-xs active:scale-95"
+                      >
+                        <Calendar size={11} /> Change Date
+                      </button>
+                    </div>
+
+                    <input
+                      ref={chequeDateInputRef}
+                      type="date"
+                      value={transChequeDate}
+                      onChange={e => setTransChequeDate(e.target.value)}
+                      className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-amber-600 transition-colors"
+                    />
+                  </div>
+
+                  {/* Cheque Number / Reference Number */}
+                  <div>
+                    <label className="text-[10px] font-bold text-amber-950 uppercase tracking-wider mb-1 block">
+                      Cheque Number / Reference (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={transChequeNumber}
+                      onChange={e => setTransChequeNumber(e.target.value)}
+                      placeholder="e.g. 102948 or CHQ-001"
+                      className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-amber-600 transition-colors"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

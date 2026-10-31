@@ -21,7 +21,8 @@ export interface Contact {
 }
 
 export type TransactionType = 'CREDIT' | 'PAYMENT';
-export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card';
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Cheque';
+export type ChequeStatus = 'PENDING' | 'PASSED' | 'BOUNCED';
 
 export interface Transaction {
   id: string;
@@ -29,6 +30,9 @@ export interface Transaction {
   date: string; // ISO string or formatted string
   description?: string;
   paymentMethod?: PaymentMethod;
+  chequeStatus?: ChequeStatus;
+  chequeNumber?: string;
+  chequeDate?: string; // Cheque issue date or future maturity date
   amount: number;
   type: TransactionType;
   balanceAfter: number;
