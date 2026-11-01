@@ -568,13 +568,23 @@ export default function App() {
 
       tableRows.unshift([reportRange.start, 'Opening Balance', '-', '-', `LKR ${openingBalance.toLocaleString()}`]);
 
+      const contactPendingChqs = transactions.filter(t => t.contactId === contact.id && isPendingCheque(t));
+      const totalPendingAmount = contactPendingChqs.reduce((s, t) => s + t.amount, 0);
+      const estBalIfPass = isRent ? runningBal + totalPendingAmount : runningBal - totalPendingAmount;
+
+      const footRows = [['', '', 'TOTAL CLOSING BALANCE', '', `LKR ${runningBal.toLocaleString()}`]];
+      if (contactPendingChqs.length > 0) {
+        footRows.push(['', '', `CHEQUES ON HOLD (${contactPendingChqs.length} PENDING)`, '', `LKR ${totalPendingAmount.toLocaleString()}`]);
+        footRows.push(['', '', 'IF PASS CHEQUE TOTAL BALANCE', '', `LKR ${Math.abs(estBalIfPass).toLocaleString()}`]);
+      }
+
       autoTable(doc, {
         startY: 45,
         head: [['Date', 'Description', 'Type', 'Amount', 'Balance']],
         body: tableRows,
         theme: 'grid',
         headStyles: { fillColor: [59, 130, 246] },
-        foot: [['', '', 'CLOSING BALANCE', '', `LKR ${runningBal.toLocaleString()}`]],
+        foot: footRows,
         footStyles: { fontStyle: 'bold', fillColor: [248, 250, 252] }
       });
       
@@ -2319,9 +2329,14 @@ export default function App() {
                     <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
                     <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>LKR {Math.abs(displayBal).toLocaleString()}</p>
                     {stats.pendingChequesCount > 0 && (
-                      <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded mt-0.5">
-                        <Clock size={9} /> {stats.pendingChequesCount} Cheque on hold
-                      </span>
+                      <div className="flex flex-col items-end mt-1 gap-0.5">
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded">
+                          <Clock size={9} /> {stats.pendingChequesCount} Chq (LKR {stats.pendingChequesAmount.toLocaleString()})
+                        </span>
+                        <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                          If Pass: LKR {Math.abs(stats.balance - stats.pendingChequesAmount).toLocaleString()}
+                        </span>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2369,6 +2384,19 @@ export default function App() {
       }
       return { ...t, balanceAfter: currentSum };
     }).reverse();
+
+    const pendingChequesNet = contactTransactions
+      .filter(t => isPendingCheque(t))
+      .reduce((sum, t) => {
+        if (isRent) {
+          return sum + (t.type === 'PAYMENT' ? t.amount : -t.amount);
+        }
+        return sum + (t.type === 'PAYMENT' ? -t.amount : t.amount);
+      }, 0);
+
+    const balanceIfPassCheque = balance + pendingChequesNet;
+    const pendingChequesCount = contactStats[selectedContact.id]?.pendingChequesCount || 0;
+    const pendingChequesAmount = contactStats[selectedContact.id]?.pendingChequesAmount || 0;
 
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
@@ -2545,25 +2573,81 @@ export default function App() {
                 </div>
               </div>
             )}
-            <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>LKR {Math.abs(balance).toLocaleString()}</h2>
-            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">{isRent ? `Saved / Target LKR ${target.toLocaleString()}` : (isService ? 'Balance Due' : 'Total Balance')}</p>
-
-            {contactStats[selectedContact.id]?.pendingChequesCount > 0 && (
-              <div className="mt-3.5 bg-amber-50 border border-amber-200/90 rounded-2xl p-3 text-left flex items-start gap-2.5 shadow-xs">
-                <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center shrink-0 text-amber-800 mt-0.5">
-                  <Clock size={16} />
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-extrabold text-xs text-amber-900">
-                      {contactStats[selectedContact.id].pendingChequesCount} Pending Cheque{contactStats[selectedContact.id].pendingChequesCount > 1 ? 's' : ''} (LKR {contactStats[selectedContact.id].pendingChequesAmount.toLocaleString()})
+            {pendingChequesCount > 0 ? (
+              <div className="space-y-3.5 my-1">
+                {/* Dual / 3-Card Balance View */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Card 1: Total Balance Right Now */}
+                  <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-sm flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                      Total Balance (Current)
                     </span>
-                    <span className="text-[10px] font-extrabold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full uppercase">On Hold</span>
+                    <span className={`text-2xl sm:text-3xl font-extrabold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+                      LKR {Math.abs(balance).toLocaleString()}
+                    </span>
+                    <span className="text-[10px] font-semibold text-slate-500 mt-1">
+                      {isRent ? 'Active Saved' : (isService ? 'Balance Due' : (balance > 0 ? 'Amount Owed Right Now' : 'Advance Balance'))}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-amber-800 mt-0.5 font-medium leading-tight">
-                    Post-dated or pending cheques do not change the balance until passed. Tap &ldquo;Pass Cheque&rdquo; on any cheque below once cleared.
-                  </p>
+
+                  {/* Card 2: Cheque on Hold */}
+                  <div className="bg-amber-50/80 rounded-2xl p-4 border border-amber-200/90 shadow-sm flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] font-bold text-amber-800 uppercase tracking-widest mb-1 flex items-center gap-1">
+                      <Clock size={12} className="text-amber-700" />
+                      Cheque on Hold
+                    </span>
+                    <span className="text-2xl sm:text-3xl font-extrabold text-amber-800">
+                      LKR {pendingChequesAmount.toLocaleString()}
+                    </span>
+                    <span className="text-[10px] font-bold text-amber-800 mt-1 bg-amber-100 px-2 py-0.5 rounded-full">
+                      {pendingChequesCount} Pending Cheque{pendingChequesCount > 1 ? 's' : ''}
+                    </span>
+                  </div>
+
+                  {/* Card 3: If Pass Cheque Total Balance */}
+                  <div className="bg-emerald-50/90 rounded-2xl p-4 border-2 border-emerald-400 shadow-sm flex flex-col items-center justify-center text-center relative overflow-hidden">
+                    <div className="absolute top-0 right-0 bg-emerald-600 text-white text-[8px] font-black px-2 py-0.5 rounded-bl-lg uppercase tracking-wider">
+                      After Clearance
+                    </div>
+                    <span className="text-[10px] font-bold text-emerald-900 uppercase tracking-widest mb-1 flex items-center gap-1">
+                      <CheckCircle2 size={12} className="text-emerald-700" />
+                      If Pass Cheque Total Balance
+                    </span>
+                    <span className={`text-2xl sm:text-3xl font-extrabold ${balanceIfPassCheque > 0 ? (isRent ? 'text-blue-700' : 'text-emerald-700') : 'text-emerald-800'}`}>
+                      LKR {Math.abs(balanceIfPassCheque).toLocaleString()}
+                    </span>
+                    <span className="text-[10px] font-bold text-emerald-700 mt-1">
+                      {balanceIfPassCheque === 0 ? 'Fully Paid / Zero Due' : (balanceIfPassCheque > 0 ? 'Remaining Balance' : 'Advance Balance')}
+                    </span>
+                  </div>
                 </div>
+
+                {/* Status Notice Banner */}
+                <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-3 text-left flex items-start gap-2.5 shadow-xs">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center shrink-0 text-amber-800 mt-0.5">
+                    <Clock size={16} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <span className="font-extrabold text-xs text-amber-900">
+                        {pendingChequesCount} Pending Cheque{pendingChequesCount > 1 ? 's' : ''} (LKR {pendingChequesAmount.toLocaleString()}) on Hold
+                      </span>
+                      <span className="text-[10px] font-extrabold bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full uppercase">On Hold</span>
+                    </div>
+                    <p className="text-[11px] text-amber-800 mt-1 font-medium leading-snug">
+                      Current Total Balance is <strong>LKR {Math.abs(balance).toLocaleString()}</strong>. Once cheques clear and pass, the balance will become <strong className="text-emerald-800 underline font-bold">LKR {Math.abs(balanceIfPassCheque).toLocaleString()}</strong>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <h2 className={`text-4xl font-bold ${balance > 0 ? (isRent ? 'text-blue-600' : 'text-red-600') : 'text-green-600'}`}>
+                  LKR {Math.abs(balance).toLocaleString()}
+                </h2>
+                <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2">
+                  {isRent ? `Saved / Target LKR ${target.toLocaleString()}` : (isService ? 'Balance Due' : 'Total Balance')}
+                </p>
               </div>
             )}
 
