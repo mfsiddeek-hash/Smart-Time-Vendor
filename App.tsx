@@ -15,7 +15,7 @@ import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow, parsePaymentMethod, isPendingCheque } from './components/TransactionRow';
-import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
+import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
 
@@ -1667,33 +1667,14 @@ export default function App() {
             sessionStorage.setItem('st_auth_active', 'true');
           }
 
-          try {
-            const { data: pData } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('id', session.user.id)
-              .maybeSingle();
-
-            if (mounted && pData) {
-              const prof: UserProfile = {
-                id: pData.id,
-                fullName: pData.full_name || '',
-                shopName: pData.shop_name || '',
-                tagline: pData.tagline || 'Mobile Phone Repair & Service',
-                phone: pData.phone || '',
-                address: pData.address || '',
-                logoUrl: pData.logo_url || null,
-                setupCompleted: Boolean(pData.setup_completed)
-              };
-              setUserProfile(prof);
-              if (prof.shopName) setShopName(prof.shopName);
-              if (prof.tagline) setShopTagline(prof.tagline);
-              if (prof.phone) setShopPhone(prof.phone);
-              if (prof.address) setShopAddress(prof.address);
-              if (prof.logoUrl) setShopLogo(prof.logoUrl);
-            }
-          } catch (pe) {
-            console.warn('Profile fetch error:', pe);
+          const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
+          if (mounted) {
+            setUserProfile(prof);
+            if (prof.shopName) setShopName(prof.shopName);
+            if (prof.tagline) setShopTagline(prof.tagline);
+            if (prof.phone) setShopPhone(prof.phone);
+            if (prof.address) setShopAddress(prof.address);
+            if (prof.logoUrl) setShopLogo(prof.logoUrl);
           }
 
           await fetchData(session.user.id);
@@ -1718,33 +1699,14 @@ export default function App() {
           sessionStorage.setItem('st_auth_active', 'true');
         }
 
-        try {
-          const { data: pData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .maybeSingle();
-
-          if (mounted && pData) {
-            const prof: UserProfile = {
-              id: pData.id,
-              fullName: pData.full_name || '',
-              shopName: pData.shop_name || '',
-              tagline: pData.tagline || 'Mobile Phone Repair & Service',
-              phone: pData.phone || '',
-              address: pData.address || '',
-              logoUrl: pData.logo_url || null,
-              setupCompleted: Boolean(pData.setup_completed)
-            };
-            setUserProfile(prof);
-            if (prof.shopName) setShopName(prof.shopName);
-            if (prof.tagline) setShopTagline(prof.tagline);
-            if (prof.phone) setShopPhone(prof.phone);
-            if (prof.address) setShopAddress(prof.address);
-            if (prof.logoUrl) setShopLogo(prof.logoUrl);
-          }
-        } catch (pe) {
-          console.warn('Profile sync error:', pe);
+        const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
+        if (mounted) {
+          setUserProfile(prof);
+          if (prof.shopName) setShopName(prof.shopName);
+          if (prof.tagline) setShopTagline(prof.tagline);
+          if (prof.phone) setShopPhone(prof.phone);
+          if (prof.address) setShopAddress(prof.address);
+          if (prof.logoUrl) setShopLogo(prof.logoUrl);
         }
 
         await fetchData(session.user.id);

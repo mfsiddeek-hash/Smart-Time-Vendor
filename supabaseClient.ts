@@ -23,3 +23,94 @@ export const supabase = createClient(activeUrl, activeKey, {
     storage: typeof window !== 'undefined' ? window.localStorage : undefined,
   },
 });
+
+export const loadUserProfile = async (userId: string, userMetadata?: any): Promise<import('./types').UserProfile> => {
+  let prof: import('./types').UserProfile | null = null;
+
+  // 1. Try to fetch from Supabase 'profiles' table
+  try {
+    const { data: pData } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (pData) {
+      const sName = pData.shop_name || '';
+      const isCompleted = Boolean(pData.setup_completed) || Boolean(sName.trim().length > 0);
+      prof = {
+        id: pData.id,
+        fullName: pData.full_name || userMetadata?.full_name || 'Shop Owner',
+        shopName: sName,
+        tagline: pData.tagline || 'Mobile Phone Repair & Service',
+        phone: pData.phone || '',
+        address: pData.address || '',
+        logoUrl: pData.logo_url || null,
+        setupCompleted: isCompleted
+      };
+    }
+  } catch (pErr) {
+    console.warn('Supabase profile fetch warning:', pErr);
+  }
+
+  // 2. Fallback to localStorage user-scoped profile
+  if (!prof || !prof.setupCompleted) {
+    try {
+      const localSaved = typeof window !== 'undefined' ? localStorage.getItem(`st_shop_profile_${userId}`) : null;
+      if (localSaved) {
+        const parsed = JSON.parse(localSaved);
+        if (parsed) {
+          const sName = parsed.shop_name || parsed.shopName || '';
+          const isCompleted = Boolean(parsed.setup_completed || parsed.setupCompleted || sName.trim().length > 0);
+          if (isCompleted || sName.trim().length > 0) {
+            prof = {
+              id: userId,
+              fullName: parsed.full_name || parsed.fullName || userMetadata?.full_name || 'Shop Owner',
+              shopName: sName,
+              tagline: parsed.tagline || 'Mobile Phone Repair & Service',
+              phone: parsed.phone || '',
+              address: parsed.address || '',
+              logoUrl: parsed.logo_url || parsed.logoUrl || null,
+              setupCompleted: isCompleted
+            };
+          }
+        }
+      }
+    } catch (lErr) {
+      console.warn('Local profile fetch warning:', lErr);
+    }
+  }
+
+  // 3. Fallback to general shop localStorage keys (for single-shop or existing local installations)
+  if (!prof || !prof.setupCompleted) {
+    const savedShopName = typeof window !== 'undefined' ? localStorage.getItem('st_shop_name') : null;
+    if (savedShopName && savedShopName.trim().length > 0) {
+      prof = {
+        id: userId,
+        fullName: userMetadata?.full_name || 'Shop Owner',
+        shopName: savedShopName.trim(),
+        tagline: (typeof window !== 'undefined' && localStorage.getItem('st_shop_tagline')) || 'Mobile Phone Repair & Service',
+        phone: (typeof window !== 'undefined' && localStorage.getItem('st_shop_phone')) || '',
+        address: (typeof window !== 'undefined' && localStorage.getItem('st_shop_address')) || '',
+        logoUrl: (typeof window !== 'undefined' && localStorage.getItem('st_shop_logo')) || null,
+        setupCompleted: true
+      };
+    }
+  }
+
+  // 4. Default uncompleted profile if no shop details exist anywhere
+  if (!prof) {
+    prof = {
+      id: userId,
+      fullName: userMetadata?.full_name || 'Shop Owner',
+      shopName: '',
+      tagline: 'Mobile Phone Repair & Service',
+      phone: '',
+      address: '',
+      logoUrl: null,
+      setupCompleted: false
+    };
+  }
+
+  return prof;
+};

@@ -3,7 +3,7 @@ import {
   Lock, Mail, User, Eye, EyeOff, ArrowRight, CheckCircle2, 
   AlertCircle, RefreshCw, KeyRound, ArrowLeft, ShieldCheck, Store, Loader2 
 } from 'lucide-react';
-import { supabase } from '../supabaseClient';
+import { supabase, loadUserProfile } from '../supabaseClient';
 import { UserProfile } from '../types';
 
 export type AuthMode = 'SIGN_IN' | 'SIGN_UP' | 'FORGOT_PASSWORD' | 'VERIFY_EMAIL' | 'RESET_PASSWORD';
@@ -101,31 +101,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           return;
         }
 
-        // Fetch user profile from Supabase profiles table
-        let userProfile: UserProfile | null = null;
-        try {
-          const { data: pData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .maybeSingle();
-
-          if (pData) {
-            userProfile = {
-              id: pData.id,
-              fullName: pData.full_name || '',
-              shopName: pData.shop_name || '',
-              tagline: pData.tagline || '',
-              phone: pData.phone || '',
-              address: pData.address || '',
-              logoUrl: pData.logo_url || null,
-              setupCompleted: Boolean(pData.setup_completed)
-            };
-          }
-        } catch (pErr) {
-          console.warn('Profile fetch warning:', pErr);
-        }
-
+        // Fetch user profile with local & DB fallback
+        const userProfile = await loadUserProfile(data.user.id, data.user.user_metadata);
         onAuthSuccess(data.user, userProfile);
       }
     } catch (err: any) {
@@ -250,7 +227,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         // Try refreshing session
         const { data: sData } = await supabase.auth.refreshSession();
         if (sData?.user?.email_confirmed_at) {
-          onAuthSuccess(sData.user);
+          const prof = await loadUserProfile(sData.user.id, sData.user.user_metadata);
+          onAuthSuccess(sData.user, prof);
           return;
         }
         setErrorMsg('Email still not verified. Please click the link in your email first, then return here.');
@@ -259,8 +237,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
       if (data.user.email_confirmed_at) {
         setSuccessMsg('Email confirmed! Loading your store...');
+        const prof = await loadUserProfile(data.user.id, data.user.user_metadata);
         setTimeout(() => {
-          onAuthSuccess(data.user);
+          onAuthSuccess(data.user, prof);
         }, 800);
       } else {
         setErrorMsg('Your email is still awaiting verification. Please check your inbox.');
