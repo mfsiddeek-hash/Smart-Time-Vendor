@@ -73,3 +73,18 @@ export interface StoreProfile {
   address: string;
   logoUrl?: string | null;
 }
+
+export type CashbookEntryType = 'SALE' | 'EXPENSE';
+
+export interface CashbookEntry {
+  id: string;
+  type: CashbookEntryType;
+  amount: number;
+  date: string;
+  category: string;
+  description?: string;
+  paymentMethod: PaymentMethod;
+  referenceNo?: string;
+  contactName?: string;
+  createdAt?: string;
+}

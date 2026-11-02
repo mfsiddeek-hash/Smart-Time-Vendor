@@ -28,14 +28,31 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Create Indexes for High Performance
+-- 3. Create Cashbook Entries Table (Sales & Expenses / Daybook)
+CREATE TABLE IF NOT EXISTS public.cashbook_entries (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    type TEXT NOT NULL, -- 'SALE' or 'EXPENSE'
+    amount NUMERIC NOT NULL DEFAULT 0,
+    date TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT,
+    payment_method TEXT DEFAULT 'Cash',
+    reference_no TEXT,
+    contact_name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Create Indexes for High Performance
 CREATE INDEX IF NOT EXISTS idx_contacts_type ON public.contacts(type);
 CREATE INDEX IF NOT EXISTS idx_transactions_contact_id ON public.transactions(contact_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
+CREATE INDEX IF NOT EXISTS idx_cashbook_date ON public.cashbook_entries(date);
+CREATE INDEX IF NOT EXISTS idx_cashbook_type ON public.cashbook_entries(type);
 
--- 4. Enable Row Level Security (RLS) and Allow Access with Anon Key
+-- 5. Enable Row Level Security (RLS) and Allow Access with Anon Key
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cashbook_entries ENABLE ROW LEVEL SECURITY;
 
 -- Permissive policies for the client application
 DROP POLICY IF EXISTS "Public contacts access" ON public.contacts;
@@ -52,6 +69,14 @@ CREATE POLICY "Public transactions access" ON public.transactions
     USING (true)
     WITH CHECK (true);
 
--- 5. Realtime Publication (Optional - for instant live updates)
+DROP POLICY IF EXISTS "Public cashbook access" ON public.cashbook_entries;
+CREATE POLICY "Public cashbook access" ON public.cashbook_entries
+    FOR ALL
+    TO anon, authenticated
+    USING (true)
+    WITH CHECK (true);
+
+-- 6. Realtime Publication (Optional - for instant live updates)
 ALTER PUBLICATION supabase_realtime ADD TABLE public.contacts;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.transactions;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.cashbook_entries;

@@ -8,11 +8,11 @@ import {
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
-  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare
+  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, Minus, Tag, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions } from './types';
+import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow, parsePaymentMethod, isPendingCheque } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
@@ -26,6 +26,28 @@ export const DEFAULT_COLLECTED_ITEMS = [
   'Memory Card (SD)',
   'Charger / Cable',
   'Original Box'
+] as const;
+
+export const SALE_CATEGORIES = [
+  'Mobile Accessories',
+  'Repair Charges',
+  'Mobile Phone Sales',
+  'Spare Parts Sale',
+  'SIM / Reload',
+  'Software / Unlocking',
+  'Other Sales'
+] as const;
+
+export const EXPENSE_CATEGORIES = [
+  'Shop Rent',
+  'Electricity / Bills',
+  'Staff Wages / Salary',
+  'Parts Purchase',
+  'Food & Tea',
+  'Transport / Delivery',
+  'Internet / Phone Bills',
+  'Shop Maintenance / Tools',
+  'Other Expense'
 ] as const;
 
 type ThemeColor = 'blue' | 'purple' | 'emerald' | 'orange' | 'dark';
@@ -114,6 +136,41 @@ export default function App() {
   });
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const contactsRef = useRef(contacts);
+
+  // Cashbook / Sales & Expense state
+  const [cashbookEntries, setCashbookEntries] = useState<CashbookEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('st_cashbook_entries');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [isCashbookModalOpen, setIsCashbookModalOpen] = useState(false);
+  const [editingCashbookEntry, setEditingCashbookEntry] = useState<CashbookEntry | null>(null);
+  const [cashbookType, setCashbookType] = useState<CashbookEntryType>('SALE');
+  const [cashbookAmount, setCashbookAmount] = useState('');
+  const [cashbookDate, setCashbookDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [cashbookCategory, setCashbookCategory] = useState<string>('Mobile Accessories');
+  const [cashbookCustomCategory, setCashbookCustomCategory] = useState('');
+  const [cashbookDesc, setCashbookDesc] = useState('');
+  const [cashbookPaymentMethod, setCashbookPaymentMethod] = useState<PaymentMethod>('Cash');
+  const [cashbookRefNo, setCashbookRefNo] = useState('');
+  const [cashbookContactName, setCashbookContactName] = useState('');
+
+  // Cashbook filter states
+  const [cashbookDateFilter, setCashbookDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL' | 'CUSTOM'>('THIS_MONTH');
+  const [cashbookCustomStart, setCashbookCustomStart] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [cashbookCustomEnd, setCashbookCustomEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [cashbookTypeFilter, setCashbookTypeFilter] = useState<'ALL' | 'SALE' | 'EXPENSE'>('ALL');
+  const [cashbookCategoryFilter, setCashbookCategoryFilter] = useState<string>('ALL');
+  const [cashbookSearch, setCashbookSearch] = useState('');
+  const cashbookDateInputRef = useRef<HTMLInputElement>(null);
+  const cashbookCustomStartRef = useRef<HTMLInputElement>(null);
+  const cashbookCustomEndRef = useRef<HTMLInputElement>(null);
 
   const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'needs_tables' | 'error'>('checking');
   const [isSqlModalOpen, setIsSqlModalOpen] = useState(false);
@@ -456,6 +513,19 @@ export default function App() {
 
     return { totalPaid, totalCredit };
   }, [transactions, contacts, activeTab, selectedContact, reportRange, reportTarget]);
+
+  const todayCashbookSnapshot = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayEntries = cashbookEntries.filter(e => e.date === todayStr);
+    const sales = todayEntries.filter(e => e.type === 'SALE').reduce((s, e) => s + e.amount, 0);
+    const expenses = todayEntries.filter(e => e.type === 'EXPENSE').reduce((s, e) => s + e.amount, 0);
+    return {
+      count: todayEntries.length,
+      sales,
+      expenses,
+      net: sales - expenses
+    };
+  }, [cashbookEntries]);
 
   const downloadCategoryReport = () => {
     try {
@@ -1429,9 +1499,10 @@ export default function App() {
     setIsLoading(true);
     setDbStatus('checking');
     try {
-      const [contactsRes, transRes] = await Promise.all([
+      const [contactsRes, transRes, cashbookRes] = await Promise.all([
         supabase.from('contacts').select('*'),
-        supabase.from('transactions').select('*').order('date', { ascending: false })
+        supabase.from('transactions').select('*').order('date', { ascending: false }),
+        supabase.from('cashbook_entries').select('*').order('date', { ascending: false })
       ]);
 
       if (contactsRes.error) {
@@ -1503,6 +1574,23 @@ export default function App() {
         }));
         setTransactions(mappedTx);
         try { localStorage.setItem('st_cached_transactions', JSON.stringify(mappedTx)); } catch {}
+      }
+
+      if (cashbookRes.data) {
+        const mappedCb: CashbookEntry[] = cashbookRes.data.map((c: any) => ({
+          id: c.id,
+          type: (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE') as CashbookEntryType,
+          amount: Number(c.amount) || 0,
+          date: c.date,
+          category: c.category || 'General',
+          description: c.description || '',
+          paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
+          referenceNo: c.reference_no || '',
+          contactName: c.contact_name || '',
+          createdAt: c.created_at
+        }));
+        setCashbookEntries(mappedCb);
+        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(mappedCb)); } catch {}
       }
     } catch (err: any) { 
       console.error(err); 
@@ -2116,6 +2204,39 @@ export default function App() {
             <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
               <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">{activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}</p>
               <p className="text-xl font-bold text-[#b91c1c]">LKR {activeTotals.netBalance.toLocaleString()}</p>
+            </div>
+          </div>
+
+          {/* Quick Sales & Expense Snapshot Widget */}
+          <div 
+            onClick={() => navigateTo('CASH_BOOK')} 
+            className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-xs flex items-center justify-between cursor-pointer hover:border-blue-400 hover:shadow-sm transition-all group active:scale-[0.99]"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                <Wallet size={18} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-xs text-slate-900 group-hover:text-blue-600 transition-colors">Sales & Expense (Daybook)</span>
+                  <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-full">
+                    {todayCashbookSnapshot.count} today
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-[11px] mt-0.5 font-bold">
+                  <span className="text-emerald-600 font-extrabold">+ LKR {todayCashbookSnapshot.sales.toLocaleString()}</span>
+                  <span className="text-slate-300">•</span>
+                  <span className="text-red-500 font-extrabold">- LKR {todayCashbookSnapshot.expenses.toLocaleString()}</span>
+                  <span className="text-slate-300">•</span>
+                  <span className={`text-[10px] ${todayCashbookSnapshot.net >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                    Net {todayCashbookSnapshot.net >= 0 ? '+' : ''}{todayCashbookSnapshot.net.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-xl group-hover:bg-blue-600 group-hover:text-white transition-all">
+              <span>View</span>
+              <ArrowRight size={13} />
             </div>
           </div>
           <div className="flex gap-2">
@@ -4182,14 +4303,31 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Create Indexes for High Performance
+-- 3. Create Cashbook Entries Table (Sales & Expenses / Daybook)
+CREATE TABLE IF NOT EXISTS public.cashbook_entries (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    type TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    date TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT,
+    payment_method TEXT DEFAULT 'Cash',
+    reference_no TEXT,
+    contact_name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Create Indexes for High Performance
 CREATE INDEX IF NOT EXISTS idx_contacts_type ON public.contacts(type);
 CREATE INDEX IF NOT EXISTS idx_transactions_contact_id ON public.transactions(contact_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
+CREATE INDEX IF NOT EXISTS idx_cashbook_date ON public.cashbook_entries(date);
+CREATE INDEX IF NOT EXISTS idx_cashbook_type ON public.cashbook_entries(type);
 
--- 4. Enable Row Level Security (RLS) and Allow Access with Anon Key
+-- 5. Enable Row Level Security (RLS) and Allow Access with Anon Key
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cashbook_entries ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Public contacts access" ON public.contacts;
 CREATE POLICY "Public contacts access" ON public.contacts
@@ -4197,6 +4335,10 @@ CREATE POLICY "Public contacts access" ON public.contacts
 
 DROP POLICY IF EXISTS "Public transactions access" ON public.transactions;
 CREATE POLICY "Public transactions access" ON public.transactions
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public cashbook access" ON public.cashbook_entries;
+CREATE POLICY "Public cashbook access" ON public.cashbook_entries
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 `;
 
@@ -5220,6 +5362,1057 @@ CREATE POLICY "Public transactions access" ON public.transactions
     );
   };
 
+  // ==========================================
+  // CASHBOOK / SALES & EXPENSES MODULE
+  // ==========================================
+  const filteredCashbookEntries = useMemo(() => {
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+    const dayOfWeek = now.getDay();
+    const diffToMonday = (dayOfWeek + 6) % 7;
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - diffToMonday);
+    weekStart.setHours(0, 0, 0, 0);
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    return cashbookEntries.filter(entry => {
+      if (cashbookTypeFilter !== 'ALL' && entry.type !== cashbookTypeFilter) return false;
+      if (cashbookCategoryFilter !== 'ALL' && entry.category !== cashbookCategoryFilter) return false;
+
+      if (cashbookSearch.trim()) {
+        const q = cashbookSearch.toLowerCase();
+        const matchesCat = entry.category?.toLowerCase().includes(q);
+        const matchesDesc = entry.description?.toLowerCase().includes(q);
+        const matchesParty = entry.contactName?.toLowerCase().includes(q);
+        const matchesRef = entry.referenceNo?.toLowerCase().includes(q);
+        const matchesAmt = entry.amount.toString().includes(q);
+        if (!matchesCat && !matchesDesc && !matchesParty && !matchesRef && !matchesAmt) return false;
+      }
+
+      const entryD = normalizeToLocalMidnight(entry.date);
+      if (cashbookDateFilter === 'TODAY') {
+        return entry.date === todayStr;
+      } else if (cashbookDateFilter === 'YESTERDAY') {
+        return entry.date === yesterdayStr;
+      } else if (cashbookDateFilter === 'THIS_WEEK') {
+        return entryD >= weekStart;
+      } else if (cashbookDateFilter === 'THIS_MONTH') {
+        return entryD >= monthStart;
+      } else if (cashbookDateFilter === 'CUSTOM') {
+        const start = normalizeToLocalMidnight(cashbookCustomStart);
+        const end = normalizeToLocalMidnight(cashbookCustomEnd);
+        end.setHours(23, 59, 59, 999);
+        return entryD >= start && entryD <= end;
+      }
+      return true;
+    }).sort((a, b) => {
+      const timeA = new Date(a.date).getTime();
+      const timeB = new Date(b.date).getTime();
+      if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeB - timeA;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
+  }, [cashbookEntries, cashbookTypeFilter, cashbookCategoryFilter, cashbookSearch, cashbookDateFilter, cashbookCustomStart, cashbookCustomEnd]);
+
+  const cashbookTotals = useMemo(() => {
+    let totalSales = 0;
+    let totalExpenses = 0;
+    let cashSales = 0;
+    let cashExpenses = 0;
+    let bankSales = 0;
+    let bankExpenses = 0;
+    let chequeSales = 0;
+    let chequeExpenses = 0;
+
+    filteredCashbookEntries.forEach(e => {
+      if (e.type === 'SALE') {
+        totalSales += e.amount;
+        if (e.paymentMethod === 'Cash') cashSales += e.amount;
+        else if (e.paymentMethod === 'Bank Transfer') bankSales += e.amount;
+        else if (e.paymentMethod === 'Cheque') chequeSales += e.amount;
+      } else {
+        totalExpenses += e.amount;
+        if (e.paymentMethod === 'Cash') cashExpenses += e.amount;
+        else if (e.paymentMethod === 'Bank Transfer') bankExpenses += e.amount;
+        else if (e.paymentMethod === 'Cheque') chequeExpenses += e.amount;
+      }
+    });
+
+    const netBalance = totalSales - totalExpenses;
+    return {
+      totalSales,
+      totalExpenses,
+      netBalance,
+      cashInHand: cashSales - cashExpenses,
+      bankBalance: bankSales - bankExpenses,
+      chequeBalance: chequeSales - chequeExpenses
+    };
+  }, [filteredCashbookEntries]);
+
+  const existingCategories = useMemo(() => {
+    const set = new Set<string>();
+    cashbookEntries.forEach(e => {
+      if (e.category) set.add(e.category);
+    });
+    return Array.from(set);
+  }, [cashbookEntries]);
+
+  const groupedCashbookEntries = useMemo(() => {
+    const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number; dayExpenses: number }> = [];
+    const dateMap: Record<string, CashbookEntry[]> = {};
+    
+    filteredCashbookEntries.forEach(e => {
+      if (!dateMap[e.date]) dateMap[e.date] = [];
+      dateMap[e.date].push(e);
+    });
+
+    Object.keys(dateMap).sort((a, b) => new Date(b).getTime() - new Date(a).getTime()).forEach(date => {
+      const items = dateMap[date];
+      const daySales = items.filter(i => i.type === 'SALE').reduce((s, i) => s + i.amount, 0);
+      const dayExpenses = items.filter(i => i.type === 'EXPENSE').reduce((s, i) => s + i.amount, 0);
+      groups.push({ date, entries: items, daySales, dayExpenses });
+    });
+
+    return groups;
+  }, [filteredCashbookEntries]);
+
+  const handleOpenCashbookModal = (type: CashbookEntryType = 'SALE', entryToEdit: CashbookEntry | null = null) => {
+    if (entryToEdit) {
+      if (!userCanEdit) {
+        alert("Access Denied: You do not have permission to edit records.");
+        return;
+      }
+      setEditingCashbookEntry(entryToEdit);
+      setCashbookType(entryToEdit.type);
+      setCashbookAmount(entryToEdit.amount.toString());
+      setCashbookDate(entryToEdit.date || new Date().toISOString().slice(0, 10));
+      setCashbookCategory(entryToEdit.category);
+      setCashbookCustomCategory('');
+      setCashbookDesc(entryToEdit.description || '');
+      setCashbookPaymentMethod(entryToEdit.paymentMethod || 'Cash');
+      setCashbookRefNo(entryToEdit.referenceNo || '');
+      setCashbookContactName(entryToEdit.contactName || '');
+    } else {
+      setEditingCashbookEntry(null);
+      setCashbookType(type);
+      setCashbookAmount('');
+      setCashbookDate(new Date().toISOString().slice(0, 10));
+      setCashbookCategory(type === 'SALE' ? SALE_CATEGORIES[0] : EXPENSE_CATEGORIES[0]);
+      setCashbookCustomCategory('');
+      setCashbookDesc('');
+      setCashbookPaymentMethod('Cash');
+      setCashbookRefNo('');
+      setCashbookContactName('');
+    }
+    setIsCashbookModalOpen(true);
+  };
+
+  const handleSaveCashbookEntry = async () => {
+    const amountVal = parseFloat(cashbookAmount);
+    if (!amountVal || isNaN(amountVal) || amountVal <= 0) {
+      alert("Please enter a valid amount greater than 0");
+      return;
+    }
+    const finalCategory = (cashbookCategory === 'Other' && cashbookCustomCategory.trim())
+      ? cashbookCustomCategory.trim()
+      : (cashbookCategory || 'General').trim();
+
+    setIsSubmitting(true);
+    try {
+      const entryPayload = {
+        type: cashbookType,
+        amount: amountVal,
+        date: cashbookDate || new Date().toISOString().slice(0, 10),
+        category: finalCategory,
+        description: cashbookDesc.trim(),
+        payment_method: cashbookPaymentMethod,
+        reference_no: cashbookRefNo.trim(),
+        contact_name: cashbookContactName.trim()
+      };
+
+      if (editingCashbookEntry) {
+        try {
+          await supabase.from('cashbook_entries').update(entryPayload).eq('id', editingCashbookEntry.id);
+        } catch (e) {
+          console.warn('Supabase cashbook update fallback:', e);
+        }
+        const updatedEntries = cashbookEntries.map(e => e.id === editingCashbookEntry.id ? {
+          ...e,
+          type: cashbookType,
+          amount: amountVal,
+          date: entryPayload.date,
+          category: finalCategory,
+          description: entryPayload.description,
+          paymentMethod: cashbookPaymentMethod,
+          referenceNo: entryPayload.reference_no,
+          contactName: entryPayload.contact_name
+        } : e);
+        setCashbookEntries(updatedEntries);
+        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+        showProfileToast(`${cashbookType === 'SALE' ? 'Sale' : 'Expense'} updated successfully!`);
+      } else {
+        const newId = generateUUID();
+        const newEntry: CashbookEntry = {
+          id: newId,
+          type: cashbookType,
+          amount: amountVal,
+          date: entryPayload.date,
+          category: finalCategory,
+          description: entryPayload.description,
+          paymentMethod: cashbookPaymentMethod,
+          referenceNo: entryPayload.reference_no,
+          contactName: entryPayload.contact_name,
+          createdAt: new Date().toISOString()
+        };
+
+        try {
+          await supabase.from('cashbook_entries').insert([{ id: newId, ...entryPayload }]);
+        } catch (e) {
+          console.warn('Supabase cashbook insert fallback:', e);
+        }
+        const updatedEntries = [newEntry, ...cashbookEntries];
+        setCashbookEntries(updatedEntries);
+        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+        showProfileToast(`New ${cashbookType === 'SALE' ? 'Sale (+)' : 'Expense (-)'} recorded!`);
+      }
+      setIsCashbookModalOpen(false);
+      setEditingCashbookEntry(null);
+    } catch (err: any) {
+      alert("Error saving entry: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteCashbookEntry = async (id: string) => {
+    if (!userCanDelete) {
+      alert("Access Denied: You do not have permission to delete data. Only authorized users can delete records.");
+      return;
+    }
+    const entry = cashbookEntries.find(e => e.id === id);
+    if (!window.confirm(`Delete this ${entry?.type === 'SALE' ? 'Sale' : 'Expense'} entry of LKR ${entry?.amount.toLocaleString()}?`)) return;
+    setIsSubmitting(true);
+    try {
+      try {
+        await supabase.from('cashbook_entries').delete().eq('id', id);
+      } catch (e) {
+        console.warn('Supabase cashbook delete fallback:', e);
+      }
+      const updatedEntries = cashbookEntries.filter(e => e.id !== id);
+      setCashbookEntries(updatedEntries);
+      try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+      showProfileToast('Entry deleted successfully');
+    } catch (err: any) {
+      alert("Failed to delete entry: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const generateCashbookPDF = () => {
+    try {
+      const doc = new jsPDF();
+      const timestamp = new Date().toLocaleString();
+      
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text(shopName, 14, 20);
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(shopTagline, 14, 26);
+      if (shopPhone || shopAddress) {
+        doc.text(`${shopPhone} • ${shopAddress}`, 14, 31);
+      }
+      
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Sales & Expense Daybook Statement', 14, 40);
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Period Filter: ${cashbookDateFilter} | Date: ${cashbookDateFilter === 'CUSTOM' ? `${cashbookCustomStart} to ${cashbookCustomEnd}` : 'Standard Period'} | Generated: ${timestamp}`, 14, 46);
+
+      // Summary KPIs Box
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(14, 50, 182, 22, 2, 2, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(14, 50, 182, 22, 2, 2, 'D');
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(21, 128, 61);
+      doc.text(`TOTAL SALES: LKR ${cashbookTotals.totalSales.toLocaleString()}`, 20, 62);
+
+      doc.setTextColor(185, 28, 28);
+      doc.text(`TOTAL EXPENSES: LKR ${cashbookTotals.totalExpenses.toLocaleString()}`, 82, 62);
+
+      doc.setTextColor(cashbookTotals.netBalance >= 0 ? 21 : 185, cashbookTotals.netBalance >= 0 ? 128 : 28, cashbookTotals.netBalance >= 0 ? 61 : 28);
+      doc.text(`NET CASH FLOW: LKR ${cashbookTotals.netBalance.toLocaleString()}`, 142, 62);
+
+      doc.setTextColor(30, 41, 59);
+
+      const rows = filteredCashbookEntries.map(e => [
+        e.date,
+        e.type === 'SALE' ? 'SALE (+)' : 'EXPENSE (-)',
+        e.category,
+        e.description || e.contactName || '-',
+        e.paymentMethod,
+        e.referenceNo || '-',
+        e.type === 'SALE' ? `+ LKR ${e.amount.toLocaleString()}` : `- LKR ${e.amount.toLocaleString()}`
+      ]);
+
+      autoTable(doc, {
+        startY: 78,
+        head: [['Date', 'Type', 'Category', 'Description / Party', 'Payment Mode', 'Ref / Cheque #', 'Amount']],
+        body: rows.length > 0 ? rows : [['-', '-', 'No entries found for this period', '-', '-', '-', '0']],
+        theme: 'striped',
+        headStyles: { fillColor: [30, 41, 59], fontStyle: 'bold' },
+        foot: [[
+          'Total Summary', 
+          `${filteredCashbookEntries.filter(e => e.type === 'SALE').length} Sales | ${filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} Exp`,
+          '-',
+          '-',
+          '-',
+          'Net Balance',
+          `LKR ${cashbookTotals.netBalance.toLocaleString()}`
+        ]],
+        footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold' },
+        styles: { fontSize: 8.5, cellPadding: 3 },
+        columnStyles: {
+          6: { halign: 'right', fontStyle: 'bold' }
+        }
+      });
+
+      doc.save(`${shopName.replace(/[^a-z0-9]/gi, '_')}_sales_expense_${new Date().toISOString().slice(0, 10)}.pdf`);
+      showProfileToast('Sales & Expense PDF Report downloaded!');
+    } catch (err) {
+      console.error(err);
+      alert("Failed to export PDF report");
+    }
+  };
+
+  const renderCashBook = () => {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col pb-28 no-scrollbar">
+        {/* Top Header */}
+        <header className="bg-white px-4 py-3 shadow-xs border-b border-slate-200/80 sticky top-0 z-20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => navigateTo('DASHBOARD')}
+                className="p-1.5 -ml-1 text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 transition-colors"
+                title="Back to Dashboard"
+              >
+                <ChevronLeft size={22} />
+              </button>
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold shadow-sm">
+                  <Wallet size={18} />
+                </div>
+                <div>
+                  <h1 className="text-lg font-black text-slate-800 leading-tight">Sales & Expense</h1>
+                  <p className="text-[11px] text-slate-500 font-semibold">{shopName} • Daybook</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={generateCashbookPDF}
+                className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-all shadow-xs active:scale-95 flex items-center gap-1.5 text-xs font-bold"
+                title="Download PDF Statement"
+              >
+                <Download size={15} />
+                <span className="hidden sm:inline">PDF Report</span>
+              </button>
+
+              <button
+                onClick={() => handleOpenCashbookModal('SALE')}
+                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1 text-xs font-bold"
+              >
+                <Plus size={15} />
+                <span>Add Sale</span>
+              </button>
+
+              <button
+                onClick={() => handleOpenCashbookModal('EXPENSE')}
+                className="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1 text-xs font-bold"
+              >
+                <Minus size={15} />
+                <span>Add Expense</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Date Period Filter Chips */}
+          <div className="flex items-center gap-1.5 mt-3 overflow-x-auto no-scrollbar pb-1">
+            {[
+              { id: 'TODAY', label: 'Today' },
+              { id: 'YESTERDAY', label: 'Yesterday' },
+              { id: 'THIS_WEEK', label: 'This Week' },
+              { id: 'THIS_MONTH', label: 'This Month' },
+              { id: 'ALL', label: 'All Time' },
+              { id: 'CUSTOM', label: 'Custom Range' },
+            ].map(filter => (
+              <button
+                key={filter.id}
+                onClick={() => setCashbookDateFilter(filter.id as any)}
+                className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all shrink-0 border ${
+                  cashbookDateFilter === filter.id
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                    : 'bg-slate-100 text-slate-600 border-slate-200/80 hover:bg-slate-200'
+                }`}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom Date Pickers (if CUSTOM is selected) */}
+          {cashbookDateFilter === 'CUSTOM' && (
+            <div className="mt-2.5 p-3 bg-blue-50/80 border border-blue-200/90 rounded-2xl flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
+              <div className="flex items-center gap-2 flex-1 min-w-[140px]">
+                <span className="font-bold text-blue-900 uppercase text-[10px]">From:</span>
+                <input
+                  type="date"
+                  value={cashbookCustomStart}
+                  onChange={e => setCashbookCustomStart(e.target.value)}
+                  className="bg-white border border-blue-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 outline-none w-full"
+                />
+              </div>
+              <div className="flex items-center gap-2 flex-1 min-w-[140px]">
+                <span className="font-bold text-blue-900 uppercase text-[10px]">To:</span>
+                <input
+                  type="date"
+                  value={cashbookCustomEnd}
+                  onChange={e => setCashbookCustomEnd(e.target.value)}
+                  className="bg-white border border-blue-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 outline-none w-full"
+                />
+              </div>
+            </div>
+          )}
+        </header>
+
+        {/* Content Body */}
+        <div className="p-4 max-w-4xl mx-auto w-full space-y-4">
+          {/* Top KPI Cards (Sales, Expense, Net) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Total Sales Card */}
+            <div className="bg-white rounded-2xl p-4 border border-emerald-100 shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Sales (Cash In)</span>
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <TrendingUp size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-emerald-600">
+                  + LKR {cashbookTotals.totalSales.toLocaleString()}
+                </h3>
+                <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                  {filteredCashbookEntries.filter(e => e.type === 'SALE').length} sales recorded
+                </p>
+              </div>
+            </div>
+
+            {/* Total Expenses Card */}
+            <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Expenses (Cash Out)</span>
+                <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                  <TrendingDown size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-rose-600">
+                  - LKR {cashbookTotals.totalExpenses.toLocaleString()}
+                </h3>
+                <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                  {filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} expenses recorded
+                </p>
+              </div>
+            </div>
+
+            {/* Net Balance / Cash In Hand */}
+            <div className={`rounded-2xl p-4 border shadow-xs flex flex-col justify-between ${
+              cashbookTotals.netBalance >= 0 
+                ? 'bg-gradient-to-br from-emerald-600 to-teal-700 text-white border-emerald-500' 
+                : 'bg-gradient-to-br from-rose-600 to-red-700 text-white border-rose-500'
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-white/80 uppercase tracking-wider">Net Cash Flow (Profit)</span>
+                <div className="w-8 h-8 rounded-xl bg-white/20 text-white flex items-center justify-center">
+                  <Wallet size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-white">
+                  {cashbookTotals.netBalance >= 0 ? '+' : ''}LKR {cashbookTotals.netBalance.toLocaleString()}
+                </h3>
+                <div className="flex items-center gap-2 text-[10px] text-white/85 font-semibold mt-0.5">
+                  <span>Cash: LKR {cashbookTotals.cashInHand.toLocaleString()}</span>
+                  <span>•</span>
+                  <span>Bank: LKR {cashbookTotals.bankBalance.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="bg-slate-100 rounded-xl px-3 py-2 flex items-center flex-1 border border-transparent focus-within:border-blue-400 focus-within:bg-white transition-all">
+                <Search size={16} className="text-slate-400 mr-2 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Search by category, party, ref #, or notes..."
+                  value={cashbookSearch}
+                  onChange={e => setCashbookSearch(e.target.value)}
+                  className="bg-transparent outline-none text-xs w-full text-slate-800 placeholder:text-slate-400 font-medium"
+                />
+                {cashbookSearch && (
+                  <button onClick={() => setCashbookSearch('')} className="text-slate-400 hover:text-slate-600 p-0.5">
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* Category Filter Selector */}
+              <div className="shrink-0">
+                <select
+                  value={cashbookCategoryFilter}
+                  onChange={e => setCashbookCategoryFilter(e.target.value)}
+                  className="bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-2.5 py-2 outline-none focus:border-blue-500"
+                >
+                  <option value="ALL">All Categories</option>
+                  {existingCategories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Type Filter Buttons */}
+            <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+              <button
+                onClick={() => setCashbookTypeFilter('ALL')}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                  cashbookTypeFilter === 'ALL'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                All Entries ({filteredCashbookEntries.length})
+              </button>
+
+              <button
+                onClick={() => setCashbookTypeFilter('SALE')}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1 ${
+                  cashbookTypeFilter === 'SALE'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : 'bg-white text-emerald-700 border-slate-200 hover:bg-emerald-50'
+                }`}
+              >
+                <ArrowUpRight size={13} />
+                <span>Sales ({cashbookEntries.filter(e => e.type === 'SALE').length})</span>
+              </button>
+
+              <button
+                onClick={() => setCashbookTypeFilter('EXPENSE')}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1 ${
+                  cashbookTypeFilter === 'EXPENSE'
+                    ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                    : 'bg-white text-rose-700 border-slate-200 hover:bg-rose-50'
+                }`}
+              >
+                <ArrowDownRight size={13} />
+                <span>Expenses ({cashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Grouped Entries List */}
+          {groupedCashbookEntries.length === 0 ? (
+            <div className="bg-white rounded-3xl p-8 border border-slate-200/90 text-center space-y-4 shadow-xs">
+              <div className="w-16 h-16 rounded-3xl bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
+                <Wallet size={32} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-800">No Sales or Expenses Recorded</h3>
+                <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
+                  Start logging your daily sales, repair charges, accessories income, rent, and store expenses.
+                </p>
+              </div>
+              <div className="flex items-center justify-center gap-3 pt-2">
+                <button
+                  onClick={() => handleOpenCashbookModal('SALE')}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center gap-1.5"
+                >
+                  <Plus size={15} /> Add First Sale
+                </button>
+                <button
+                  onClick={() => handleOpenCashbookModal('EXPENSE')}
+                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center gap-1.5"
+                >
+                  <Minus size={15} /> Add First Expense
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {groupedCashbookEntries.map(group => (
+                <div key={group.date} className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+                  {/* Group Header */}
+                  <div className="bg-slate-50/90 px-4 py-2.5 border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Calendar size={14} className="text-slate-500" />
+                      <span className="font-extrabold text-xs text-slate-800">
+                        {formatDisplayDate(group.date)}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-semibold">
+                        ({group.entries.length} transaction{group.entries.length > 1 ? 's' : ''})
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[11px] font-bold">
+                      {group.daySales > 0 && (
+                        <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60">
+                          + LKR {group.daySales.toLocaleString()}
+                        </span>
+                      )}
+                      {group.dayExpenses > 0 && (
+                        <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200/60">
+                          - LKR {group.dayExpenses.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Group Items */}
+                  <div className="divide-y divide-slate-100">
+                    {group.entries.map(entry => {
+                      const isSale = entry.type === 'SALE';
+                      return (
+                        <div
+                          key={entry.id}
+                          className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 transition-colors group"
+                        >
+                          {/* Left: Type Icon & Details */}
+                          <div className="flex items-center gap-3 overflow-hidden">
+                            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 shadow-xs ${
+                              isSale ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                            }`}>
+                              {isSale ? <ArrowUpRight size={20} className="stroke-[2.5]" /> : <ArrowDownRight size={20} className="stroke-[2.5]" />}
+                            </div>
+
+                            <div className="overflow-hidden">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider ${
+                                  isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                                }`}>
+                                  {entry.category}
+                                </span>
+
+                                {/* Payment Method Badge */}
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
+                                  entry.paymentMethod === 'Bank Transfer'
+                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                    : entry.paymentMethod === 'Card'
+                                    ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                    : entry.paymentMethod === 'Cheque'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                                }`}>
+                                  {entry.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
+                                   entry.paymentMethod === 'Card' ? <CreditCard size={10} /> :
+                                   entry.paymentMethod === 'Cheque' ? <Landmark size={10} /> :
+                                   <Banknote size={10} />}
+                                  {entry.paymentMethod}
+                                </span>
+
+                                {entry.referenceNo && (
+                                  <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                    #{entry.referenceNo}
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="font-bold text-xs text-slate-900 mt-1 truncate">
+                                {entry.description || entry.contactName || (isSale ? 'General Sale' : 'Store Expense')}
+                              </p>
+
+                              {entry.contactName && entry.description && (
+                                <p className="text-[10px] text-slate-400 truncate">Party: {entry.contactName}</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Right: Amount & Actions */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`font-black text-sm sm:text-base ${
+                              isSale ? 'text-emerald-700' : 'text-rose-700'
+                            }`}>
+                              {isSale ? '+ ' : '- '}LKR {entry.amount.toLocaleString()}
+                            </span>
+
+                            <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleOpenCashbookModal(entry.type, entry)}
+                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                title="Edit Entry"
+                              >
+                                <Pencil size={14} />
+                              </button>
+
+                              {userCanDelete && (
+                                <button
+                                  onClick={() => handleDeleteCashbookEntry(entry.id)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Delete Entry"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Floating Quick Action Buttons on Mobile */}
+        <div className="fixed bottom-16 left-0 right-0 p-3 bg-gradient-to-t from-white via-white/90 to-transparent pointer-events-none z-10 flex justify-center">
+          <div className="flex items-center gap-2 pointer-events-auto max-w-sm w-full">
+            <button
+              onClick={() => handleOpenCashbookModal('SALE')}
+              className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
+            >
+              <Plus size={16} />
+              <span>+ Add Sale</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenCashbookModal('EXPENSE')}
+              className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
+            >
+              <Minus size={16} />
+              <span>- Add Expense</span>
+            </button>
+          </div>
+        </div>
+
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
+      </div>
+    );
+  };
+
+  const renderCashbookModal = () => {
+    if (!isCashbookModalOpen) return null;
+
+    const categoriesList = cashbookType === 'SALE' ? SALE_CATEGORIES : EXPENSE_CATEGORIES;
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[92vh]">
+          {/* Modal Header */}
+          <div className={`p-4 text-white flex justify-between items-center shrink-0 ${
+            cashbookType === 'SALE' ? 'bg-emerald-700' : 'bg-rose-700'
+          }`}>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
+                {cashbookType === 'SALE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base">
+                  {editingCashbookEntry ? `Edit ${cashbookType === 'SALE' ? 'Sale' : 'Expense'}` : (cashbookType === 'SALE' ? 'Record Sale (Cash In)' : 'Record Expense (Cash Out)')}
+                </h3>
+                <p className="text-[11px] text-white/80">Ledger Book Daybook</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsCashbookModalOpen(false)}
+              className="p-1.5 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Modal Form */}
+          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+            {/* Type Selector Toggle (Sale vs Expense) */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setCashbookType('SALE');
+                  setCashbookCategory(SALE_CATEGORIES[0]);
+                }}
+                className={`py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all ${
+                  cashbookType === 'SALE'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <ArrowUpRight size={15} />
+                <span>Sale (Income)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCashbookType('EXPENSE');
+                  setCashbookCategory(EXPENSE_CATEGORIES[0]);
+                }}
+                className={`py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all ${
+                  cashbookType === 'EXPENSE'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <ArrowDownRight size={15} />
+                <span>Expense (Spend)</span>
+              </button>
+            </div>
+
+            {/* Amount Input */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                Amount (LKR) *
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-base">
+                  LKR
+                </span>
+                <input
+                  type="number"
+                  step="any"
+                  autoFocus
+                  value={cashbookAmount}
+                  onChange={e => setCashbookAmount(e.target.value)}
+                  placeholder="0.00"
+                  className={`w-full pl-14 pr-4 py-3 bg-slate-50 border-2 rounded-2xl text-2xl font-black outline-none transition-all ${
+                    cashbookType === 'SALE'
+                      ? 'border-emerald-200 focus:border-emerald-600 text-emerald-700 bg-emerald-50/30'
+                      : 'border-rose-200 focus:border-rose-600 text-rose-700 bg-rose-50/30'
+                  }`}
+                />
+              </div>
+            </div>
+
+            {/* Date Selection */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <span>Date</span>
+                <span className="text-slate-800 font-bold">{formatDisplayDate(cashbookDate)}</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCashbookDate(new Date().toISOString().slice(0, 10))}
+                  className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                    cashbookDate === new Date().toISOString().slice(0, 10)
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const d = new Date();
+                    d.setDate(d.getDate() - 1);
+                    setCashbookDate(d.toISOString().slice(0, 10));
+                  }}
+                  className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                    cashbookDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  Yesterday
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cashbookDateInputRef.current?.showPicker()}
+                  className="flex-1 py-1.5 rounded-xl text-xs font-bold bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 flex items-center justify-center gap-1 transition-all"
+                >
+                  <Calendar size={13} />
+                  <span>Pick Date</span>
+                </button>
+              </div>
+              <input
+                ref={cashbookDateInputRef}
+                type="date"
+                value={cashbookDate}
+                onChange={e => setCashbookDate(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none"
+              />
+            </div>
+
+            {/* Category Presets & Custom Input */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                Category
+              </label>
+              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 rounded-2xl border border-slate-200/80">
+                {categoriesList.map(cat => {
+                  const isSelected = cashbookCategory === cat;
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setCashbookCategory(cat)}
+                      className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                        isSelected
+                          ? (cashbookType === 'SALE' ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs' : 'bg-rose-600 text-white border-rose-600 shadow-xs')
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setCashbookCategory('Other')}
+                  className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                    cashbookCategory === 'Other'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  + Custom / Other
+                </button>
+              </div>
+
+              {cashbookCategory === 'Other' && (
+                <div className="mt-2 animate-in fade-in duration-150">
+                  <input
+                    type="text"
+                    value={cashbookCustomCategory}
+                    onChange={e => setCashbookCustomCategory(e.target.value)}
+                    placeholder="Type custom category name..."
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Payment Method Selector */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                Payment Method
+              </label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: 'Cash', icon: Banknote },
+                  { id: 'Bank Transfer', icon: Building2 },
+                  { id: 'Card', icon: CreditCard },
+                  { id: 'Cheque', icon: Landmark },
+                ].map(({ id, icon: Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setCashbookPaymentMethod(id as PaymentMethod)}
+                    className={`py-2 px-1 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 active:scale-95 ${
+                      cashbookPaymentMethod === id
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon size={14} />
+                    <span className="text-[10px] font-bold leading-none truncate w-full">{id}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Reference No / Cheque No / Bill No */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                  {cashbookPaymentMethod === 'Cheque' ? 'Cheque #' : 'Receipt / Ref #'}
+                </label>
+                <input
+                  type="text"
+                  value={cashbookRefNo}
+                  onChange={e => setCashbookRefNo(e.target.value)}
+                  placeholder="e.g. INV-1049"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                  Party / Person (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={cashbookContactName}
+                  onChange={e => setCashbookContactName(e.target.value)}
+                  placeholder="e.g. Kasun / Supplier"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </div>
+            </div>
+
+            {/* Description / Notes */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                Description / Notes (Optional)
+              </label>
+              <textarea
+                rows={2}
+                value={cashbookDesc}
+                onChange={e => setCashbookDesc(e.target.value)}
+                placeholder="Details of the sale or expense..."
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500 focus:bg-white resize-none"
+              />
+            </div>
+          </div>
+
+          {/* Modal Footer Actions */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 flex gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsCashbookModalOpen(false)}
+              className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting || !cashbookAmount || parseFloat(cashbookAmount) <= 0}
+              onClick={handleSaveCashbookEntry}
+              className={`flex-1 py-3 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 ${
+                cashbookType === 'SALE' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'
+              }`}
+            >
+              {isSubmitting ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <>
+                  <Check size={16} />
+                  <span>{editingCashbookEntry ? 'Update Entry' : (cashbookType === 'SALE' ? 'Save Sale' : 'Save Expense')}</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // If not authenticated, require PIN login
   if (!isAuthenticated) {
     return renderLoginScreen();
@@ -5231,6 +6424,7 @@ CREATE POLICY "Public transactions access" ON public.transactions
   else if (currentView === 'TRANSACTION_FORM') content = renderTransactionForm();
   else if (currentView === 'CONTACT_FORM') content = renderContactForm();
   else if (currentView === 'PROFILE') content = renderProfile();
+  else if (currentView === 'CASH_BOOK') content = renderCashBook();
   else content = <div className="min-h-screen flex items-center justify-center bg-white"><Loader2 className="animate-spin text-slate-200" size={40} /></div>;
 
   return (
@@ -5241,6 +6435,7 @@ CREATE POLICY "Public transactions access" ON public.transactions
       {renderUserModal()}
       {renderPinModal()}
       {renderSqlModal()}
+      {renderCashbookModal()}
     </>
   );
 }

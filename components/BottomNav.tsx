@@ -40,7 +40,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, a
         className={`flex flex-col items-center gap-1 transition-colors ${isCashBook ? activeColorClass : 'text-gray-400'}`}
       >
         <Wallet size={20} />
-        <span className="text-[10px] font-medium">Cash Book</span>
+        <span className="text-[10px] font-medium">Sales & Expense</span>
       </button>
       
       <button className="flex flex-col items-center text-gray-400 gap-1 opacity-50">
