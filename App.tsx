@@ -185,11 +185,11 @@ export default function App() {
   const [dismissDbAlert, setDismissDbAlert] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   
-  const [shopName, setShopName] = useState(() => localStorage.getItem('st_shop_name') || 'Smart Time');
-  const [shopTagline, setShopTagline] = useState(() => localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
-  const [shopPhone, setShopPhone] = useState(() => localStorage.getItem('st_shop_phone') || '+94 77 123 4567');
-  const [shopAddress, setShopAddress] = useState(() => localStorage.getItem('st_shop_address') || 'Main Street, Colombo');
-  const [shopLogo, setShopLogo] = useState<string | null>(() => localStorage.getItem('st_shop_logo') || null);
+  const [shopName, setShopName] = useState<string>('');
+  const [shopTagline, setShopTagline] = useState<string>('Mobile Phone Repair & Service');
+  const [shopPhone, setShopPhone] = useState<string>('');
+  const [shopAddress, setShopAddress] = useState<string>('');
+  const [shopLogo, setShopLogo] = useState<string | null>(null);
 
   const [users, setUsers] = useState<AppUser[]>(() => {
     const saved = localStorage.getItem('st_app_users');
@@ -337,6 +337,11 @@ export default function App() {
       setAuthSession(null);
       setAuthUser(null);
       setUserProfile(null);
+      setShopName('');
+      setShopPhone('');
+      setShopAddress('');
+      setShopLogo(null);
+      setShopTagline('Mobile Phone Repair & Service');
       setContacts([]);
       setTransactions([]);
       setCashbookEntries([]);
@@ -1670,11 +1675,11 @@ export default function App() {
           const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
           if (mounted) {
             setUserProfile(prof);
-            if (prof.shopName) setShopName(prof.shopName);
-            if (prof.tagline) setShopTagline(prof.tagline);
-            if (prof.phone) setShopPhone(prof.phone);
-            if (prof.address) setShopAddress(prof.address);
-            if (prof.logoUrl) setShopLogo(prof.logoUrl);
+            setShopName(prof?.shopName || '');
+            setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
+            setShopPhone(prof?.phone || '');
+            setShopAddress(prof?.address || '');
+            setShopLogo(prof?.logoUrl || null);
           }
 
           await fetchData(session.user.id);
@@ -1702,16 +1707,21 @@ export default function App() {
         const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
         if (mounted) {
           setUserProfile(prof);
-          if (prof.shopName) setShopName(prof.shopName);
-          if (prof.tagline) setShopTagline(prof.tagline);
-          if (prof.phone) setShopPhone(prof.phone);
-          if (prof.address) setShopAddress(prof.address);
-          if (prof.logoUrl) setShopLogo(prof.logoUrl);
+          setShopName(prof?.shopName || '');
+          setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
+          setShopPhone(prof?.phone || '');
+          setShopAddress(prof?.address || '');
+          setShopLogo(prof?.logoUrl || null);
         }
 
         await fetchData(session.user.id);
       } else {
         setUserProfile(null);
+        setShopName('');
+        setShopPhone('');
+        setShopAddress('');
+        setShopLogo(null);
+        setShopTagline('Mobile Phone Repair & Service');
         setContacts([]);
         setTransactions([]);
         setCashbookEntries([]);
@@ -6672,11 +6682,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           setAuthUser(user);
           if (profile) {
             setUserProfile(profile);
-            if (profile.shopName) setShopName(profile.shopName);
-            if (profile.phone) setShopPhone(profile.phone);
-            if (profile.address) setShopAddress(profile.address);
-            if (profile.tagline) setShopTagline(profile.tagline);
-            if (profile.logoUrl) setShopLogo(profile.logoUrl);
+            setShopName(profile.shopName || '');
+            setShopPhone(profile.phone || '');
+            setShopAddress(profile.address || '');
+            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
+            setShopLogo(profile.logoUrl || null);
           }
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -6696,11 +6706,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           setAuthUser(user);
           if (profile) {
             setUserProfile(profile);
-            if (profile.shopName) setShopName(profile.shopName);
-            if (profile.phone) setShopPhone(profile.phone);
-            if (profile.address) setShopAddress(profile.address);
-            if (profile.tagline) setShopTagline(profile.tagline);
-            if (profile.logoUrl) setShopLogo(profile.logoUrl);
+            setShopName(profile.shopName || '');
+            setShopPhone(profile.phone || '');
+            setShopAddress(profile.address || '');
+            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
+            setShopLogo(profile.logoUrl || null);
           }
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -6719,11 +6729,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         initialFullName={authUser.user_metadata?.full_name || ''}
         onSetupComplete={async (newProfile) => {
           setUserProfile(newProfile);
-          if (newProfile.shopName) setShopName(newProfile.shopName);
-          if (newProfile.phone) setShopPhone(newProfile.phone);
-          if (newProfile.address) setShopAddress(newProfile.address);
-          if (newProfile.tagline) setShopTagline(newProfile.tagline);
-          if (newProfile.logoUrl) setShopLogo(newProfile.logoUrl);
+          setShopName(newProfile.shopName || '');
+          setShopPhone(newProfile.phone || '');
+          setShopAddress(newProfile.address || '');
+          setShopTagline(newProfile.tagline || 'Mobile Phone Repair & Service');
+          setShopLogo(newProfile.logoUrl || null);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
           await fetchData(authUser.id);

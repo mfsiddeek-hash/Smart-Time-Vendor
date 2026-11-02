@@ -37,7 +37,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
 
     if (pData) {
       const sName = pData.shop_name || '';
-      const isCompleted = Boolean(pData.setup_completed) || Boolean(sName.trim().length > 0);
+      const isCompleted = Boolean(pData.setup_completed) && Boolean(sName.trim().length > 0);
       prof = {
         id: pData.id,
         fullName: pData.full_name || userMetadata?.full_name || 'Shop Owner',
@@ -53,7 +53,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
     console.warn('Supabase profile fetch warning:', pErr);
   }
 
-  // 2. Fallback to localStorage user-scoped profile
+  // 2. Fallback to user-scoped localStorage profile
   if (!prof || !prof.setupCompleted) {
     try {
       const localSaved = typeof window !== 'undefined' ? localStorage.getItem(`st_shop_profile_${userId}`) : null;
@@ -61,8 +61,8 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
         const parsed = JSON.parse(localSaved);
         if (parsed) {
           const sName = parsed.shop_name || parsed.shopName || '';
-          const isCompleted = Boolean(parsed.setup_completed || parsed.setupCompleted || sName.trim().length > 0);
-          if (isCompleted || sName.trim().length > 0) {
+          const isCompleted = Boolean(parsed.setup_completed || parsed.setupCompleted) && Boolean(sName.trim().length > 0);
+          if (isCompleted) {
             prof = {
               id: userId,
               fullName: parsed.full_name || parsed.fullName || userMetadata?.full_name || 'Shop Owner',
@@ -71,7 +71,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
               phone: parsed.phone || '',
               address: parsed.address || '',
               logoUrl: parsed.logo_url || parsed.logoUrl || null,
-              setupCompleted: isCompleted
+              setupCompleted: true
             };
           }
         }
@@ -81,24 +81,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
     }
   }
 
-  // 3. Fallback to general shop localStorage keys (for single-shop or existing local installations)
-  if (!prof || !prof.setupCompleted) {
-    const savedShopName = typeof window !== 'undefined' ? localStorage.getItem('st_shop_name') : null;
-    if (savedShopName && savedShopName.trim().length > 0) {
-      prof = {
-        id: userId,
-        fullName: userMetadata?.full_name || 'Shop Owner',
-        shopName: savedShopName.trim(),
-        tagline: (typeof window !== 'undefined' && localStorage.getItem('st_shop_tagline')) || 'Mobile Phone Repair & Service',
-        phone: (typeof window !== 'undefined' && localStorage.getItem('st_shop_phone')) || '',
-        address: (typeof window !== 'undefined' && localStorage.getItem('st_shop_address')) || '',
-        logoUrl: (typeof window !== 'undefined' && localStorage.getItem('st_shop_logo')) || null,
-        setupCompleted: true
-      };
-    }
-  }
-
-  // 4. Default uncompleted profile if no shop details exist anywhere
+  // 3. If no user-specific profile is found, return clean uncompleted profile (blank shop name, phone, address, logo)
   if (!prof) {
     prof = {
       id: userId,
