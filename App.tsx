@@ -12,10 +12,12 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType } from './types';
+import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow, parsePaymentMethod, isPendingCheque } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL } from './supabaseClient';
+import { AuthScreen, AuthMode } from './components/AuthScreen';
+import { ShopSetupScreen } from './components/ShopSetupScreen';
 
 export const DEFAULT_COLLECTED_ITEMS = [
   'SIM Card',
@@ -119,6 +121,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Supabase Auth & User Profile State
+  const [authSession, setAuthSession] = useState<any>(null);
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   
   const [contacts, setContacts] = useState<Contact[]>(() => {
     try {
@@ -309,13 +317,34 @@ export default function App() {
   }, [currentUser]);
 
   const handleLogout = () => {
-    if (window.confirm("Are you sure you want to log out of your session?")) {
+    if (window.confirm("Are you sure you want to lock your current screen session?")) {
       setIsAuthenticated(false);
       sessionStorage.removeItem('st_auth_active');
       setLoginPin('');
       setLoginError('');
       setCurrentView('DASHBOARD');
-      showProfileToast("You have been logged out.");
+      showProfileToast("Screen session locked.");
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (window.confirm("Are you sure you want to sign out of your shop account?")) {
+      try {
+        await supabase.auth.signOut();
+      } catch (err) {
+        console.warn('Sign out warning:', err);
+      }
+      setAuthSession(null);
+      setAuthUser(null);
+      setUserProfile(null);
+      setContacts([]);
+      setTransactions([]);
+      setCashbookEntries([]);
+      setIsAuthenticated(false);
+      sessionStorage.removeItem('st_auth_active');
+      setCurrentView('DASHBOARD');
+      setSelectedContact(null);
+      showProfileToast("You have been signed out.");
     }
   };
 
@@ -1495,14 +1524,19 @@ export default function App() {
     setCurrentView(view);
   };
 
-  const fetchData = async () => {
+  const fetchData = async (targetUserId?: string) => {
+    const activeUid = targetUserId || authUser?.id;
+    if (!activeUid) {
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     setDbStatus('checking');
     try {
       const [contactsRes, transRes, cashbookRes] = await Promise.all([
-        supabase.from('contacts').select('*'),
-        supabase.from('transactions').select('*').order('date', { ascending: false }),
-        supabase.from('cashbook_entries').select('*').order('date', { ascending: false })
+        supabase.from('contacts').select('*').eq('user_id', activeUid),
+        supabase.from('transactions').select('*').eq('user_id', activeUid).order('date', { ascending: false }),
+        supabase.from('cashbook_entries').select('*').eq('user_id', activeUid).order('date', { ascending: false })
       ]);
 
       if (contactsRes.error) {
@@ -1547,6 +1581,7 @@ export default function App() {
           }
           return {
             id: c.id, 
+            userId: c.user_id,
             name: c.name, 
             phone: c.phone || '', 
             type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
@@ -1564,21 +1599,34 @@ export default function App() {
           };
         });
         setContacts(mappedContacts);
-        try { localStorage.setItem('st_cached_contacts', JSON.stringify(mappedContacts)); } catch {}
+        try { 
+          localStorage.setItem(`st_cached_contacts_${activeUid}`, JSON.stringify(mappedContacts));
+          localStorage.setItem('st_cached_contacts', JSON.stringify(mappedContacts)); 
+        } catch {}
       }
 
       if (transRes.data) {
         const mappedTx = transRes.data.map((t: any) => ({
-          id: t.id, contactId: t.contact_id, date: t.date, description: t.description,
-          amount: t.amount, type: t.type, balanceAfter: t.balance_after
+          id: t.id, 
+          userId: t.user_id,
+          contactId: t.contact_id, 
+          date: t.date, 
+          description: t.description,
+          amount: t.amount, 
+          type: t.type, 
+          balanceAfter: t.balance_after
         }));
         setTransactions(mappedTx);
-        try { localStorage.setItem('st_cached_transactions', JSON.stringify(mappedTx)); } catch {}
+        try { 
+          localStorage.setItem(`st_cached_transactions_${activeUid}`, JSON.stringify(mappedTx));
+          localStorage.setItem('st_cached_transactions', JSON.stringify(mappedTx)); 
+        } catch {}
       }
 
       if (cashbookRes.data) {
         const mappedCb: CashbookEntry[] = cashbookRes.data.map((c: any) => ({
           id: c.id,
+          userId: c.user_id,
           type: (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE') as CashbookEntryType,
           amount: Number(c.amount) || 0,
           date: c.date,
@@ -1590,7 +1638,10 @@ export default function App() {
           createdAt: c.created_at
         }));
         setCashbookEntries(mappedCb);
-        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(mappedCb)); } catch {}
+        try { 
+          localStorage.setItem(`st_cashbook_entries_${activeUid}`, JSON.stringify(mappedCb));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(mappedCb)); 
+        } catch {}
       }
     } catch (err: any) { 
       console.error(err); 
@@ -1600,7 +1651,118 @@ export default function App() {
     }
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    let mounted = true;
+
+    const initAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setAuthSession(session);
+        setAuthUser(session?.user || null);
+
+        if (session?.user) {
+          if (session.user.email_confirmed_at) {
+            setIsAuthenticated(true);
+            sessionStorage.setItem('st_auth_active', 'true');
+          }
+
+          try {
+            const { data: pData } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', session.user.id)
+              .maybeSingle();
+
+            if (mounted && pData) {
+              const prof: UserProfile = {
+                id: pData.id,
+                fullName: pData.full_name || '',
+                shopName: pData.shop_name || '',
+                tagline: pData.tagline || 'Mobile Phone Repair & Service',
+                phone: pData.phone || '',
+                address: pData.address || '',
+                logoUrl: pData.logo_url || null,
+                setupCompleted: Boolean(pData.setup_completed)
+              };
+              setUserProfile(prof);
+              if (prof.shopName) setShopName(prof.shopName);
+              if (prof.tagline) setShopTagline(prof.tagline);
+              if (prof.phone) setShopPhone(prof.phone);
+              if (prof.address) setShopAddress(prof.address);
+              if (prof.logoUrl) setShopLogo(prof.logoUrl);
+            }
+          } catch (pe) {
+            console.warn('Profile fetch error:', pe);
+          }
+
+          await fetchData(session.user.id);
+        }
+      } catch (err) {
+        console.warn('Auth check error:', err);
+      } finally {
+        if (mounted) setIsAuthLoading(false);
+      }
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return;
+      setAuthSession(session);
+      setAuthUser(session?.user || null);
+
+      if (session?.user) {
+        if (session.user.email_confirmed_at) {
+          setIsAuthenticated(true);
+          sessionStorage.setItem('st_auth_active', 'true');
+        }
+
+        try {
+          const { data: pData } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle();
+
+          if (mounted && pData) {
+            const prof: UserProfile = {
+              id: pData.id,
+              fullName: pData.full_name || '',
+              shopName: pData.shop_name || '',
+              tagline: pData.tagline || 'Mobile Phone Repair & Service',
+              phone: pData.phone || '',
+              address: pData.address || '',
+              logoUrl: pData.logo_url || null,
+              setupCompleted: Boolean(pData.setup_completed)
+            };
+            setUserProfile(prof);
+            if (prof.shopName) setShopName(prof.shopName);
+            if (prof.tagline) setShopTagline(prof.tagline);
+            if (prof.phone) setShopPhone(prof.phone);
+            if (prof.address) setShopAddress(prof.address);
+            if (prof.logoUrl) setShopLogo(prof.logoUrl);
+          }
+        } catch (pe) {
+          console.warn('Profile sync error:', pe);
+        }
+
+        await fetchData(session.user.id);
+      } else {
+        setUserProfile(null);
+        setContacts([]);
+        setTransactions([]);
+        setCashbookEntries([]);
+        setIsAuthenticated(false);
+        sessionStorage.removeItem('st_auth_active');
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const handleBack = () => { window.history.back(); };
 
@@ -1615,6 +1777,7 @@ export default function App() {
       const effectiveAdvDate = addAdvanceDate || new Date().toISOString().slice(0, 10);
 
       const payload: any = { 
+        user_id: authUser?.id,
         name: addName.trim(), 
         phone: addPhone.trim(),
         type: isService ? 'SERVICE' : activeTab, 
@@ -1634,7 +1797,9 @@ export default function App() {
       let res;
       let contactId = editingContact?.id;
       if (editingContact) {
-        res = await supabase.from('contacts').update(payload).eq('id', editingContact.id).select();
+        let q = supabase.from('contacts').update(payload).eq('id', editingContact.id);
+        if (authUser?.id) q = q.eq('user_id', authUser.id);
+        res = await q.select();
       } else {
         const newId = generateUUID();
         contactId = newId;
@@ -1646,7 +1811,8 @@ export default function App() {
           setDbStatus('needs_tables');
           const fallbackContact: Contact = {
             id: contactId || generateUUID(),
-            name: addName.trim(),
+            userId: authUser?.id,
+            name: addName.trim(), 
             phone: addPhone.trim(),
             type: isService ? 'SERVICE' : activeTab,
             balance: 0,
@@ -1667,10 +1833,12 @@ export default function App() {
             setContacts(prev => [...prev, fallbackContact]);
           }
           try {
-            const currentCache = JSON.parse(localStorage.getItem('st_cached_contacts') || '[]');
+            const cacheKey = authUser?.id ? `st_cached_contacts_${authUser.id}` : 'st_cached_contacts';
+            const currentCache = JSON.parse(localStorage.getItem(cacheKey) || '[]');
             const nextCache = editingContact 
               ? currentCache.map((c: any) => c.id === editingContact.id ? fallbackContact : c)
               : [...currentCache, fallbackContact];
+            localStorage.setItem(cacheKey, JSON.stringify(nextCache));
             localStorage.setItem('st_cached_contacts', JSON.stringify(nextCache));
           } catch {}
           showProfileToast("Saved locally! Run Supabase SQL setup to sync to cloud.", "error");
@@ -1696,6 +1864,7 @@ export default function App() {
         const savedData = res.data[0];
         const updatedContact: Contact = {
           id: savedData.id,
+          userId: savedData.user_id,
           name: savedData.name,
           phone: savedData.phone || '',
           type: savedData.type === 'SUPPLIER' ? 'VENDOR' : savedData.type,
@@ -1718,6 +1887,7 @@ export default function App() {
 
           if (costVal && costVal > 0) {
             const costTx = {
+              user_id: authUser?.id,
               contact_id: contactId,
               date: effectiveOrderDate,
               amount: costVal,
@@ -1729,6 +1899,7 @@ export default function App() {
             if (costRes.data?.[0]) {
               newTxList.push({
                 id: costRes.data[0].id,
+                userId: costRes.data[0].user_id,
                 contactId: costRes.data[0].contact_id,
                 date: costRes.data[0].date,
                 description: costRes.data[0].description,
@@ -1742,6 +1913,7 @@ export default function App() {
           if (advanceVal && advanceVal > 0) {
             const balAfter = Math.max(0, (costVal || 0) - advanceVal);
             const advTx = {
+              user_id: authUser?.id,
               contact_id: contactId,
               date: effectiveAdvDate,
               amount: advanceVal,
@@ -1753,6 +1925,7 @@ export default function App() {
             if (advRes.data?.[0]) {
               newTxList.push({
                 id: advRes.data[0].id,
+                userId: advRes.data[0].user_id,
                 contactId: advRes.data[0].contact_id,
                 date: advRes.data[0].date,
                 description: advRes.data[0].description,
@@ -1776,6 +1949,7 @@ export default function App() {
             }
           } else if (costVal && costVal > 0) {
             const costTx = {
+              user_id: authUser?.id,
               contact_id: editingContact.id,
               date: effectiveOrderDate,
               amount: costVal,
@@ -1787,6 +1961,7 @@ export default function App() {
             if (cRes.data?.[0]) {
               setTransactions(prev => [{
                 id: cRes.data[0].id,
+                userId: cRes.data[0].user_id,
                 contactId: cRes.data[0].contact_id,
                 date: cRes.data[0].date,
                 description: cRes.data[0].description,
@@ -1808,6 +1983,7 @@ export default function App() {
             }
           } else if (advanceVal && advanceVal > 0) {
             const advTx = {
+              user_id: authUser?.id,
               contact_id: editingContact.id,
               date: effectiveAdvDate,
               amount: advanceVal,
@@ -1819,6 +1995,7 @@ export default function App() {
             if (aRes.data?.[0]) {
               setTransactions(prev => [{
                 id: aRes.data[0].id,
+                userId: aRes.data[0].user_id,
                 contactId: aRes.data[0].contact_id,
                 date: aRes.data[0].date,
                 description: aRes.data[0].description,
@@ -1865,8 +2042,14 @@ export default function App() {
     if (!window.confirm(`Delete this ${itemLabel} entirely? All transactions will be lost.`)) return;
     setIsSubmitting(true);
     try {
-      await supabase.from('transactions').delete().eq('contact_id', id);
-      await supabase.from('contacts').delete().eq('id', id);
+      let tq = supabase.from('transactions').delete().eq('contact_id', id);
+      let cq = supabase.from('contacts').delete().eq('id', id);
+      if (authUser?.id) {
+        tq = tq.eq('user_id', authUser.id);
+        cq = cq.eq('user_id', authUser.id);
+      }
+      await tq;
+      await cq;
       setContacts(prev => prev.filter(c => c.id !== id));
       setTransactions(prev => prev.filter(t => t.contactId !== id));
       if (selectedContact?.id === id) {
@@ -1887,7 +2070,9 @@ export default function App() {
     if (!window.confirm("Target achieved! Clear savings for this cycle and start fresh?")) return;
     setIsSubmitting(true);
     try {
-      await supabase.from('transactions').delete().eq('contact_id', id);
+      let tq = supabase.from('transactions').delete().eq('contact_id', id);
+      if (authUser?.id) tq = tq.eq('user_id', authUser.id);
+      await tq;
       setTransactions(transactions.filter(t => t.contactId !== id));
       alert("New cycle started!");
     } catch (err: any) { alert(err.message); }
@@ -1903,7 +2088,9 @@ export default function App() {
     if (!window.confirm("Delete this record?")) return;
     setIsSubmitting(true);
     try {
-      const { error } = await supabase.from('transactions').delete().eq('id', editingTransaction.id);
+      let q = supabase.from('transactions').delete().eq('id', editingTransaction.id);
+      if (authUser?.id) q = q.eq('user_id', authUser.id);
+      const { error } = await q;
       if (error) throw error;
       const newTransactions = transactions.filter(t => t.id !== editingTransaction.id);
       setTransactions(newTransactions);
@@ -1932,6 +2119,7 @@ export default function App() {
       }
 
       const txPayload = { 
+        user_id: authUser?.id,
         contact_id: selectedContact.id, 
         date: transDate, 
         amount: amountVal, 
@@ -1941,7 +2129,9 @@ export default function App() {
       };
       let res;
       if (editingTransaction) { 
-        res = await supabase.from('transactions').update(txPayload).eq('id', editingTransaction.id).select(); 
+        let q = supabase.from('transactions').update(txPayload).eq('id', editingTransaction.id);
+        if (authUser?.id) q = q.eq('user_id', authUser.id);
+        res = await q.select(); 
       } else { 
         res = await supabase.from('transactions').insert([txPayload]).select(); 
       }
@@ -2149,12 +2339,12 @@ export default function App() {
                  <span className="hidden sm:inline max-w-[80px] truncate">{currentUser.name.split(' ')[0]}</span>
                </button>
                <button 
-                 onClick={handleLogout}
+                 onClick={handleSignOut}
                  className="flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-red-200 transition-colors shadow-sm active:scale-95"
-                 title="Log Out of Session"
+                 title="Sign Out of Shop Account"
                >
                  <LogOut size={14} />
-                 <span className="hidden sm:inline">Logout</span>
+                 <span className="hidden sm:inline">Sign Out</span>
                </button>
                <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={20} /></button>
             </div>
@@ -3720,7 +3910,7 @@ export default function App() {
     showProfileToast('Store logo removed');
   };
 
-  const handleSaveStoreProfile = () => {
+  const handleSaveStoreProfile = async () => {
     if (!shopName.trim()) {
       showProfileToast('Store name cannot be empty', 'error');
       return;
@@ -3731,6 +3921,26 @@ export default function App() {
     localStorage.setItem('st_shop_address', shopAddress.trim());
     if (shopLogo) {
       localStorage.setItem('st_shop_logo', shopLogo);
+    }
+
+    if (authUser) {
+      try {
+        const payload = {
+          id: authUser.id,
+          full_name: userProfile?.fullName || authUser.user_metadata?.full_name || 'Shop Owner',
+          shop_name: shopName.trim(),
+          tagline: shopTagline.trim(),
+          phone: shopPhone.trim(),
+          address: shopAddress.trim(),
+          logo_url: shopLogo,
+          setup_completed: true,
+          updated_at: new Date().toISOString()
+        };
+        await supabase.from('profiles').upsert(payload);
+        setUserProfile(prev => prev ? { ...prev, ...payload, setupCompleted: true } : { ...payload, setupCompleted: true });
+      } catch (err) {
+        console.warn('Profile sync to Supabase warning:', err);
+      }
     }
     showProfileToast('Store profile details saved successfully!');
   };
@@ -4273,14 +4483,31 @@ export default function App() {
 
   const renderSqlModal = () => {
     if (!isSqlModalOpen) return null;
-    const sqlScript = `-- =========================================================
--- SQL Schema for Ledger Book (actfubmcannmqvbsmmgv)
--- Run this in your Supabase Project -> SQL Editor
--- =========================================================
+    const sqlScript = `-- ==============================================================================
+-- SUPABASE DATABASE MIGRATION & RLS SCHEMA FOR "LEDGER BOOK"
+-- Project ID: actfubmcannmqvbsmmgv
+-- Project URL: https://actfubmcannmqvbsmmgv.supabase.co
+-- Run this in your Supabase Dashboard -> SQL Editor
+-- ==============================================================================
 
--- 1. Create Contacts Table (Customers, Vendors, Rent, Service Orders)
+-- 1. Create Profiles Table (Shop Profile & First-Time Setup State)
+CREATE TABLE IF NOT EXISTS public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    full_name TEXT NOT NULL DEFAULT '',
+    shop_name TEXT NOT NULL DEFAULT '',
+    tagline TEXT DEFAULT 'Mobile Phone Repair & Service',
+    phone TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    logo_url TEXT,
+    setup_completed BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Create Contacts Table with Multi-Tenant user_id
 CREATE TABLE IF NOT EXISTS public.contacts (
     id TEXT PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     name TEXT NOT NULL,
     phone TEXT,
     type TEXT NOT NULL,
@@ -4291,9 +4518,10 @@ CREATE TABLE IF NOT EXISTS public.contacts (
     last_updated TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Create Transactions Table (Credit Charges, Payments, Receipts)
+-- 3. Create Transactions Table with Multi-Tenant user_id
 CREATE TABLE IF NOT EXISTS public.transactions (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     contact_id TEXT NOT NULL REFERENCES public.contacts(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
@@ -4303,9 +4531,10 @@ CREATE TABLE IF NOT EXISTS public.transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Create Cashbook Entries Table (Sales & Expenses / Daybook)
+-- 4. Create Cashbook Entries Table with Multi-Tenant user_id
 CREATE TABLE IF NOT EXISTS public.cashbook_entries (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     type TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
     date TEXT NOT NULL,
@@ -4317,29 +4546,37 @@ CREATE TABLE IF NOT EXISTS public.cashbook_entries (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Create Indexes for High Performance
-CREATE INDEX IF NOT EXISTS idx_contacts_type ON public.contacts(type);
-CREATE INDEX IF NOT EXISTS idx_transactions_contact_id ON public.transactions(contact_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(date);
-CREATE INDEX IF NOT EXISTS idx_cashbook_date ON public.cashbook_entries(date);
-CREATE INDEX IF NOT EXISTS idx_cashbook_type ON public.cashbook_entries(type);
+-- 5. Create Performance Indexes
+CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON public.contacts(user_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON public.transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_cashbook_user_id ON public.cashbook_entries(user_id);
 
--- 5. Enable Row Level Security (RLS) and Allow Access with Anon Key
+-- 6. Enable Row Level Security (RLS) on All Tables
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cashbook_entries ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Public contacts access" ON public.contacts;
-CREATE POLICY "Public contacts access" ON public.contacts
-    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+-- 7. Strict Multi-Tenant Policies (auth.uid() = user_id)
+DROP POLICY IF EXISTS "Users can manage own profile" ON public.profiles;
+CREATE POLICY "Users can manage own profile" ON public.profiles
+    FOR ALL TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 
-DROP POLICY IF EXISTS "Public transactions access" ON public.transactions;
-CREATE POLICY "Public transactions access" ON public.transactions
-    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can manage own contacts" ON public.contacts;
+CREATE POLICY "Users can manage own contacts" ON public.contacts
+    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Public cashbook access" ON public.cashbook_entries;
-CREATE POLICY "Public cashbook access" ON public.cashbook_entries
-    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can manage own transactions" ON public.transactions;
+CREATE POLICY "Users can manage own transactions" ON public.transactions
+    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can manage own cashbook" ON public.cashbook_entries;
+CREATE POLICY "Users can manage own cashbook" ON public.cashbook_entries
+    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 8. Storage Bucket for Shop Logos
+INSERT INTO storage.buckets (id, name, public) VALUES ('shop-logos', 'shop-logos', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
 `;
 
     return (
@@ -4520,14 +4757,14 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
                 </div>
               )}
 
-              {/* Log Out Button */}
+              {/* Sign Out Button */}
               <button
-                onClick={handleLogout}
+                onClick={handleSignOut}
                 className="bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-white border border-red-500/40 text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors active:scale-95 shadow-sm"
-                title="Log Out of Session"
+                title="Sign Out of Shop Account"
               >
                 <LogOut size={13} />
-                <span className="hidden sm:inline">Log Out</span>
+                <span className="hidden sm:inline">Sign Out</span>
               </button>
             </div>
           </div>
@@ -5064,29 +5301,49 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
         )}
 
         {/* Active Session & Log Out Section */}
-        <div className="p-4 sm:p-5 max-w-xl mx-auto w-full pt-1">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
-            <div className="flex items-center justify-between">
+        <div className="p-4 sm:p-5 max-w-xl mx-auto w-full pt-1 space-y-3">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold">
-                  <UserCheck size={20} className="text-blue-600" />
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center font-bold">
+                  <ShieldCheck size={22} className="text-blue-600" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-sm text-slate-800">{currentUser.name}</h4>
-                  <p className="text-xs text-slate-400 font-medium">@{currentUser.username} • {currentUser.role}</p>
+                  <h4 className="font-bold text-sm text-slate-900">{userProfile?.fullName || authUser?.user_metadata?.full_name || 'Shop Owner'}</h4>
+                  <p className="text-xs text-slate-500 font-medium truncate max-w-[200px]">{authUser?.email}</p>
                 </div>
+              </div>
+              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                <CheckCircle2 size={11} /> Verified Account
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-xs py-1">
+              <div className="flex items-center gap-2 text-slate-500 font-medium">
+                <UserCheck size={14} className="text-slate-400" />
+                <span>Active Role: <strong className="text-slate-700">{currentUser.name} ({currentUser.role})</strong></span>
               </div>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${userCanDelete ? 'bg-red-50 text-red-700 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                 {userCanDelete ? 'Delete: Allowed' : 'Delete: Blocked'}
               </span>
             </div>
 
-            <button
-              onClick={handleLogout}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
-            >
-              <LogOut size={16} /> Log Out of Account
-            </button>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                onClick={handleLogout}
+                className="py-3 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl active:scale-95 transition-all flex items-center justify-center gap-1.5 text-xs border border-slate-200"
+                title="Lock current screen session"
+              >
+                <Lock size={14} /> Lock PIN Session
+              </button>
+              <button
+                onClick={handleSignOut}
+                className="py-3 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 text-xs"
+                title="Sign out of Supabase Shop account"
+              >
+                <LogOut size={14} /> Sign Out
+              </button>
+            </div>
           </div>
         </div>
 
@@ -5522,7 +5779,8 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
 
     setIsSubmitting(true);
     try {
-      const entryPayload = {
+      const entryPayload: any = {
+        user_id: authUser?.id,
         type: cashbookType,
         amount: amountVal,
         date: cashbookDate || new Date().toISOString().slice(0, 10),
@@ -5535,7 +5793,9 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
 
       if (editingCashbookEntry) {
         try {
-          await supabase.from('cashbook_entries').update(entryPayload).eq('id', editingCashbookEntry.id);
+          let q = supabase.from('cashbook_entries').update(entryPayload).eq('id', editingCashbookEntry.id);
+          if (authUser?.id) q = q.eq('user_id', authUser.id);
+          await q;
         } catch (e) {
           console.warn('Supabase cashbook update fallback:', e);
         }
@@ -5551,12 +5811,17 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
           contactName: entryPayload.contact_name
         } : e);
         setCashbookEntries(updatedEntries);
-        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+        try { 
+          const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+          localStorage.setItem(cacheKey, JSON.stringify(updatedEntries));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); 
+        } catch {}
         showProfileToast(`${cashbookType === 'SALE' ? 'Sale' : 'Expense'} updated successfully!`);
       } else {
         const newId = generateUUID();
         const newEntry: CashbookEntry = {
           id: newId,
+          userId: authUser?.id,
           type: cashbookType,
           amount: amountVal,
           date: entryPayload.date,
@@ -5575,7 +5840,11 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
         }
         const updatedEntries = [newEntry, ...cashbookEntries];
         setCashbookEntries(updatedEntries);
-        try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+        try { 
+          const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+          localStorage.setItem(cacheKey, JSON.stringify(updatedEntries));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); 
+        } catch {}
         showProfileToast(`New ${cashbookType === 'SALE' ? 'Sale (+)' : 'Expense (-)'} recorded!`);
       }
       setIsCashbookModalOpen(false);
@@ -5597,13 +5866,19 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
     setIsSubmitting(true);
     try {
       try {
-        await supabase.from('cashbook_entries').delete().eq('id', id);
+        let q = supabase.from('cashbook_entries').delete().eq('id', id);
+        if (authUser?.id) q = q.eq('user_id', authUser.id);
+        await q;
       } catch (e) {
         console.warn('Supabase cashbook delete fallback:', e);
       }
       const updatedEntries = cashbookEntries.filter(e => e.id !== id);
       setCashbookEntries(updatedEntries);
-      try { localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); } catch {}
+      try { 
+        const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+        localStorage.setItem(cacheKey, JSON.stringify(updatedEntries));
+        localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); 
+      } catch {}
       showProfileToast('Entry deleted successfully');
     } catch (err: any) {
       alert("Failed to delete entry: " + err.message);
@@ -6413,7 +6688,89 @@ CREATE POLICY "Public cashbook access" ON public.cashbook_entries
     );
   };
 
-  // If not authenticated, require PIN login
+  // 1. Initial Session Loading from Supabase
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4">
+        <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white mb-4 shadow-xl shadow-blue-500/20">
+          <Store size={32} />
+        </div>
+        <Loader2 className="animate-spin text-blue-400 mb-3" size={32} />
+        <h2 className="text-base font-bold text-white">Ledger Book</h2>
+        <p className="text-xs font-semibold text-slate-400 mt-1">Checking secure session...</p>
+      </div>
+    );
+  }
+
+  // 2. User is not signed in
+  if (!authUser) {
+    return (
+      <AuthScreen
+        onAuthSuccess={async (user, profile) => {
+          setAuthUser(user);
+          if (profile) {
+            setUserProfile(profile);
+            if (profile.shopName) setShopName(profile.shopName);
+            if (profile.phone) setShopPhone(profile.phone);
+            if (profile.address) setShopAddress(profile.address);
+            if (profile.tagline) setShopTagline(profile.tagline);
+            if (profile.logoUrl) setShopLogo(profile.logoUrl);
+          }
+          setIsAuthenticated(true);
+          sessionStorage.setItem('st_auth_active', 'true');
+          await fetchData(user.id);
+        }}
+      />
+    );
+  }
+
+  // 3. User is signed in, but their email is unverified
+  if (!authUser.email_confirmed_at && (authUser as any).confirmed_at === null) {
+    return (
+      <AuthScreen
+        initialMode="VERIFY_EMAIL"
+        initialEmail={authUser.email || ''}
+        onAuthSuccess={async (user, profile) => {
+          setAuthUser(user);
+          if (profile) {
+            setUserProfile(profile);
+            if (profile.shopName) setShopName(profile.shopName);
+            if (profile.phone) setShopPhone(profile.phone);
+            if (profile.address) setShopAddress(profile.address);
+            if (profile.tagline) setShopTagline(profile.tagline);
+            if (profile.logoUrl) setShopLogo(profile.logoUrl);
+          }
+          setIsAuthenticated(true);
+          sessionStorage.setItem('st_auth_active', 'true');
+          await fetchData(user.id);
+        }}
+      />
+    );
+  }
+
+  // 4. User is verified, but first-time shop setup form is required
+  if (!userProfile || !userProfile.setupCompleted) {
+    return (
+      <ShopSetupScreen
+        userId={authUser.id}
+        userEmail={authUser.email || ''}
+        initialFullName={authUser.user_metadata?.full_name || ''}
+        onSetupComplete={async (newProfile) => {
+          setUserProfile(newProfile);
+          if (newProfile.shopName) setShopName(newProfile.shopName);
+          if (newProfile.phone) setShopPhone(newProfile.phone);
+          if (newProfile.address) setShopAddress(newProfile.address);
+          if (newProfile.tagline) setShopTagline(newProfile.tagline);
+          if (newProfile.logoUrl) setShopLogo(newProfile.logoUrl);
+          setIsAuthenticated(true);
+          sessionStorage.setItem('st_auth_active', 'true');
+          await fetchData(authUser.id);
+        }}
+      />
+    );
+  }
+
+  // 5. If local PIN lock is triggered for cashier/staff inside shop session
   if (!isAuthenticated) {
     return renderLoginScreen();
   }

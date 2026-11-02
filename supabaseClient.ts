@@ -15,4 +15,11 @@ const activeKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
   (import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY || 
   SUPABASE_PUBLISHABLE_KEY;
 
-export const supabase = createClient(activeUrl, activeKey);
+export const supabase = createClient(activeUrl, activeKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+  },
+});

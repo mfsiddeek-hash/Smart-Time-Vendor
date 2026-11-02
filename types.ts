@@ -2,6 +2,7 @@ export type ContactType = 'CUSTOMER' | 'VENDOR' | 'RENT' | 'SERVICE';
 
 export interface Contact {
   id: string;
+  userId?: string;
   name: string;
   phone: string;
   type: ContactType;
@@ -26,6 +27,7 @@ export type ChequeStatus = 'PENDING' | 'PASSED' | 'BOUNCED';
 
 export interface Transaction {
   id: string;
+  userId?: string;
   contactId: string;
   date: string; // ISO string or formatted string
   description?: string;
@@ -74,10 +76,24 @@ export interface StoreProfile {
   logoUrl?: string | null;
 }
 
+export interface UserProfile {
+  id: string;
+  fullName: string;
+  shopName: string;
+  tagline?: string;
+  phone: string;
+  address: string;
+  logoUrl?: string | null;
+  setupCompleted: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type CashbookEntryType = 'SALE' | 'EXPENSE';
 
 export interface CashbookEntry {
   id: string;
+  userId?: string;
   type: CashbookEntryType;
   amount: number;
   date: string;
