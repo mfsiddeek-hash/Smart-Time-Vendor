@@ -269,6 +269,12 @@ export default function App() {
   });
 
   const [profileTab, setProfileTab] = useState<'STORE' | 'USERS' | 'DATA'>('STORE');
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [targetOperatorId, setTargetOperatorId] = useState<string | null>(null);
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [adminPasswordError, setAdminPasswordError] = useState('');
+  const [isVerifyingAdmin, setIsVerifyingAdmin] = useState(false);
+
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
   const [userForm, setUserForm] = useState<{ 
@@ -4216,6 +4222,112 @@ export default function App() {
     );
   };
 
+  const renderPasswordModal = () => {
+    if (!isPasswordModalOpen) return null;
+    const targetUser = users.find(u => u.id === targetOperatorId);
+
+    const handleVerifyAndSwitch = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setAdminPasswordError('');
+      if (!adminPasswordInput) {
+        setAdminPasswordError('Please enter the Administrator password.');
+        return;
+      }
+
+      setIsVerifyingAdmin(true);
+      try {
+        // Try authenticating with Supabase using the admin email and provided password
+        const adminEmail = authUser?.email || '';
+        const { error } = await supabase.auth.signInWithPassword({
+          email: adminEmail,
+          password: adminPasswordInput
+        });
+
+        if (error) {
+          setAdminPasswordError('Incorrect administrator password. Please try again.');
+          setIsVerifyingAdmin(false);
+          return;
+        }
+
+        // Success! Switch operator
+        if (targetOperatorId) {
+          setCurrentUserId(targetOperatorId);
+          localStorage.setItem('st_current_user_id', targetOperatorId);
+          showProfileToast(`Successfully switched active operator to ${targetUser?.name || 'Admin'}`);
+        }
+        setIsPasswordModalOpen(false);
+        setAdminPasswordInput('');
+        setTargetOperatorId(null);
+      } catch (err: any) {
+        setAdminPasswordError(err.message || 'Verification failed.');
+      } finally {
+        setIsVerifyingAdmin(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white w-full max-w-sm rounded-3xl overflow-hidden shadow-2xl border border-slate-200">
+          <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-purple-600 flex items-center justify-center text-white">
+                <Lock size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm">Administrator Password Required</h3>
+                <p className="text-[11px] text-slate-400">Switching to: {targetUser?.name || 'Admin'}</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsPasswordModalOpen(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <form onSubmit={handleVerifyAndSwitch} className="p-6 space-y-4">
+            <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-800">
+              You are currently logged in as a staff member. Please enter the Shop Owner / Admin password to switch to <strong>{targetUser?.name}</strong>.
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Admin Password</label>
+              <input 
+                type="password"
+                value={adminPasswordInput}
+                onChange={e => setAdminPasswordInput(e.target.value)}
+                placeholder="Enter admin password..."
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-all"
+                autoFocus
+              />
+              {adminPasswordError && (
+                <p className="text-xs font-bold text-rose-600 mt-1">{adminPasswordError}</p>
+              )}
+            </div>
+
+            <div className="pt-2 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsPasswordModalOpen(false)}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isVerifyingAdmin}
+                className="flex-1 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isVerifyingAdmin ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                <span>Verify & Switch</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
   const renderSqlModal = () => {
     if (!isSqlModalOpen) return null;
     const sqlScript = `-- ==============================================================================
@@ -4479,9 +4591,19 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         const nextUserId = e.target.value;
                         const nextUser = users.find(u => u.id === nextUserId);
                         if (nextUser) {
-                          setCurrentUserId(nextUser.id);
-                          localStorage.setItem('st_current_user_id', nextUser.id);
-                          showProfileToast(`Active operator switched to ${nextUser.name}`);
+                          const isTargetAdmin = nextUser.role === 'Admin' || nextUser.permissions?.canManageUsers;
+                          const isCurrentAdmin = currentUser.role === 'Admin' || currentUser.permissions?.canManageUsers;
+
+                          if (!isCurrentAdmin && isTargetAdmin) {
+                            setTargetOperatorId(nextUser.id);
+                            setAdminPasswordInput('');
+                            setAdminPasswordError('');
+                            setIsPasswordModalOpen(true);
+                          } else {
+                            setCurrentUserId(nextUser.id);
+                            localStorage.setItem('st_current_user_id', nextUser.id);
+                            showProfileToast(`Active operator switched to ${nextUser.name}`);
+                          }
                         }
                       }}
                       className="bg-transparent text-slate-200 text-xs font-bold outline-none cursor-pointer py-1"
@@ -4693,9 +4815,20 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                           {!isCurrent && (
                             <button
                               onClick={() => {
-                                setCurrentUserId(u.id);
-                                localStorage.setItem('st_current_user_id', u.id);
-                                showProfileToast(`Switched active operator to ${u.name}`);
+                                const targetUser = u;
+                                const isTargetAdmin = targetUser.role === 'Admin' || targetUser.permissions?.canManageUsers;
+                                const isCurrentAdmin = currentUser.role === 'Admin' || currentUser.permissions?.canManageUsers;
+
+                                if (!isCurrentAdmin && isTargetAdmin) {
+                                  setTargetOperatorId(targetUser.id);
+                                  setAdminPasswordInput('');
+                                  setAdminPasswordError('');
+                                  setIsPasswordModalOpen(true);
+                                } else {
+                                  setCurrentUserId(targetUser.id);
+                                  localStorage.setItem('st_current_user_id', targetUser.id);
+                                  showProfileToast(`Switched active operator to ${targetUser.name}`);
+                                }
                               }}
                               className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-95"
                             >
@@ -6123,6 +6256,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderReportModal()}
       {renderPreviewModal()}
       {renderUserModal()}
+      {renderPasswordModal()}
       {renderSqlModal()}
       {renderCashbookModal()}
     </>
