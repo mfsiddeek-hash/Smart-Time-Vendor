@@ -199,10 +199,9 @@ export default function App() {
         if (Array.isArray(parsed) && parsed.length > 0) {
           return parsed.map((u: any) => ({
             ...u,
-            pin: u.pin || (u.password && /^\d+$/.test(u.password) ? u.password : '1234'),
             permissions: u.permissions || {
               canDeleteData: u.role === 'Admin',
-              canEditData: true,
+              canEditData: u.role === 'Admin' || u.role === 'Manager',
               canManageUsers: u.role === 'Admin'
             }
           }));
@@ -212,12 +211,11 @@ export default function App() {
     return [
       {
         id: 'admin-1',
-        name: 'Super Admin',
-        username: 'admin',
+        name: 'Shop Owner (Admin)',
+        username: 'owner',
         role: 'Admin',
         status: 'Active',
-        phone: '+94 77 123 4567',
-        pin: '1234',
+        phone: '',
         permissions: {
           canDeleteData: true,
           canEditData: true,
@@ -227,12 +225,11 @@ export default function App() {
       },
       {
         id: 'cashier-1',
-        name: 'Front Cashier',
-        username: 'cashier',
+        name: 'Staff Member',
+        username: 'staff',
         role: 'Cashier',
         status: 'Active',
-        phone: '+94 77 987 6543',
-        pin: '2222',
+        phone: '',
         permissions: {
           canDeleteData: false,
           canEditData: true,
@@ -244,18 +241,12 @@ export default function App() {
   });
   const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
 
-  // Authentication & Login State: asks for PIN code every session / login
+  // Supabase Auth session controls primary access
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return sessionStorage.getItem('st_auth_active') === 'true';
   });
-  const [loginUserId, setLoginUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
-  const [loginPin, setLoginPin] = useState('');
-  const [showLoginPin, setShowLoginPin] = useState(false);
-  const [loginError, setLoginError] = useState('');
 
-  const [profileTab, setProfileTab] = useState<'STORE' | 'ADMIN' | 'USERS' | 'DATA'>('STORE');
-  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
-  const [pinForm, setPinForm] = useState({ currentPin: '', newPin: '', confirmPin: '', showPin: false });
+  const [profileTab, setProfileTab] = useState<'STORE' | 'USERS' | 'DATA'>('STORE');
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
   const [userForm, setUserForm] = useState<{ 
@@ -263,23 +254,19 @@ export default function App() {
     username: string; 
     role: UserRole; 
     phone: string; 
-    pin: string; 
     status: 'Active' | 'Inactive'; 
     canDeleteData: boolean;
     canEditData: boolean;
     canManageUsers: boolean;
-    showPin: boolean; 
   }>({
     name: '', 
     username: '', 
     role: 'Cashier', 
     phone: '', 
-    pin: '1234', 
     status: 'Active', 
     canDeleteData: false,
     canEditData: true,
-    canManageUsers: false,
-    showPin: false
+    canManageUsers: false
   });
   const [profileToast, setProfileToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
@@ -316,17 +303,6 @@ export default function App() {
     return currentUser?.role === 'Admin';
   }, [currentUser]);
 
-  const handleLogout = () => {
-    if (window.confirm("Are you sure you want to lock your current screen session?")) {
-      setIsAuthenticated(false);
-      sessionStorage.removeItem('st_auth_active');
-      setLoginPin('');
-      setLoginError('');
-      setCurrentView('DASHBOARD');
-      showProfileToast("Screen session locked.");
-    }
-  };
-
   const handleSignOut = async () => {
     if (window.confirm("Are you sure you want to sign out of your shop account?")) {
       try {
@@ -351,61 +327,6 @@ export default function App() {
       setSelectedContact(null);
       showProfileToast("You have been signed out.");
     }
-  };
-
-  const handleLogin = (e?: React.FormEvent, customPin?: string) => {
-    if (e) e.preventDefault();
-    setLoginError('');
-    const targetUser = users.find(u => u.id === loginUserId);
-    if (!targetUser) {
-      setLoginError('Selected user account not found.');
-      return;
-    }
-    if (targetUser.status === 'Inactive') {
-      setLoginError('This account is marked as Inactive. Please contact an Administrator.');
-      return;
-    }
-    const pinToVerify = (customPin !== undefined ? customPin : loginPin).trim();
-    if (!pinToVerify) {
-      setLoginError('Please enter your Security PIN.');
-      return;
-    }
-    const expectedPin = targetUser.pin || (targetUser.password && /^\d+$/.test(targetUser.password) ? targetUser.password : '1234');
-    if (pinToVerify !== expectedPin) {
-      setLoginError('Incorrect Security PIN. Please try again.');
-      setLoginPin('');
-      return;
-    }
-    setCurrentUserId(targetUser.id);
-    localStorage.setItem('st_current_user_id', targetUser.id);
-    setIsAuthenticated(true);
-    sessionStorage.setItem('st_auth_active', 'true');
-    setLoginPin('');
-    setLoginError('');
-    showProfileToast(`Welcome back, ${targetUser.name}!`);
-  };
-
-  const handleKeypadPress = (digit: string) => {
-    if (loginPin.length >= 6) return;
-    const nextPin = loginPin + digit;
-    setLoginPin(nextPin);
-    setLoginError('');
-    const targetUser = users.find(u => u.id === loginUserId);
-    const expectedPin = targetUser ? (targetUser.pin || (targetUser.password && /^\d+$/.test(targetUser.password) ? targetUser.password : '1234')) : '1234';
-    if (nextPin.length === expectedPin.length) {
-      // Auto submit when exact pin length is entered
-      handleLogin(undefined, nextPin);
-    }
-  };
-
-  const handleKeypadBackspace = () => {
-    setLoginPin(prev => prev.slice(0, -1));
-    setLoginError('');
-  };
-
-  const handleKeypadClear = () => {
-    setLoginPin('');
-    setLoginError('');
   };
 
   const showProfileToast = (text: string, type: 'success' | 'error' = 'success') => {
@@ -3917,34 +3838,6 @@ export default function App() {
     showProfileToast('Store profile details saved successfully!');
   };
 
-  const handleUpdateAdminPin = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!pinForm.newPin) {
-      showProfileToast('Please enter a new Security PIN', 'error');
-      return;
-    }
-    if (!/^\d{4,6}$/.test(pinForm.newPin)) {
-      showProfileToast('PIN must be 4 to 6 numeric digits (0-9)', 'error');
-      return;
-    }
-    if (pinForm.newPin !== pinForm.confirmPin) {
-      showProfileToast('New PINs do not match. Please verify.', 'error');
-      return;
-    }
-    const expectedCurrentPin = currentUser.pin || (currentUser.password && /^\d+$/.test(currentUser.password) ? currentUser.password : '1234');
-    if (expectedCurrentPin && pinForm.currentPin !== expectedCurrentPin) {
-      showProfileToast('Current Security PIN is incorrect!', 'error');
-      return;
-    }
-
-    const updatedUsers = users.map(u => u.id === currentUser.id ? { ...u, pin: pinForm.newPin } : u);
-    setUsers(updatedUsers);
-    localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
-    setPinForm({ currentPin: '', newPin: '', confirmPin: '', showPin: false });
-    setIsPinModalOpen(false);
-    showProfileToast('Security PIN updated successfully!');
-  };
-
   const handleOpenAddUser = () => {
     if (!userCanManageUsers) {
       showProfileToast('Access Denied: Administrator rights required to add team users.', 'error');
@@ -3956,12 +3849,10 @@ export default function App() {
       username: '',
       role: 'Cashier',
       phone: '',
-      pin: '1234',
       status: 'Active',
       canDeleteData: false,
       canEditData: true,
-      canManageUsers: false,
-      showPin: false
+      canManageUsers: false
     });
     setIsUserModalOpen(true);
   };
@@ -3977,12 +3868,10 @@ export default function App() {
       username: user.username,
       role: user.role,
       phone: user.phone || '',
-      pin: '',
       status: user.status,
       canDeleteData: user.permissions?.canDeleteData !== undefined ? user.permissions.canDeleteData : (user.role === 'Admin'),
       canEditData: user.permissions?.canEditData !== undefined ? user.permissions.canEditData : true,
-      canManageUsers: user.permissions?.canManageUsers !== undefined ? user.permissions.canManageUsers : (user.role === 'Admin'),
-      showPin: false
+      canManageUsers: user.permissions?.canManageUsers !== undefined ? user.permissions.canManageUsers : (user.role === 'Admin')
     });
     setIsUserModalOpen(true);
   };
@@ -3994,11 +3883,7 @@ export default function App() {
       return;
     }
     if (!userForm.username.trim()) {
-      showProfileToast('Please enter a username', 'error');
-      return;
-    }
-    if (userForm.pin && !/^\d{4,6}$/.test(userForm.pin)) {
-      showProfileToast('Security PIN must be 4 to 6 numeric digits (0-9)', 'error');
+      showProfileToast('Please enter a username or email', 'error');
       return;
     }
     const cleanUsername = userForm.username.trim().toLowerCase();
@@ -4024,8 +3909,7 @@ export default function App() {
             role: userForm.role,
             phone: userForm.phone.trim(),
             status: userForm.status,
-            permissions: assignedPermissions,
-            pin: userForm.pin ? userForm.pin : (u.pin || '1234')
+            permissions: assignedPermissions
           };
         }
         return u;
@@ -4042,13 +3926,12 @@ export default function App() {
         phone: userForm.phone.trim(),
         status: userForm.status,
         permissions: assignedPermissions,
-        pin: userForm.pin || '1234',
         createdAt: new Date().toISOString().slice(0, 10)
       };
       const updatedUsers = [...users, newUser];
       setUsers(updatedUsers);
       localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
-      showProfileToast(`New user "${newUser.name}" added successfully!`);
+      showProfileToast(`New staff user "${newUser.name}" added!`);
     }
     setIsUserModalOpen(false);
     setEditingUser(null);
@@ -4102,117 +3985,7 @@ export default function App() {
     }
   };
 
-  const renderPinModal = () => {
-    if (!isPinModalOpen) return null;
-    return (
-      <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200">
-          <div className="bg-slate-900 text-white p-5 flex justify-between items-center">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white">
-                <KeyRound size={18} />
-              </div>
-              <div>
-                <h3 className="font-bold text-base">Change Security PIN</h3>
-                <p className="text-xs text-slate-400">Account: @{currentUser.username}</p>
-              </div>
-            </div>
-            <button 
-              onClick={() => setIsPinModalOpen(false)}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-            >
-              <X size={20} />
-            </button>
-          </div>
 
-          <form onSubmit={handleUpdateAdminPin} className="p-6 space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Current PIN</label>
-              <input 
-                type={pinForm.showPin ? 'text' : 'password'}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={pinForm.currentPin}
-                onChange={e => {
-                  const val = e.target.value.replace(/\D/g, '');
-                  setPinForm(prev => ({ ...prev, currentPin: val }));
-                }}
-                placeholder="Enter current 4-digit PIN (default: 1234)"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-                autoFocus
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">New PIN</label>
-                <span className="text-[10px] text-slate-400 font-medium">4 to 6 digits</span>
-              </div>
-              <input 
-                type={pinForm.showPin ? 'text' : 'password'}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={pinForm.newPin}
-                onChange={e => {
-                  const val = e.target.value.replace(/\D/g, '');
-                  setPinForm(prev => ({ ...prev, newPin: val }));
-                }}
-                placeholder="Enter new 4-6 digit numeric PIN"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Confirm New PIN</label>
-              <input 
-                type={pinForm.showPin ? 'text' : 'password'}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={pinForm.confirmPin}
-                onChange={e => {
-                  const val = e.target.value.replace(/\D/g, '');
-                  setPinForm(prev => ({ ...prev, confirmPin: val }));
-                }}
-                placeholder="Re-enter new PIN"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-              />
-            </div>
-
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600">
-                <input 
-                  type="checkbox" 
-                  checked={pinForm.showPin}
-                  onChange={e => setPinForm(prev => ({ ...prev, showPin: e.target.checked }))}
-                  className="rounded text-blue-600 focus:ring-blue-500"
-                />
-                <span>Show PIN numbers</span>
-              </label>
-            </div>
-
-            <div className="pt-3 flex gap-2.5">
-              <button
-                type="button"
-                onClick={() => setIsPinModalOpen(false)}
-                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
-              >
-                <Check size={16} /> Save Security PIN
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
-  };
 
   const renderUserModal = () => {
     if (!isUserModalOpen) return null;
@@ -4374,38 +4147,6 @@ export default function App() {
                   </p>
                 </div>
               </label>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-                  {editingUser ? 'Change Security PIN (Leave blank to keep current)' : 'Security PIN'}
-                </label>
-                <span className="text-[10px] text-slate-400 font-medium">4-6 numeric digits</span>
-              </div>
-              <div className="relative">
-                <input 
-                  type={userForm.showPin ? 'text' : 'password'}
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  value={userForm.pin}
-                  onChange={e => {
-                    const val = e.target.value.replace(/\D/g, '');
-                    setUserForm(prev => ({ ...prev, pin: val }));
-                  }}
-                  placeholder={editingUser ? 'Enter new 4-6 digit PIN or leave blank' : 'e.g. 1234'}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all pr-10 font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={() => setUserForm(prev => ({ ...prev, showPin: !prev.showPin }))}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                >
-                  {userForm.showPin ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-400">Numeric PIN used by this team member to unlock the ledger.</p>
             </div>
 
             <div className="space-y-1.5">
@@ -4701,7 +4442,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Switch user selector */}
+              {/* Active Operating Staff Selector */}
               {users.length > 1 && (
                 <div className="relative">
                   <select
@@ -4710,15 +4451,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       const nextUserId = e.target.value;
                       const nextUser = users.find(u => u.id === nextUserId);
                       if (nextUser) {
-                        setLoginUserId(nextUser.id);
-                        setLoginPin('');
-                        setLoginError('');
-                        setIsAuthenticated(false);
-                        sessionStorage.removeItem('st_auth_active');
+                        setCurrentUserId(nextUser.id);
+                        localStorage.setItem('st_current_user_id', nextUser.id);
+                        showProfileToast(`Active operator switched to ${nextUser.name} (${nextUser.role})`);
                       }
                     }}
                     className="bg-slate-800 text-slate-200 border border-slate-700 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer hover:bg-slate-700"
-                    title="Switch user account (requires PIN)"
+                    title="Switch active staff user"
                   >
                     {users.map(u => (
                       <option key={u.id} value={u.id}>
@@ -4752,20 +4491,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               <Store size={15} /> Store & Logo
             </button>
             <button
-              onClick={() => setProfileTab('ADMIN')}
-              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
-                profileTab === 'ADMIN' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
-              <KeyRound size={15} /> Change PIN
-            </button>
-            <button
               onClick={() => setProfileTab('USERS')}
               className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
                 profileTab === 'USERS' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
             >
-              <Users size={15} /> Users ({users.length})
+              <Users size={15} /> Team & Staff ({users.length})
             </button>
             <button
               onClick={() => setProfileTab('DATA')}
@@ -4899,130 +4630,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
         )}
 
-        {/* Tab 2: Admin & PIN */}
-        {profileTab === 'ADMIN' && (
-          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
-            {/* Admin Info Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-lg">
-                    {currentUser.name[0]}
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-slate-800 text-base">{currentUser.name}</h3>
-                    <p className="text-xs text-slate-400">@{currentUser.username} • {currentUser.phone || 'No phone'}</p>
-                  </div>
-                </div>
-                <span className="bg-purple-100 text-purple-800 border border-purple-200 text-xs px-2.5 py-1 rounded-full font-bold">
-                  {currentUser.role}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Access Level</span>
-                  <span className="font-bold text-slate-800">Full System Control</span>
-                </div>
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Status</span>
-                  <span className="font-bold text-emerald-600 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Change PIN Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-              <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
-                <div>
-                  <h3 className="font-bold text-sm text-slate-800 flex items-center gap-1.5">
-                    <KeyRound size={16} className="text-blue-600" /> Security PIN Settings
-                  </h3>
-                  <p className="text-xs text-slate-400">Update your 4-6 digit login PIN for quick access</p>
-                </div>
-              </div>
-
-              <form onSubmit={handleUpdateAdminPin} className="space-y-3.5">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Current PIN</label>
-                  <input 
-                    type={pinForm.showPin ? 'text' : 'password'}
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    value={pinForm.currentPin}
-                    onChange={e => {
-                      const val = e.target.value.replace(/\D/g, '');
-                      setPinForm(prev => ({ ...prev, currentPin: val }));
-                    }}
-                    placeholder="Enter current PIN (default: 1234)"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">New Security PIN</label>
-                    <span className="text-[10px] text-slate-400 font-medium">4 to 6 numeric digits</span>
-                  </div>
-                  <input 
-                    type={pinForm.showPin ? 'text' : 'password'}
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    value={pinForm.newPin}
-                    onChange={e => {
-                      const val = e.target.value.replace(/\D/g, '');
-                      setPinForm(prev => ({ ...prev, newPin: val }));
-                    }}
-                    placeholder="Enter new PIN (4-6 digits)"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Confirm New PIN</label>
-                  <input 
-                    type={pinForm.showPin ? 'text' : 'password'}
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    value={pinForm.confirmPin}
-                    onChange={e => {
-                      const val = e.target.value.replace(/\D/g, '');
-                      setPinForm(prev => ({ ...prev, confirmPin: val }));
-                    }}
-                    placeholder="Re-enter new PIN"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold tracking-widest outline-none focus:border-blue-500 focus:bg-white transition-all font-mono"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600">
-                    <input 
-                      type="checkbox" 
-                      checked={pinForm.showPin}
-                      onChange={e => setPinForm(prev => ({ ...prev, showPin: e.target.checked }))}
-                      className="rounded text-blue-600 focus:ring-blue-500"
-                    />
-                    <span>Show PIN numbers</span>
-                  </label>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-sm"
-                >
-                  <KeyRound size={16} /> Update Security PIN
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Users & Staff Management */}
+        {/* Tab 2: Users & Staff Management */}
         {profileTab === 'USERS' && (
           <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
             {/* Header with Add User button */}
@@ -5122,16 +4730,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         {!isCurrent && (
                           <button
                             onClick={() => {
-                              setLoginUserId(u.id);
-                              setLoginPin('');
-                              setLoginError('');
-                              setIsAuthenticated(false);
-                              sessionStorage.removeItem('st_auth_active');
+                              setCurrentUserId(u.id);
+                              localStorage.setItem('st_current_user_id', u.id);
+                              showProfileToast(`Switched active staff to ${u.name}`);
                             }}
-                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors"
-                            title="Switch to this user (requires PIN)"
+                            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-bold transition-colors"
+                            title="Switch active user"
                           >
-                            Login as User
+                            Switch Active User
                           </button>
                         )}
                         {(userCanManageUsers || isCurrent) && (
@@ -5300,293 +4906,19 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                onClick={handleLogout}
-                className="py-3 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl active:scale-95 transition-all flex items-center justify-center gap-1.5 text-xs border border-slate-200"
-                title="Lock current screen session"
-              >
-                <Lock size={14} /> Lock PIN Session
-              </button>
+            <div className="pt-1">
               <button
                 onClick={handleSignOut}
-                className="py-3 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 text-xs"
+                className="w-full py-3 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
                 title="Sign out of Supabase Shop account"
               >
-                <LogOut size={14} /> Sign Out
+                <LogOut size={16} /> Sign Out of Shop Account
               </button>
             </div>
           </div>
         </div>
 
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
-      </div>
-    );
-  };
-
-  const renderLoginScreen = () => {
-    const selectedLoginUser = users.find(u => u.id === loginUserId) || users[0] || {
-      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, pin: '1234', createdAt: ''
-    };
-    const canSelectedUserDelete = selectedLoginUser?.permissions?.canDeleteData !== undefined
-      ? selectedLoginUser.permissions.canDeleteData 
-      : (selectedLoginUser?.role === 'Admin');
-
-    const expectedPin = selectedLoginUser.pin || (selectedLoginUser.password && /^\d+$/.test(selectedLoginUser.password) ? selectedLoginUser.password : '1234');
-    const pinSlotsCount = Math.max(4, Math.min(6, expectedPin.length || 4));
-
-    return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden select-none">
-        {/* Subtle decorative background glows */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-72 h-72 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
-
-        <div className="w-full max-w-sm z-10 space-y-5 my-auto">
-          {/* Brand Header */}
-          <div className="text-center space-y-2.5">
-            <div className="inline-block relative">
-              {shopLogo ? (
-                <img 
-                  src={shopLogo} 
-                  alt="Shop Logo" 
-                  className="w-16 h-16 rounded-2xl object-cover border-2 border-white/20 bg-white shadow-2xl mx-auto" 
-                />
-              ) : (
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-2xl font-black text-2xl border border-white/20 mx-auto">
-                  {shopName[0] || 'S'}
-                </div>
-              )}
-            </div>
-            <div>
-              <h1 className="text-xl font-black tracking-tight text-white">{shopName}</h1>
-              <p className="text-xs text-slate-400 font-medium">{shopTagline}</p>
-            </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[11px] font-semibold text-emerald-300">
-              <ShieldCheck size={12} className="text-emerald-400" />
-              <span>PIN Protected Ledger Access</span>
-            </div>
-          </div>
-
-          {/* Login Card */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-2xl backdrop-blur-xl space-y-4">
-            {loginError && (
-              <div className="p-2.5 bg-red-500/15 border border-red-500/30 rounded-xl flex items-center gap-2 text-xs text-red-300 font-bold animate-in fade-in duration-150">
-                <AlertCircle size={15} className="text-red-400 shrink-0" />
-                <span>{loginError}</span>
-              </div>
-            )}
-
-            {/* Select User Section (if multiple users) */}
-            {users.length > 1 && (
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Select User Account
-                </label>
-                <div className="grid grid-cols-2 gap-1.5 max-h-32 overflow-y-auto no-scrollbar">
-                  {users.map(u => {
-                    const isSelected = u.id === (selectedLoginUser?.id);
-                    return (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onClick={() => {
-                          setLoginUserId(u.id);
-                          setLoginPin('');
-                          setLoginError('');
-                        }}
-                        className={`p-2 rounded-xl border text-left transition-all flex items-center gap-2 ${
-                          isSelected 
-                            ? 'bg-blue-600/20 border-blue-500 ring-1 ring-blue-500 text-white' 
-                            : 'bg-slate-800/60 border-slate-700/60 hover:bg-slate-800 text-slate-300'
-                        }`}
-                      >
-                        <div className={`w-6 h-6 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
-                          u.role === 'Admin' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-200'
-                        }`}>
-                          {u.name[0]}
-                        </div>
-                        <div className="truncate">
-                          <p className="font-bold text-xs leading-none truncate">{u.name}</p>
-                          <p className="text-[9px] text-slate-400 mt-0.5">{u.role}</p>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Current Selected User Info Badge */}
-            <div className="bg-slate-800/60 border border-slate-700/50 p-2.5 rounded-2xl flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center font-bold text-white text-sm shadow">
-                  {selectedLoginUser.name[0]}
-                </div>
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-xs text-white">{selectedLoginUser.name}</span>
-                    <span className="text-[9px] bg-slate-700 text-slate-300 px-1.5 py-0.2 rounded font-semibold">
-                      {selectedLoginUser.role}
-                    </span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 font-medium">@{selectedLoginUser.username}</span>
-                </div>
-              </div>
-              <div className="text-right text-[10px] text-slate-400">
-                {canSelectedUserDelete ? (
-                  <span className="text-red-400 font-semibold flex items-center gap-1">
-                    <Trash2 size={10} /> Delete Rights
-                  </span>
-                ) : (
-                  <span className="text-slate-400 font-semibold flex items-center gap-1">
-                    <Lock size={10} /> Standard
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* PIN Dots & Display */}
-            <div className="text-center space-y-2 pt-1">
-              <div className="flex items-center justify-between px-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Enter Security PIN
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowLoginPin(!showLoginPin)}
-                  className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                >
-                  {showLoginPin ? <EyeOff size={13} /> : <Eye size={13} />}
-                  <span>{showLoginPin ? 'Mask PIN' : 'Show PIN'}</span>
-                </button>
-              </div>
-
-              {/* Visual PIN Slots */}
-              <div className="flex justify-center items-center gap-3 py-1">
-                {Array.from({ length: pinSlotsCount }).map((_, idx) => {
-                  const hasDigit = idx < loginPin.length;
-                  const digitChar = loginPin[idx];
-                  return (
-                    <div
-                      key={idx}
-                      className={`w-11 h-12 rounded-2xl border-2 flex items-center justify-center font-mono font-black text-xl transition-all duration-150 ${
-                        hasDigit
-                          ? 'border-blue-500 bg-blue-600/20 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)] scale-105'
-                          : 'border-slate-700 bg-slate-800/40 text-slate-500'
-                      }`}
-                    >
-                      {hasDigit ? (showLoginPin ? digitChar : '•') : ''}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Invisible hardware keyboard input listener */}
-              <input
-                type={showLoginPin ? 'text' : 'password'}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={loginPin}
-                onChange={e => {
-                  const val = e.target.value.replace(/\D/g, '').slice(0, 6);
-                  setLoginPin(val);
-                  if (loginError) setLoginError('');
-                  if (val.length === expectedPin.length) {
-                    handleLogin(undefined, val);
-                  }
-                }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    handleLogin();
-                  }
-                }}
-                autoFocus
-                className="opacity-0 w-0 h-0 absolute -z-10"
-              />
-            </div>
-
-            {/* On-Screen Numeric Keypad */}
-            <div className="grid grid-cols-3 gap-2 pt-1">
-              {[
-                { digit: '1', sub: '' },
-                { digit: '2', sub: 'ABC' },
-                { digit: '3', sub: 'DEF' },
-                { digit: '4', sub: 'GHI' },
-                { digit: '5', sub: 'JKL' },
-                { digit: '6', sub: 'MNO' },
-                { digit: '7', sub: 'PQRS' },
-                { digit: '8', sub: 'TUV' },
-                { digit: '9', sub: 'WXYZ' },
-              ].map(({ digit, sub }) => (
-                <button
-                  key={digit}
-                  type="button"
-                  onClick={() => handleKeypadPress(digit)}
-                  className="bg-slate-800/80 hover:bg-slate-700 active:bg-blue-600 active:scale-95 text-white py-3 rounded-2xl border border-slate-700/60 shadow-sm transition-all flex flex-col items-center justify-center"
-                >
-                  <span className="text-xl font-bold font-mono leading-none">{digit}</span>
-                  {sub && <span className="text-[8px] text-slate-400 font-semibold tracking-wider mt-0.5">{sub}</span>}
-                </button>
-              ))}
-
-              {/* Clear button */}
-              <button
-                type="button"
-                onClick={handleKeypadClear}
-                className="bg-slate-800/50 hover:bg-slate-700/80 active:scale-95 text-slate-400 hover:text-white py-3 rounded-2xl border border-slate-700/40 text-xs font-bold transition-all flex items-center justify-center"
-                title="Clear entered PIN"
-              >
-                Clear
-              </button>
-
-              {/* Zero */}
-              <button
-                type="button"
-                onClick={() => handleKeypadPress('0')}
-                className="bg-slate-800/80 hover:bg-slate-700 active:bg-blue-600 active:scale-95 text-white py-3 rounded-2xl border border-slate-700/60 shadow-sm transition-all flex flex-col items-center justify-center"
-              >
-                <span className="text-xl font-bold font-mono leading-none">0</span>
-                <span className="text-[8px] text-slate-400 font-semibold tracking-wider mt-0.5">+</span>
-              </button>
-
-              {/* Backspace */}
-              <button
-                type="button"
-                onClick={handleKeypadBackspace}
-                className="bg-slate-800/50 hover:bg-slate-700/80 active:scale-95 text-slate-300 hover:text-white py-3 rounded-2xl border border-slate-700/40 text-sm font-bold transition-all flex items-center justify-center"
-                title="Delete last digit"
-              >
-                <Delete size={18} />
-              </button>
-            </div>
-
-            {/* Unlock Button */}
-            <button
-              type="button"
-              onClick={() => handleLogin()}
-              disabled={loginPin.length === 0}
-              className={`w-full py-3.5 px-4 rounded-2xl font-bold shadow-lg transition-all flex items-center justify-center gap-2 text-xs uppercase tracking-wider ${
-                loginPin.length > 0 
-                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white active:scale-95 shadow-blue-600/30 cursor-pointer' 
-                  : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60'
-              }`}
-            >
-              <Unlock size={15} />
-              <span>Unlock Ledger</span>
-            </button>
-
-            {/* Default PIN Hint */}
-            <div className="pt-2 border-t border-slate-800 text-center">
-              <p className="text-[11px] text-slate-400 font-medium">
-                Default PIN for Super Admin: <span className="font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20 font-mono">1234</span>
-              </p>
-              <p className="text-[10px] text-slate-500 mt-1">
-                Admins can change PINs and configure user rights in Profile settings.
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
     );
   };
@@ -6742,11 +6074,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     );
   }
 
-  // 5. If local PIN lock is triggered for cashier/staff inside shop session
-  if (!isAuthenticated) {
-    return renderLoginScreen();
-  }
-
   let content;
   if (currentView === 'DASHBOARD') content = renderDashboard();
   else if (currentView === 'DETAIL') content = renderDetail();
@@ -6762,7 +6089,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderReportModal()}
       {renderPreviewModal()}
       {renderUserModal()}
-      {renderPinModal()}
       {renderSqlModal()}
       {renderCashbookModal()}
     </>

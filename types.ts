@@ -62,7 +62,6 @@ export interface AppUser {
   role: UserRole;
   status: 'Active' | 'Inactive';
   phone?: string;
-  pin?: string;
   password?: string;
   permissions?: UserPermissions;
   createdAt: string;

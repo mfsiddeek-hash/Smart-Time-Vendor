@@ -56,6 +56,25 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
   };
 
+  const formatAuthError = (msg: string) => {
+    if (!msg) return 'An error occurred. Please try again.';
+    const lower = msg.toLowerCase();
+
+    if (lower.includes('email rate limit exceeded') || lower.includes('rate limit')) {
+      return 'Supabase Email Rate Limit Exceeded: The free default email service allows only 3-4 emails per hour. To log in without waiting 60 mins, turn OFF "Confirm email" in Supabase Dashboard (Authentication -> Providers -> Email).';
+    }
+
+    if (lower.includes('invalid login credentials') || lower.includes('invalid credentials')) {
+      return 'Invalid email or password. Please check your spelling and try again.';
+    }
+
+    if (lower.includes('user already registered') || lower.includes('already exists')) {
+      return 'An account with this email address already exists. Please Sign In or click Forgot Password.';
+    }
+
+    return msg;
+  };
+
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -89,7 +108,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           setErrorMsg('Your email is not verified yet. Please check your inbox or resend the activation link below.');
           return;
         }
-        setErrorMsg(error.message || 'Invalid email or password.');
+        setErrorMsg(formatAuthError(error.message));
         return;
       }
 
@@ -106,7 +125,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         onAuthSuccess(data.user, userProfile);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to sign in. Please try again.');
+      setErrorMsg(formatAuthError(err.message));
     } finally {
       setIsLoading(false);
     }
@@ -155,7 +174,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       });
 
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error.message));
         return;
       }
 
@@ -205,13 +224,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       });
 
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error.message));
       } else {
         setSuccessMsg(`Verification email resent to ${cleanEmail}. Please check your inbox and spam folder.`);
         setResendCooldown(60);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to resend verification link.');
+      setErrorMsg(formatAuthError(err.message || 'Failed to resend verification link.'));
     } finally {
       setResendLoading(false);
     }
@@ -269,12 +288,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       });
 
       if (error) {
-        setErrorMsg(error.message);
+        setErrorMsg(formatAuthError(error.message));
       } else {
         setSuccessMsg(`Password reset instructions sent to ${cleanEmail}. Please check your email inbox.`);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to send reset email.');
+      setErrorMsg(formatAuthError(err.message || 'Failed to send reset email.'));
     } finally {
       setIsLoading(false);
     }
