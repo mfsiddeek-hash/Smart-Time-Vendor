@@ -2331,10 +2331,15 @@ export default function App() {
         }
       }
 
+      // When cheque is marked as passed, update date to the cheque date
+      const effectiveTxDate = (transPaymentMethod === 'Cheque' && transChequeStatus === 'PASSED' && transChequeDate)
+        ? transChequeDate
+        : transDate;
+
       const txPayload = { 
         user_id: authUser?.id,
         contact_id: selectedContact.id, 
-        date: transDate, 
+        date: effectiveTxDate, 
         amount: amountVal, 
         type: transType, 
         description: formattedDesc, 
@@ -2354,7 +2359,7 @@ export default function App() {
           const fallbackTx: Transaction = {
             id: editingTransaction ? editingTransaction.id : generateUUID(),
             contactId: selectedContact.id,
-            date: transDate,
+            date: effectiveTxDate,
             amount: amountVal,
             type: transType,
             paymentMethod: transPaymentMethod,
@@ -2379,7 +2384,7 @@ export default function App() {
               contactType: selectedContact.type,
               phoneModel: selectedContact.phoneModel,
               amount: amountVal,
-              date: transDate,
+              date: effectiveTxDate,
               paymentMethod: transPaymentMethod,
               descriptionNote: formattedDesc,
               isAdvance: formattedDesc?.toLowerCase().includes('advance')
@@ -2435,7 +2440,7 @@ export default function App() {
             contactType: selectedContact.type,
             phoneModel: selectedContact.phoneModel,
             amount: amountVal,
-            date: transDate,
+            date: effectiveTxDate,
             paymentMethod: transPaymentMethod,
             descriptionNote: formattedDesc,
             isAdvance: formattedDesc?.toLowerCase().includes('advance')
@@ -2459,12 +2464,10 @@ export default function App() {
 
   const handleQuickPassCheque = async (tx: Transaction) => {
     const contact = contacts.find(c => c.id === tx.contactId);
-    const contactName = contact ? contact.name : 'contact';
-    if (!window.confirm(`Pass and clear this cheque for LKR ${tx.amount.toLocaleString()} (${contactName})?\n\nThis will apply the amount to the balance.`)) {
-      return;
-    }
-
     const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus);
+    const effectiveChequeDate = parsed.chequeDate || tx.chequeDate || new Date().toISOString().slice(0, 10);
+    const sectionName = contact?.type === 'VENDOR' ? 'Expenses' : (contact?.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+
     let updatedDesc = tx.description || '';
     if (updatedDesc.includes('[PENDING]')) {
       updatedDesc = updatedDesc.replace(/\[PENDING\]/gi, '[PASSED]');
@@ -2478,6 +2481,8 @@ export default function App() {
 
     const updatedTx: Transaction = {
       ...tx,
+      date: effectiveChequeDate,
+      chequeDate: effectiveChequeDate,
       paymentMethod: 'Cheque',
       chequeStatus: 'PASSED',
       description: updatedDesc
@@ -2490,34 +2495,98 @@ export default function App() {
       localStorage.setItem('st_cached_transactions', JSON.stringify(nextTx));
     } catch {}
 
-    // Update linked cashbook entry description if present
-    setCashbookEntries(prev => {
-      const next = prev.map(e => {
-        if (e.id === tx.id) {
-          return {
-            ...e,
-            description: e.description?.replace(/\[PENDING\]/gi, '[PASSED]') || e.description
-          };
-        }
-        return e;
-      });
-      try {
-        const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
-        localStorage.setItem(cacheKey, JSON.stringify(next));
-        localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
-      } catch {}
-      return next;
-    });
-
+    // Update transactions table in Supabase with the passed cheque date
     try {
-      await supabase.from('transactions').update({
+      let tq = supabase.from('transactions').update({
+        date: effectiveChequeDate,
         description: updatedDesc
       }).eq('id', tx.id);
+      if (authUser?.id) tq = tq.eq('user_id', authUser.id);
+      await tq;
     } catch (e) {
       console.warn('Supabase update cheque status error:', e);
     }
 
-    showProfileToast(`Cheque for LKR ${tx.amount.toLocaleString()} is now PASSED! Balance updated.`);
+    // Update or insert linked Cashbook entry with the passed cheque date in Expenses or Sales
+    if (contact) {
+      await recordOrUpdateLinkedCashbookEntry({
+        txId: tx.id,
+        contactId: tx.contactId,
+        contactName: contact.name,
+        contactType: contact.type,
+        phoneModel: contact.phoneModel,
+        amount: tx.amount,
+        date: effectiveChequeDate,
+        paymentMethod: 'Cheque',
+        descriptionNote: updatedDesc,
+        isAdvance: updatedDesc.toLowerCase().includes('advance')
+      });
+    } else {
+      setCashbookEntries(prev => {
+        const next = prev.map(e => {
+          if (e.id === tx.id) {
+            return {
+              ...e,
+              date: effectiveChequeDate,
+              description: e.description?.replace(/\[PENDING\]/gi, '[PASSED]') || updatedDesc
+            };
+          }
+          return e;
+        });
+        try {
+          const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+          localStorage.setItem(cacheKey, JSON.stringify(next));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      try {
+        let cbq = supabase.from('cashbook_entries').update({
+          date: effectiveChequeDate,
+          description: updatedDesc
+        }).eq('id', tx.id);
+        if (authUser?.id) cbq = cbq.eq('user_id', authUser.id);
+        await cbq;
+      } catch (e) {
+        console.warn('Supabase cashbook update error:', e);
+      }
+    }
+
+    showProfileToast(`Cheque PASSED! ${sectionName} section date updated to ${formatDisplayDate(effectiveChequeDate)}.`);
+  };
+
+  const handlePassChequeFromCashbook = async (entry: CashbookEntry) => {
+    const matchingTx = transactions.find(t => t.id === entry.id) ||
+      transactions.find(t => isPendingCheque(t) && t.amount === entry.amount);
+    if (matchingTx) {
+      await handleQuickPassCheque(matchingTx);
+    } else {
+      const dueDateMatch = entry.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+      const passedDate = dueDateMatch ? dueDateMatch[1] : new Date().toISOString().slice(0, 10);
+      const updatedDesc = entry.description?.replace(/\[PENDING\]/gi, '[PASSED]') || (entry.description + ' [PASSED]');
+
+      setCashbookEntries(prev => {
+        const next = prev.map(e => e.id === entry.id ? { ...e, date: passedDate, description: updatedDesc } : e);
+        try {
+          const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+          localStorage.setItem(cacheKey, JSON.stringify(next));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      try {
+        let q = supabase.from('cashbook_entries').update({
+          date: passedDate,
+          description: updatedDesc
+        }).eq('id', entry.id);
+        if (authUser?.id) q = q.eq('user_id', authUser.id);
+        await q;
+      } catch (e) {
+        console.warn('Supabase cashbook update error:', e);
+      }
+      showProfileToast(`Cheque passed! Date updated to ${formatDisplayDate(passedDate)}.`);
+    }
   };
 
   const renderReportModal = () => {
@@ -2989,6 +3058,14 @@ export default function App() {
     const pendingChequesCount = contactStats[selectedContact.id]?.pendingChequesCount || 0;
     const pendingChequesAmount = contactStats[selectedContact.id]?.pendingChequesAmount || 0;
 
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const pendingContactCheques = contactTransactions.filter(t => isPendingCheque(t));
+    const dueOrPassedCheques = pendingContactCheques.filter(t => {
+      const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus);
+      const chqDate = parsed.chequeDate || t.chequeDate || t.date;
+      return chqDate <= todayStr;
+    });
+
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
@@ -3293,6 +3370,78 @@ export default function App() {
             )}
           </div>
         </div>
+
+        {dueOrPassedCheques.length > 0 && (
+          <div className="mx-4 mb-3 p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs">
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Landmark size={16} />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-slate-800">
+                    Cheque Maturity Date Passed / Due ({dueOrPassedCheques.length})
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-medium">
+                    Maturity date arrived. Pass cheque to clear and update {selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales')} date.
+                  </p>
+                </div>
+              </div>
+              {dueOrPassedCheques.length > 1 && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    for (const chq of dueOrPassedCheques) {
+                      await handleQuickPassCheque(chq);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shrink-0 shadow-xs active:scale-95 transition-all flex items-center gap-1"
+                >
+                  <CheckCircle2 size={13} />
+                  <span>Pass All ({dueOrPassedCheques.length})</span>
+                </button>
+              )}
+            </div>
+            <div className="space-y-2 mt-2 pt-2 border-t border-slate-200/70">
+              {dueOrPassedCheques.map(chq => {
+                const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus);
+                const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
+                const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+                return (
+                  <div key={chq.id} className="bg-white/95 rounded-xl p-2.5 border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                    <div className="overflow-hidden">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-extrabold text-xs text-slate-900">
+                          LKR {chq.amount.toLocaleString()}
+                        </span>
+                        {parsed.chequeNumber && (
+                          <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                            #{parsed.chequeNumber}
+                          </span>
+                        )}
+                        <span className="text-[10px] font-bold text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded flex items-center gap-1">
+                          <Clock size={10} /> Cheque Date: {formatDisplayDate(chqDate)}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Will clear & set {targetSection} date to <strong className="text-slate-700">{formatDisplayDate(chqDate)}</strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickPassCheque(chq)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                    >
+                      <CheckCircle2 size={13} />
+                      <span>Pass Cheque</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {isService ? (
           <div className="flex-1 bg-gray-50 p-4 space-y-4">
             {/* Payment History Card with Date */}
@@ -5878,6 +6027,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   };
 
   const renderCashBook = () => {
+    const todayDateStr = new Date().toISOString().slice(0, 10);
+    const dueCashbookCheques = cashbookEntries.filter(e => {
+      if (e.paymentMethod !== 'Cheque') return false;
+      const desc = e.description || '';
+      if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
+      if (desc.includes('[BOUNCED]')) return false;
+      const match = desc.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+      const chqDate = match ? match[1] : e.date;
+      return chqDate <= todayDateStr;
+    });
+
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col pb-28 no-scrollbar">
         {/* Top Header */}
@@ -6044,6 +6204,79 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
           </div>
 
+          {/* Due / Passed Cheques Maturity Alert Banner */}
+          {dueCashbookCheques.length > 0 && (
+            <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Landmark size={16} />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                      Cheque Maturity Date Passed / Due ({dueCashbookCheques.length})
+                    </h3>
+                    <p className="text-[11px] text-slate-600 font-medium">
+                      Post-dated cheques have reached maturity date. Clear them to update the Sales or Expenses date.
+                    </p>
+                  </div>
+                </div>
+                {dueCashbookCheques.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      for (const chq of dueCashbookCheques) {
+                        await handlePassChequeFromCashbook(chq);
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1 shrink-0"
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>Pass All ({dueCashbookCheques.length})</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
+                {dueCashbookCheques.map(e => {
+                  const match = e.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+                  const chqDate = match ? match[1] : e.date;
+                  const isSale = e.type === 'SALE';
+                  return (
+                    <div key={e.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                      <div className="overflow-hidden">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
+                            isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                          }`}>
+                            {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
+                          </span>
+                          <span className="font-extrabold text-xs text-slate-800">
+                            LKR {e.amount.toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
+                          {e.contactName ? `${e.contactName} • ` : ''}{e.description || 'Cheque Payment'}
+                        </p>
+                        <p className="text-[10px] text-amber-800 font-bold mt-0.5 flex items-center gap-1">
+                          <Clock size={10} /> Cheque Date: {formatDisplayDate(chqDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handlePassChequeFromCashbook(e)}
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                      >
+                        <CheckCircle2 size={12} />
+                        <span>Pass</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Search & Filter Bar */}
           <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs space-y-2.5">
             <div className="flex items-center gap-2">
@@ -6178,6 +6411,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <div className="divide-y divide-slate-100">
                     {group.entries.map(entry => {
                       const isSale = entry.type === 'SALE';
+                      const isCheque = entry.paymentMethod === 'Cheque';
+                      const isPendingChequeEntry = isCheque && (
+                        entry.description?.includes('[PENDING]') ||
+                        entry.description?.toLowerCase().includes('pending') ||
+                        (!entry.description?.includes('[PASSED]') && !entry.description?.includes('[CLEARED]'))
+                      );
+                      const entryDueDateMatch = entry.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+                      const chequeDueDate = entryDueDateMatch ? entryDueDateMatch[1] : entry.date;
+                      const isChequeMatured = isPendingChequeEntry && chequeDueDate <= todayDateStr;
+
                       return (
                         <div
                           key={entry.id}
@@ -6215,6 +6458,20 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                    <Banknote size={10} />}
                                   {entry.paymentMethod}
                                 </span>
+
+                                {isPendingChequeEntry && (
+                                  <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
+                                    isChequeMatured ? 'bg-amber-100 text-amber-900 border-amber-300 animate-pulse' : 'bg-amber-50 text-amber-900 border-amber-200'
+                                  }`}>
+                                    <Clock size={10} />
+                                    {isChequeMatured ? `Maturity Reached (Due: ${chequeDueDate})` : `On Hold (Due: ${chequeDueDate})`}
+                                  </span>
+                                )}
+                                {isCheque && entry.description?.includes('[PASSED]') && (
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 inline-flex items-center gap-1">
+                                    <CheckCircle2 size={10} /> Cleared ({formatDisplayDate(entry.date)})
+                                  </span>
+                                )}
 
                                 {entry.referenceNo && (
                                   <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-bold ${
@@ -6256,6 +6513,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             </span>
 
                             <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                              {isPendingChequeEntry && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePassChequeFromCashbook(entry);
+                                  }}
+                                  className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all"
+                                  title={`Pass Cheque and update ${isSale ? 'Sales' : 'Expenses'} date to ${formatDisplayDate(chequeDueDate)}`}
+                                >
+                                  <CheckCircle2 size={12} />
+                                  <span className="hidden sm:inline">Pass Cheque</span>
+                                </button>
+                              )}
+
                               <button
                                 onClick={() => handleOpenCashbookModal(entry.type, entry)}
                                 className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
