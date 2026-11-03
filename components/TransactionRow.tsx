@@ -1,6 +1,6 @@
 import React from 'react';
 import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
-import { Transaction, PaymentMethod, ChequeStatus } from '../types';
+import { Transaction, PaymentMethod, ChequeStatus, ContactType } from '../types';
 
 export interface ParsedTransactionMetadata {
   method?: PaymentMethod;
@@ -97,11 +97,12 @@ export const parsePaymentMethod = (desc?: string, explicitMethod?: PaymentMethod
 
 interface TransactionRowProps {
   transaction: Transaction;
+  contactType?: ContactType;
   onClick?: (transaction: Transaction) => void;
   onPassCheque?: (transaction: Transaction) => void;
 }
 
-export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onClick, onPassCheque }) => {
+export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque }) => {
   const isPayment = transaction.type === 'PAYMENT';
   const parsed = parsePaymentMethod(transaction.description, transaction.paymentMethod, transaction.chequeStatus);
   const pendingCheque = isPendingCheque(transaction);
@@ -168,6 +169,23 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, onC
                   {parsed.method}
                 </span>
               )
+            )}
+
+            {isPayment && contactType && (
+              <span className={`inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border ${
+                contactType === 'CUSTOMER'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : contactType === 'VENDOR'
+                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                  : contactType === 'RENT'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-blue-50 text-blue-700 border-blue-200'
+              }`}>
+                {contactType === 'CUSTOMER' ? 'Linked to Sales' :
+                 contactType === 'VENDOR' ? 'Linked to Expenses' :
+                 contactType === 'RENT' ? 'Shop Rent Expense' :
+                 'Linked to Sales'}
+              </span>
             )}
 
             {parsed.chequeDate && (
