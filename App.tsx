@@ -1511,8 +1511,12 @@ export default function App() {
         setDbStatus('connected');
       }
 
+      let mappedContacts: Contact[] = [];
+      let mappedTx: Transaction[] = [];
+      let mappedCb: CashbookEntry[] = [];
+
       if (contactsRes.data) {
-        const mappedContacts = contactsRes.data.map((c: any) => {
+        mappedContacts = contactsRes.data.map((c: any) => {
           let parsedStatus = 'Pending';
           let parsedAdvance = 0;
           let parsedAdvDate = '';
@@ -1563,7 +1567,7 @@ export default function App() {
       }
 
       if (transRes.data) {
-        const mappedTx = transRes.data.map((t: any) => ({
+        mappedTx = transRes.data.map((t: any) => ({
           id: t.id, 
           userId: t.user_id,
           contactId: t.contact_id, 
@@ -1581,7 +1585,7 @@ export default function App() {
       }
 
       if (cashbookRes.data) {
-        const mappedCb: CashbookEntry[] = cashbookRes.data.map((c: any) => ({
+        mappedCb = cashbookRes.data.map((c: any) => ({
           id: c.id,
           userId: c.user_id,
           type: (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE') as CashbookEntryType,
@@ -1594,6 +1598,65 @@ export default function App() {
           contactName: c.contact_name || '',
           createdAt: c.created_at
         }));
+
+        // Auto-link any service payments (including advance & subsequent payments) to sales cashbook if missing
+        const existingCbIds = new Set(mappedCb.map(c => c.id));
+        const serviceContacts = mappedContacts.filter(c => c.type === 'SERVICE');
+        const serviceContactsMap = new Map(serviceContacts.map(c => [c.id, c]));
+        const missingCbEntries: CashbookEntry[] = [];
+
+        for (const tx of mappedTx) {
+          if (tx.type === 'PAYMENT' && serviceContactsMap.has(tx.contactId) && !existingCbIds.has(tx.id) && tx.amount > 0) {
+            const contact = serviceContactsMap.get(tx.contactId)!;
+            const orderNo = `SO-${contact.id.slice(0, 6).toUpperCase()}`;
+            const parsedDesc = tx.description || 'Payment Received';
+            const isAdv = parsedDesc.toLowerCase().includes('advance');
+            const desc = isAdv
+              ? `Advance Payment - ${contact.phoneModel || 'Device Repair'}`
+              : `Service Payment - ${contact.phoneModel || 'Device Repair'}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
+            
+            const parsed = parsePaymentMethod(tx.description);
+            const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
+
+            const newCb: CashbookEntry = {
+              id: tx.id,
+              userId: activeUid,
+              type: 'SALE',
+              amount: tx.amount,
+              date: tx.date,
+              category: 'Repair Charges',
+              description: desc,
+              paymentMethod: method,
+              referenceNo: orderNo,
+              contactName: contact.name,
+              createdAt: new Date().toISOString()
+            };
+            missingCbEntries.push(newCb);
+            existingCbIds.add(tx.id);
+          }
+        }
+
+        if (missingCbEntries.length > 0) {
+          try {
+            const payloads = missingCbEntries.map(e => ({
+              id: e.id,
+              user_id: activeUid,
+              type: e.type,
+              amount: e.amount,
+              date: e.date,
+              category: e.category,
+              description: e.description,
+              payment_method: e.paymentMethod,
+              reference_no: e.referenceNo,
+              contact_name: e.contactName
+            }));
+            await supabase.from('cashbook_entries').insert(payloads);
+          } catch (e) {
+            console.warn('Auto-sync missing service payments:', e);
+          }
+          mappedCb.unshift(...missingCbEntries);
+        }
+
         setCashbookEntries(mappedCb);
         try { 
           localStorage.setItem(`st_cashbook_entries_${activeUid}`, JSON.stringify(mappedCb));
@@ -1689,6 +1752,109 @@ export default function App() {
   }, []);
 
   const handleBack = () => { window.history.back(); };
+
+  // Helper: Automatically link any Service Order payment (advance or subsequent) to Cashbook Sales under Repair Charges
+  const recordOrUpdateServicePaymentInCashbook = async (params: {
+    txId: string;
+    contactId: string;
+    contactName: string;
+    phoneModel?: string;
+    amount: number;
+    date: string;
+    paymentMethod?: string;
+    descriptionNote?: string;
+    isAdvance?: boolean;
+  }) => {
+    if (!params.amount || params.amount <= 0) return;
+    const orderNo = `SO-${params.contactId.slice(0, 6).toUpperCase()}`;
+    const method = (params.paymentMethod || 'Cash') as PaymentMethod;
+    const descPrefix = params.isAdvance ? 'Advance Payment' : 'Service Payment';
+    const modelText = params.phoneModel ? ` - ${params.phoneModel}` : '';
+    const noteText = params.descriptionNote ? ` (${params.descriptionNote})` : '';
+    const fullDesc = `${descPrefix}${modelText}${noteText}`;
+
+    const entryPayload = {
+      id: params.txId,
+      user_id: authUser?.id,
+      type: 'SALE' as const,
+      amount: params.amount,
+      date: params.date,
+      category: 'Repair Charges',
+      description: fullDesc,
+      payment_method: method,
+      reference_no: orderNo,
+      contact_name: params.contactName
+    };
+
+    const newEntry: CashbookEntry = {
+      id: params.txId,
+      userId: authUser?.id,
+      type: 'SALE',
+      amount: params.amount,
+      date: params.date,
+      category: 'Repair Charges',
+      description: fullDesc,
+      paymentMethod: method,
+      referenceNo: orderNo,
+      contactName: params.contactName,
+      createdAt: new Date().toISOString()
+    };
+
+    // 1. Supabase upsert / insert / update
+    try {
+      const { data: existing } = await supabase.from('cashbook_entries').select('id').eq('id', params.txId).maybeSingle();
+      if (existing) {
+        let q = supabase.from('cashbook_entries').update({
+          amount: params.amount,
+          date: params.date,
+          description: fullDesc,
+          payment_method: method,
+          contact_name: params.contactName,
+          reference_no: orderNo
+        }).eq('id', params.txId);
+        if (authUser?.id) q = q.eq('user_id', authUser.id);
+        await q;
+      } else {
+        await supabase.from('cashbook_entries').insert([entryPayload]);
+      }
+    } catch (err) {
+      console.warn('Supabase cashbook sync warning:', err);
+    }
+
+    // 2. React state & Local Storage update
+    setCashbookEntries(prev => {
+      const exists = prev.some(e => e.id === params.txId);
+      const next = exists
+        ? prev.map(e => e.id === params.txId ? { ...e, ...newEntry } : e)
+        : [newEntry, ...prev];
+      try {
+        const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+        localStorage.setItem(cacheKey, JSON.stringify(next));
+        localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const removeServicePaymentFromCashbook = async (txId: string) => {
+    try {
+      let q = supabase.from('cashbook_entries').delete().eq('id', txId);
+      if (authUser?.id) q = q.eq('user_id', authUser.id);
+      await q;
+    } catch (err) {
+      console.warn('Supabase cashbook delete warning:', err);
+    }
+
+    setCashbookEntries(prev => {
+      const next = prev.filter(e => e.id !== txId);
+      try {
+        const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+        localStorage.setItem(cacheKey, JSON.stringify(next));
+        localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   const handleSaveContact = async () => {
     if (!addName.trim() || isSubmitting) return;
@@ -1857,6 +2023,17 @@ export default function App() {
                 type: advRes.data[0].type,
                 balanceAfter: advRes.data[0].balance_after
               });
+
+              // Automatically record advance payment in Cashbook Sales under Repair Charges
+              await recordOrUpdateServicePaymentInCashbook({
+                txId: advRes.data[0].id,
+                contactId: contactId,
+                contactName: addName.trim(),
+                phoneModel: addPhoneModel.trim(),
+                amount: advanceVal,
+                date: effectiveAdvDate,
+                isAdvance: true
+              });
             }
           }
 
@@ -1901,9 +2078,19 @@ export default function App() {
             if (advanceVal !== null && advanceVal > 0 && (advanceVal !== existingAdvTx.amount || effectiveAdvDate !== existingAdvTx.date)) {
               await supabase.from('transactions').update({ amount: advanceVal, date: effectiveAdvDate }).eq('id', existingAdvTx.id);
               setTransactions(prev => prev.map(t => t.id === existingAdvTx.id ? { ...t, amount: advanceVal, date: effectiveAdvDate } : t));
+              await recordOrUpdateServicePaymentInCashbook({
+                txId: existingAdvTx.id,
+                contactId: editingContact.id,
+                contactName: addName.trim(),
+                phoneModel: addPhoneModel.trim(),
+                amount: advanceVal,
+                date: effectiveAdvDate,
+                isAdvance: true
+              });
             } else if (advanceVal === 0) {
               await supabase.from('transactions').delete().eq('id', existingAdvTx.id);
               setTransactions(prev => prev.filter(t => t.id !== existingAdvTx.id));
+              await removeServicePaymentFromCashbook(existingAdvTx.id);
             }
           } else if (advanceVal && advanceVal > 0) {
             const advTx = {
@@ -1927,6 +2114,15 @@ export default function App() {
                 type: aRes.data[0].type,
                 balanceAfter: aRes.data[0].balance_after
               }, ...prev]);
+              await recordOrUpdateServicePaymentInCashbook({
+                txId: aRes.data[0].id,
+                contactId: editingContact.id,
+                contactName: addName.trim(),
+                phoneModel: addPhoneModel.trim(),
+                amount: advanceVal,
+                date: effectiveAdvDate,
+                isAdvance: true
+              });
             }
           }
         }
@@ -1974,6 +2170,25 @@ export default function App() {
       }
       await tq;
       await cq;
+
+      if (contact?.type === 'SERVICE') {
+        const orderNo = `SO-${id.slice(0, 6).toUpperCase()}`;
+        try {
+          let cbq = supabase.from('cashbook_entries').delete().eq('reference_no', orderNo);
+          if (authUser?.id) cbq = cbq.eq('user_id', authUser.id);
+          await cbq;
+        } catch (e) {}
+        setCashbookEntries(prev => {
+          const next = prev.filter(e => e.referenceNo !== orderNo);
+          try {
+            const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+            localStorage.setItem(cacheKey, JSON.stringify(next));
+            localStorage.setItem('st_cashbook_entries', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+      }
+
       setContacts(prev => prev.filter(c => c.id !== id));
       setTransactions(prev => prev.filter(t => t.contactId !== id));
       if (selectedContact?.id === id) {
@@ -2016,6 +2231,10 @@ export default function App() {
       if (authUser?.id) q = q.eq('user_id', authUser.id);
       const { error } = await q;
       if (error) throw error;
+
+      // Also remove linked cashbook sale if this was a service payment
+      await removeServicePaymentFromCashbook(editingTransaction.id);
+
       const newTransactions = transactions.filter(t => t.id !== editingTransaction.id);
       setTransactions(newTransactions);
       setEditingTransaction(null);
@@ -2080,6 +2299,26 @@ export default function App() {
           } else {
             setTransactions(prev => [fallbackTx, ...prev]);
           }
+
+          // Link to sales cashbook in fallback mode
+          if (selectedContact.type === 'SERVICE') {
+            if (transType === 'PAYMENT' && amountVal > 0) {
+              await recordOrUpdateServicePaymentInCashbook({
+                txId: fallbackTx.id,
+                contactId: selectedContact.id,
+                contactName: selectedContact.name,
+                phoneModel: selectedContact.phoneModel,
+                amount: amountVal,
+                date: transDate,
+                paymentMethod: transPaymentMethod,
+                descriptionNote: formattedDesc,
+                isAdvance: formattedDesc?.toLowerCase().includes('advance')
+              });
+            } else if (editingTransaction && transType !== 'PAYMENT') {
+              await removeServicePaymentFromCashbook(editingTransaction.id);
+            }
+          }
+
           try {
             const currentTx = JSON.parse(localStorage.getItem('st_cached_transactions') || '[]');
             const nextTx = editingTransaction 
@@ -2112,6 +2351,26 @@ export default function App() {
           setTransactions(transactions.map(t => t.id === editingTransaction.id ? saved : t)); 
         } else { 
           setTransactions([saved, ...transactions]); 
+        }
+
+        // Link Service Order payment to Sales Cashbook under Repair Charges
+        if (selectedContact.type === 'SERVICE') {
+          if (transType === 'PAYMENT' && amountVal > 0) {
+            await recordOrUpdateServicePaymentInCashbook({
+              txId: saved.id,
+              contactId: selectedContact.id,
+              contactName: selectedContact.name,
+              phoneModel: selectedContact.phoneModel,
+              amount: amountVal,
+              date: transDate,
+              paymentMethod: transPaymentMethod,
+              descriptionNote: formattedDesc,
+              isAdvance: formattedDesc?.toLowerCase().includes('advance')
+            });
+            showProfileToast("Payment saved & linked to Sales (Repair Charges)!");
+          } else if (editingTransaction && transType !== 'PAYMENT') {
+            await removeServicePaymentFromCashbook(editingTransaction.id);
+          }
         }
       }
       setEditingTransaction(null);
@@ -2947,8 +3206,13 @@ export default function App() {
                     <Receipt size={16} />
                   </div>
                   <div>
-                    <h3 className="font-bold text-slate-800 text-sm">Payment History (With Date)</h3>
-                    <p className="text-[10px] text-slate-400 font-medium">All advance & installments paid by customer</p>
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="font-bold text-slate-800 text-sm">Payment History (With Date)</h3>
+                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 uppercase tracking-wider">
+                        Linked to Sales
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-medium">All advance & installments sync automatically into Cashbook Sales</p>
                   </div>
                 </div>
                 <button
@@ -3524,6 +3788,12 @@ export default function App() {
           )}
         </div>
         <div className="p-6 pb-12">
+          {isService && transType === 'PAYMENT' && (
+            <div className="mb-3.5 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2.5 text-xs font-semibold text-emerald-800 shadow-xs">
+              <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+              <span>Auto-linked to Sales: This payment will automatically be recorded under <strong>Repair Charges</strong> in the Cashbook.</span>
+            </div>
+          )}
           <button 
             disabled={isSubmitting} 
             onClick={handleSaveTransaction} 
@@ -3705,7 +3975,7 @@ export default function App() {
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider flex items-center justify-between">
                     <span>Advance Payment (LKR)</span>
-                    <span className="text-[10px] text-emerald-600 font-semibold">Records into Payment History</span>
+                    <span className="text-[10px] text-emerald-600 font-semibold">Auto-links to Sales Cashbook</span>
                   </label>
                   <input 
                     type="number"
@@ -5781,7 +6051,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                 </span>
 
                                 {entry.referenceNo && (
-                                  <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${
+                                    entry.referenceNo.startsWith('SO-')
+                                      ? 'bg-blue-50 text-blue-700 border border-blue-200 font-bold'
+                                      : 'text-slate-500 bg-slate-100'
+                                  }`}>
+                                    {entry.referenceNo.startsWith('SO-') && <Wrench size={10} className="text-blue-600" />}
                                     #{entry.referenceNo}
                                   </span>
                                 )}
