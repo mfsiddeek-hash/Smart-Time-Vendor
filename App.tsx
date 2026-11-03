@@ -191,55 +191,77 @@ export default function App() {
   const [shopAddress, setShopAddress] = useState<string>('');
   const [shopLogo, setShopLogo] = useState<string | null>(null);
 
-  const [users, setUsers] = useState<AppUser[]>(() => {
-    const saved = localStorage.getItem('st_app_users');
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || '');
+
+  // Isolated Users Save Helper per Shop Owner Account
+  const saveAccountUsers = (updatedUsers: AppUser[]) => {
+    setUsers(updatedUsers);
+    if (authUser?.id) {
+      localStorage.setItem(`st_app_users_${authUser.id}`, JSON.stringify(updatedUsers));
+    } else {
+      localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+    }
+  };
+
+  // Synchronize and isolate staff accounts per authenticated Supabase account
+  useEffect(() => {
+    if (!authUser?.id) return;
+    const storageKey = `st_app_users_${authUser.id}`;
+    const ownerName = userProfile?.fullName || authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Shop Owner (Admin)';
+    const ownerUsername = authUser.email || 'owner';
+
+    const defaultOwner: AppUser = {
+      id: `owner-${authUser.id}`,
+      name: ownerName,
+      username: ownerUsername,
+      role: 'Admin',
+      status: 'Active',
+      phone: userProfile?.phone || '',
+      permissions: {
+        canDeleteData: true,
+        canEditData: true,
+        canManageUsers: true
+      },
+      createdAt: new Date().toISOString().slice(0, 10)
+    };
+
+    const saved = localStorage.getItem(storageKey);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((u: any) => ({
-            ...u,
-            permissions: u.permissions || {
-              canDeleteData: u.role === 'Admin',
-              canEditData: u.role === 'Admin' || u.role === 'Manager',
-              canManageUsers: u.role === 'Admin'
+          const updated = parsed.map((u: AppUser) => {
+            if (u.role === 'Admin' || u.id.startsWith('owner-') || u.permissions?.canManageUsers) {
+              return {
+                ...u,
+                name: ownerName,
+                username: ownerUsername,
+                phone: userProfile?.phone || u.phone || ''
+              };
             }
-          }));
+            return u;
+          });
+          setUsers(updated);
+          localStorage.setItem(storageKey, JSON.stringify(updated));
+          if (!updated.some((u: AppUser) => u.id === currentUserId)) {
+            setCurrentUserId(updated[0].id);
+            localStorage.setItem('st_current_user_id', updated[0].id);
+          }
+          return;
         }
-      } catch (e) { /* ignore fallback */ }
-    }
-    return [
-      {
-        id: 'admin-1',
-        name: 'Shop Owner (Admin)',
-        username: 'owner',
-        role: 'Admin',
-        status: 'Active',
-        phone: '',
-        permissions: {
-          canDeleteData: true,
-          canEditData: true,
-          canManageUsers: true
-        },
-        createdAt: new Date().toISOString().slice(0, 10)
-      },
-      {
-        id: 'cashier-1',
-        name: 'Staff Member',
-        username: 'staff',
-        role: 'Cashier',
-        status: 'Active',
-        phone: '',
-        permissions: {
-          canDeleteData: false,
-          canEditData: true,
-          canManageUsers: false
-        },
-        createdAt: new Date().toISOString().slice(0, 10)
+      } catch (e) {
+        console.warn('Failed to parse saved users for account', e);
       }
-    ];
-  });
-  const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || 'admin-1');
+    }
+
+    // Default for new shop owner account: Only the Shop Owner Admin profile (no shared staff)
+    const initialList = [defaultOwner];
+    setUsers(initialList);
+    setCurrentUserId(defaultOwner.id);
+    localStorage.setItem('st_current_user_id', defaultOwner.id);
+    localStorage.setItem(storageKey, JSON.stringify(initialList));
+  }, [authUser?.id, userProfile?.fullName, userProfile?.phone, authUser?.email]);
 
   // Supabase Auth session controls primary access
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -274,12 +296,15 @@ export default function App() {
 
   const currentUser = useMemo(() => {
     return users.find(u => u.id === currentUserId) || users[0] || {
-      id: 'admin-1', name: 'Super Admin', username: 'admin', role: 'Admin' as UserRole, status: 'Active' as const, 
-      pin: '1234',
+      id: `owner-${authUser?.id || 'default'}`, 
+      name: userProfile?.fullName || authUser?.email || 'Shop Owner', 
+      username: authUser?.email || 'owner', 
+      role: 'Admin' as UserRole, 
+      status: 'Active' as const, 
       permissions: { canDeleteData: true, canEditData: true, canManageUsers: true },
       createdAt: ''
     };
-  }, [users, currentUserId]);
+  }, [users, currentUserId, authUser, userProfile]);
 
   // User Rights & Permissions logic
   const userCanDelete = useMemo(() => {
@@ -3914,8 +3939,7 @@ export default function App() {
         }
         return u;
       });
-      setUsers(updatedUsers);
-      localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+      saveAccountUsers(updatedUsers);
       showProfileToast(`User "${userForm.name}" updated!`);
     } else {
       const newUser: AppUser = {
@@ -3929,8 +3953,7 @@ export default function App() {
         createdAt: new Date().toISOString().slice(0, 10)
       };
       const updatedUsers = [...users, newUser];
-      setUsers(updatedUsers);
-      localStorage.setItem('st_app_users', JSON.stringify(updatedUsers));
+      saveAccountUsers(updatedUsers);
       showProfileToast(`New staff user "${newUser.name}" added!`);
     }
     setIsUserModalOpen(false);
@@ -3950,8 +3973,7 @@ export default function App() {
     }
     if (!window.confirm(`Are you sure you want to delete user "${user.name}" (@${user.username})?`)) return;
     const updated = users.filter(u => u.id !== userId);
-    setUsers(updated);
-    localStorage.setItem('st_app_users', JSON.stringify(updated));
+    saveAccountUsers(updated);
     if (currentUserId === userId && updated.length > 0) {
       setCurrentUserId(updated[0].id);
       localStorage.setItem('st_current_user_id', updated[0].id);
@@ -4763,6 +4785,41 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   </div>
                 );
               })}
+            </div>
+
+            {/* Authenticated Shop Owner Account Card */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3 mt-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shadow-xs">
+                    <ShieldCheck size={22} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-900">{userProfile?.fullName || 'Shop Owner'}</h4>
+                    <p className="text-xs text-slate-500 font-mono">{authUser?.email || 'Authenticated Shop Account'}</p>
+                  </div>
+                </div>
+                <span className="text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
+                  <CheckCircle2 size={12} /> Verified Account
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 font-medium">Active Operator:</span>
+                  <span className="font-bold text-slate-800">{currentUser.name} ({currentUser.role})</span>
+                </div>
+                <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${userCanDelete ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-slate-100 text-slate-600'}`}>
+                  {userCanDelete ? 'Delete: Allowed' : 'Delete: Restricted'}
+                </span>
+              </div>
+
+              <button
+                onClick={handleSignOut}
+                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 mt-2"
+              >
+                <LogOut size={16} /> Sign Out of Shop Account
+              </button>
             </div>
           </div>
         )}
