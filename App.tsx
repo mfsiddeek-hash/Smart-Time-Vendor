@@ -2377,18 +2377,23 @@ export default function App() {
 
           // Link payment to Cashbook in fallback mode (Customer -> Sales, Vendor -> Expenses, Rent -> Shop Rent, Service -> Sales)
           if (transType === 'PAYMENT' && amountVal > 0) {
-            await recordOrUpdateLinkedCashbookEntry({
-              txId: fallbackTx.id,
-              contactId: selectedContact.id,
-              contactName: selectedContact.name,
-              contactType: selectedContact.type,
-              phoneModel: selectedContact.phoneModel,
-              amount: amountVal,
-              date: effectiveTxDate,
-              paymentMethod: transPaymentMethod,
-              descriptionNote: formattedDesc,
-              isAdvance: formattedDesc?.toLowerCase().includes('advance')
-            });
+            const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
+            if (isPendingChq) {
+              await removeLinkedCashbookEntry(fallbackTx.id);
+            } else {
+              await recordOrUpdateLinkedCashbookEntry({
+                txId: fallbackTx.id,
+                contactId: selectedContact.id,
+                contactName: selectedContact.name,
+                contactType: selectedContact.type,
+                phoneModel: selectedContact.phoneModel,
+                amount: amountVal,
+                date: effectiveTxDate,
+                paymentMethod: transPaymentMethod,
+                descriptionNote: formattedDesc,
+                isAdvance: formattedDesc?.toLowerCase().includes('advance')
+              });
+            }
           } else if (editingTransaction && transType !== 'PAYMENT') {
             await removeLinkedCashbookEntry(editingTransaction.id);
           }
@@ -2433,25 +2438,31 @@ export default function App() {
         // Rent deposit/paid -> Expense (Shop Rent)
         // Service payment -> Sales (Repair Charges)
         if (transType === 'PAYMENT' && amountVal > 0) {
-          await recordOrUpdateLinkedCashbookEntry({
-            txId: saved.id,
-            contactId: selectedContact.id,
-            contactName: selectedContact.name,
-            contactType: selectedContact.type,
-            phoneModel: selectedContact.phoneModel,
-            amount: amountVal,
-            date: effectiveTxDate,
-            paymentMethod: transPaymentMethod,
-            descriptionNote: formattedDesc,
-            isAdvance: formattedDesc?.toLowerCase().includes('advance')
-          });
+          const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
+          if (isPendingChq) {
+            await removeLinkedCashbookEntry(saved.id);
+            showProfileToast("Cheque saved as Pending (Will show in Sales/Expenses once passed)");
+          } else {
+            await recordOrUpdateLinkedCashbookEntry({
+              txId: saved.id,
+              contactId: selectedContact.id,
+              contactName: selectedContact.name,
+              contactType: selectedContact.type,
+              phoneModel: selectedContact.phoneModel,
+              amount: amountVal,
+              date: effectiveTxDate,
+              paymentMethod: transPaymentMethod,
+              descriptionNote: formattedDesc,
+              isAdvance: formattedDesc?.toLowerCase().includes('advance')
+            });
 
-          const toastMsg = 
-            selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
-            selectedContact.type === 'VENDOR' ? "Vendor payment saved & linked to Expenses (- Expense)!" :
-            selectedContact.type === 'RENT' ? "Rent payment saved & linked to Expenses (Shop Rent)!" :
-            "Service payment saved & linked to Sales (Repair Charges)!";
-          showProfileToast(toastMsg);
+            const toastMsg = 
+              selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
+              selectedContact.type === 'VENDOR' ? "Vendor payment saved & linked to Expenses (- Expense)!" :
+              selectedContact.type === 'RENT' ? "Rent payment saved & linked to Expenses (Shop Rent)!" :
+              "Service payment saved & linked to Sales (Repair Charges)!";
+            showProfileToast(toastMsg);
+          }
         } else if (editingTransaction && transType !== 'PAYMENT') {
           await removeLinkedCashbookEntry(editingTransaction.id);
         }
