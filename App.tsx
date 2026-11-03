@@ -4406,132 +4406,138 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
   const renderProfile = () => {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col pb-24 no-scrollbar">
-        {/* Profile Toast Notification */}
+      <div className="min-h-screen bg-slate-50/60 pb-28">
+        {/* Toast Notification Alert */}
         {profileToast && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-sm animate-in fade-in slide-in-from-top-4 duration-200">
-            <div className={`p-3.5 rounded-2xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${
-              profileToast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'
+          <div className="fixed top-4 right-4 z-[150] animate-in fade-in slide-in-from-top-3 duration-200">
+            <div className={`px-4 py-3 rounded-2xl shadow-xl border flex items-center gap-2.5 text-xs font-bold text-white ${
+              profileToast.type === 'error' ? 'bg-rose-600 border-rose-500' : 'bg-slate-900 border-slate-800'
             }`}>
-              {profileToast.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
-              <span className="flex-1">{profileToast.text}</span>
-              <button onClick={() => setProfileToast(null)} className="opacity-80 hover:opacity-100">
-                <X size={16} />
-              </button>
+              {profileToast.type === 'error' ? <ShieldAlert size={16} /> : <CheckCircle2 size={16} className="text-emerald-400" />}
+              <span>{profileToast.text}</span>
             </div>
           </div>
         )}
 
-        {/* Profile Top Hero Card */}
-        <header className="bg-slate-900 text-white px-5 pt-7 pb-6 shadow-md">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3.5">
-              <div className="relative group">
-                {shopLogo ? (
-                  <img 
-                    src={shopLogo} 
-                    alt="Logo" 
-                    className="w-16 h-16 rounded-2xl object-cover border-2 border-white/20 bg-white shadow-lg" 
-                  />
-                ) : (
-                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg font-black text-2xl border border-white/20">
-                    {shopName[0] || 'S'}
+        {/* Top Executive Workspace Header */}
+        <header className="bg-slate-900 text-white border-b border-slate-800">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              
+              {/* Store & Shop Brand Info */}
+              <div className="flex items-center gap-4">
+                <div className="relative group shrink-0">
+                  {shopLogo ? (
+                    <img 
+                      src={shopLogo} 
+                      alt="Store Logo" 
+                      className="w-16 h-16 rounded-2xl object-cover border-2 border-slate-700/80 bg-white shadow-md" 
+                    />
+                  ) : (
+                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white shadow-md font-black text-2xl border border-slate-700/80">
+                      {shopName[0] || 'S'}
+                    </div>
+                  )}
+                  <button 
+                    onClick={() => logoInputRef.current?.click()}
+                    className="absolute -bottom-1 -right-1 p-1.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-white shadow-md transition-transform active:scale-90"
+                    title="Change Logo"
+                  >
+                    <Camera size={13} />
+                  </button>
+                </div>
+
+                <div className="overflow-hidden">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">{shopName || 'Shop Control Center'}</h1>
+                    <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-950/80 border border-emerald-800/80 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                      <CheckCircle2 size={12} /> Verified Store
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 font-medium truncate mt-0.5">{shopTagline}</p>
+                  
+                  {/* Account Metadata Row (Zero-Pill Typography) */}
+                  <div className="flex items-center gap-2 mt-2 text-xs text-slate-400 flex-wrap">
+                    <span className="font-medium text-slate-300">{authUser?.email}</span>
+                    <span aria-hidden="true" className="text-slate-600">·</span>
+                    <span className="text-blue-400 font-semibold flex items-center gap-1">
+                      <ShieldCheck size={13} /> Active Operator: {currentUser.name} ({currentUser.role})
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Controls */}
+              <div className="flex items-center gap-3 shrink-0">
+                {/* Switch Operator Dropdown */}
+                {users.length > 1 && (
+                  <div className="flex items-center gap-1.5 bg-slate-800/90 border border-slate-700/80 rounded-xl p-1 px-2.5">
+                    <UserCheck size={14} className="text-purple-400 shrink-0" />
+                    <select
+                      value={currentUserId}
+                      onChange={(e) => {
+                        const nextUserId = e.target.value;
+                        const nextUser = users.find(u => u.id === nextUserId);
+                        if (nextUser) {
+                          setCurrentUserId(nextUser.id);
+                          localStorage.setItem('st_current_user_id', nextUser.id);
+                          showProfileToast(`Active operator switched to ${nextUser.name}`);
+                        }
+                      }}
+                      className="bg-transparent text-slate-200 text-xs font-bold outline-none cursor-pointer py-1"
+                    >
+                      {users.map(u => (
+                        <option key={u.id} value={u.id} className="bg-slate-900 text-white">
+                          Operator: {u.name} ({u.role})
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
-                <button 
-                  onClick={() => logoInputRef.current?.click()}
-                  className="absolute -bottom-1.5 -right-1.5 p-1.5 bg-blue-600 hover:bg-blue-500 rounded-full text-white shadow-md transition-transform active:scale-90"
-                  title="Upload Logo"
+
+                {/* Sign Out CTA */}
+                <button
+                  onClick={handleSignOut}
+                  className="px-3.5 py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 shrink-0"
                 >
-                  <Camera size={13} />
+                  <LogOut size={14} />
+                  <span>Sign Out</span>
                 </button>
               </div>
-              <div className="overflow-hidden">
-                <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-black tracking-tight leading-tight truncate">{shopName}</h1>
-                </div>
-                <p className="text-xs text-slate-300 font-medium truncate mt-0.5">{shopTagline}</p>
-                <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-400">
-                  <span className="flex items-center gap-1 font-semibold text-blue-400">
-                    <ShieldCheck size={13} /> {currentUser.name}
-                  </span>
-                  <span>•</span>
-                  <span className="bg-white/10 px-2 py-0.5 rounded-full text-[10px] font-bold text-slate-200">
-                    {currentUser.role}
-                  </span>
-                </div>
-              </div>
+
             </div>
 
-            <div className="flex items-center gap-2">
-              {/* Active Operating Staff Selector */}
-              {users.length > 1 && (
-                <div className="relative">
-                  <select
-                    value={currentUserId}
-                    onChange={(e) => {
-                      const nextUserId = e.target.value;
-                      const nextUser = users.find(u => u.id === nextUserId);
-                      if (nextUser) {
-                        setCurrentUserId(nextUser.id);
-                        localStorage.setItem('st_current_user_id', nextUser.id);
-                        showProfileToast(`Active operator switched to ${nextUser.name} (${nextUser.role})`);
-                      }
-                    }}
-                    className="bg-slate-800 text-slate-200 border border-slate-700 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer hover:bg-slate-700"
-                    title="Switch active staff user"
-                  >
-                    {users.map(u => (
-                      <option key={u.id} value={u.id}>
-                        {u.name} ({u.role})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Sign Out Button */}
+            {/* Navigation Tabs Bar */}
+            <div className="flex gap-1.5 border-t border-slate-800/80 pt-4 mt-6 overflow-x-auto no-scrollbar">
               <button
-                onClick={handleSignOut}
-                className="bg-red-500/20 hover:bg-red-500/30 text-red-300 hover:text-white border border-red-500/40 text-xs px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-colors active:scale-95 shadow-sm"
-                title="Sign Out of Shop Account"
+                onClick={() => setProfileTab('USERS')}
+                className={`py-2 px-4 rounded-xl font-bold text-xs flex items-center gap-2 transition-all whitespace-nowrap shrink-0 ${
+                  profileTab === 'USERS' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800/70 text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
               >
-                <LogOut size={13} />
-                <span className="hidden sm:inline">Sign Out</span>
+                <Users size={15} /> Team & Rights Management ({users.length})
+              </button>
+              <button
+                onClick={() => setProfileTab('STORE')}
+                className={`py-2 px-4 rounded-xl font-bold text-xs flex items-center gap-2 transition-all whitespace-nowrap shrink-0 ${
+                  profileTab === 'STORE' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800/70 text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <Store size={15} /> Store Details & Logo
+              </button>
+              <button
+                onClick={() => setProfileTab('DATA')}
+                className={`py-2 px-4 rounded-xl font-bold text-xs flex items-center gap-2 transition-all whitespace-nowrap shrink-0 ${
+                  profileTab === 'DATA' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800/70 text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <Database size={15} /> Cloud Sync & Backup
               </button>
             </div>
           </div>
-
-          {/* Sub Navigation Tabs */}
-          <div className="flex gap-2 border-t border-slate-800/80 pt-3 overflow-x-auto no-scrollbar">
-            <button
-              onClick={() => setProfileTab('STORE')}
-              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
-                profileTab === 'STORE' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
-              <Store size={15} /> Store & Logo
-            </button>
-            <button
-              onClick={() => setProfileTab('USERS')}
-              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
-                profileTab === 'USERS' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
-              <Users size={15} /> Team & Staff ({users.length})
-            </button>
-            <button
-              onClick={() => setProfileTab('DATA')}
-              className={`py-2 px-3.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shrink-0 ${
-                profileTab === 'DATA' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
-              <Database size={15} /> Backup & Data
-            </button>
-          </div>
         </header>
 
-        {/* Hidden Logo File Input */}
+        {/* Hidden File Input for Logo */}
         <input 
           ref={logoInputRef} 
           type="file" 
@@ -4540,440 +4546,411 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           className="hidden" 
         />
 
-        {/* Tab 1: Store Profile & Logo */}
-        {profileTab === 'STORE' && (
-          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
-            {/* Logo Manager Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
+        {/* Main Content Viewport */}
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+          {/* TAB 1: USER MANAGEMENT & RIGHTS */}
+          {profileTab === 'USERS' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              
+              {/* Header Banner & Add User Button */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h3 className="font-bold text-sm text-slate-800">Store Logo</h3>
-                  <p className="text-xs text-slate-400">Used across receipts, A4 invoices, and app header</p>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-bold text-slate-900">User Management & Rights</h2>
+                    <span className="text-xs bg-slate-100 text-slate-600 font-semibold px-2.5 py-0.5 rounded-md border border-slate-200">
+                      Multi-User Access
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1 max-w-xl">
+                    Add staff members to your shop, assign roles (Cashier, Manager, Technician), and customize edit and delete permissions.
+                  </p>
                 </div>
-                {shopLogo && (
+
+                {userCanManageUsers ? (
                   <button
-                    onClick={handleRemoveLogo}
-                    className="text-xs text-red-600 hover:text-red-700 font-bold flex items-center gap-1 bg-red-50 px-2.5 py-1 rounded-lg"
+                    onClick={handleOpenAddUser}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center justify-center gap-2 transition-all shrink-0 active:scale-95"
                   >
-                    <Trash2 size={13} /> Remove Logo
+                    <UserPlus size={16} /> Add Staff Member
                   </button>
+                ) : (
+                  <div className="text-xs bg-amber-50 text-amber-800 border border-amber-200/80 px-3 py-2 rounded-xl flex items-center gap-2 font-medium">
+                    <AlertCircle size={15} className="text-amber-600 shrink-0" />
+                    <span>View Only Access</span>
+                  </div>
                 )}
               </div>
 
-              <div className="flex items-center gap-4 p-3 bg-slate-50 rounded-2xl border border-slate-100">
-                <div className="w-20 h-20 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center overflow-hidden shrink-0">
-                  {shopLogo ? (
-                    <img src={shopLogo} alt="Store Logo Preview" className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center text-slate-400 gap-1">
-                      <ImageIcon size={24} />
-                      <span className="text-[9px] font-bold uppercase">No Logo</span>
+              {/* Team Statistics KPI Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Total Members</span>
+                  <p className="text-xl font-black text-slate-900 mt-1 font-mono">{users.length}</p>
+                </div>
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Active Operator</span>
+                  <p className="text-sm font-bold text-blue-600 mt-1 truncate">{currentUser.name}</p>
+                </div>
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Administrators</span>
+                  <p className="text-xl font-black text-purple-700 mt-1 font-mono">
+                    {users.filter(u => u.role === 'Admin' || u.permissions?.canManageUsers).length}
+                  </p>
+                </div>
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Restricted Staff</span>
+                  <p className="text-xl font-black text-slate-700 mt-1 font-mono">
+                    {users.filter(u => !u.permissions?.canDeleteData).length}
+                  </p>
+                </div>
+              </div>
+
+              {/* Staff Roster Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {users.map(u => {
+                  const isCurrent = u.id === currentUserId;
+                  const isOwner = u.id.startsWith('owner-') || u.role === 'Admin';
+                  const canDelete = u.permissions?.canDeleteData !== undefined ? u.permissions.canDeleteData : (u.role === 'Admin');
+                  const canEdit = u.permissions?.canEditData !== undefined ? u.permissions.canEditData : true;
+
+                  return (
+                    <div 
+                      key={u.id}
+                      className={`bg-white p-5 rounded-2xl border transition-all shadow-xs flex flex-col justify-between gap-4 ${
+                        isCurrent ? 'border-blue-500 ring-2 ring-blue-500/10' : 'border-slate-200/80 hover:border-slate-300'
+                      }`}
+                    >
+                      <div>
+                        {/* Card Header Row */}
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-white text-base shadow-xs ${
+                              u.role === 'Admin' ? 'bg-purple-600' : (u.role === 'Manager' ? 'bg-blue-600' : 'bg-slate-700')
+                            }`}>
+                              {u.name[0]?.toUpperCase() || 'U'}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className="font-bold text-slate-900 text-sm">{u.name}</h3>
+                                {isCurrent && (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                                    Active Operator
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-400 font-medium mt-0.5">@{u.username} {u.phone ? `• ${u.phone}` : ''}</p>
+                            </div>
+                          </div>
+
+                          <span className={`text-xs px-2.5 py-1 rounded-lg font-bold border ${
+                            u.role === 'Admin' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                            u.role === 'Manager' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                            'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}>
+                            {u.role}
+                          </span>
+                        </div>
+
+                        {/* Unboxed Permissions & Rights Metadata */}
+                        <div className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-xs text-slate-600">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400 font-medium">Delete Rights:</span>
+                            {canDelete ? (
+                              <span className="font-bold text-rose-600 flex items-center gap-1">
+                                <Trash2 size={12} /> Allowed
+                              </span>
+                            ) : (
+                              <span className="font-bold text-slate-400 flex items-center gap-1">
+                                <Lock size={12} /> Blocked / No Access
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400 font-medium">Edit Data Rights:</span>
+                            <span className={`font-bold ${canEdit ? 'text-emerald-600' : 'text-slate-400'}`}>
+                              {canEdit ? 'Allowed' : 'Read Only'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400 font-medium">Admin User Access:</span>
+                            <span className={`font-bold ${u.permissions?.canManageUsers ? 'text-purple-600' : 'text-slate-400'}`}>
+                              {u.permissions?.canManageUsers ? 'Full Admin Rights' : 'Standard Staff'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Footer Actions */}
+                      <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500 font-semibold">
+                          <span className={`w-2 h-2 rounded-full ${u.status === 'Active' ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                          <span>{u.status}</span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {!isCurrent && (
+                            <button
+                              onClick={() => {
+                                setCurrentUserId(u.id);
+                                localStorage.setItem('st_current_user_id', u.id);
+                                showProfileToast(`Switched active operator to ${u.name}`);
+                              }}
+                              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-95"
+                            >
+                              Switch Operator
+                            </button>
+                          )}
+                          {(userCanManageUsers || isCurrent) && (
+                            <button
+                              onClick={() => handleOpenEditUser(u)}
+                              className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+                              title="Edit User"
+                            >
+                              <Pencil size={15} />
+                            </button>
+                          )}
+                          {userCanManageUsers && users.length > 1 && !isOwner && (
+                            <button
+                              onClick={() => handleDeleteUser(u.id)}
+                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
+                              title="Delete User"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+
+              {/* Primary Supabase Account Ownership Banner */}
+              <div className="bg-slate-900 text-white p-6 rounded-2xl border border-slate-800 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                    <ShieldCheck size={24} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-sm text-white">{userProfile?.fullName || 'Shop Owner Account'}</h4>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">
+                        Primary Owner
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">{authUser?.email}</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleSignOut}
+                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 active:scale-95 shrink-0"
+                >
+                  <LogOut size={15} /> Sign Out of Shop Account
+                </button>
+              </div>
+
+            </div>
+          )}
+
+          {/* TAB 2: STORE DETAILS & LOGO */}
+          {profileTab === 'STORE' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-200">
+              
+              {/* Logo Manager */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-4 lg:col-span-1">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm text-slate-900">Store Branding & Logo</h3>
+                  {shopLogo && (
+                    <button
+                      onClick={handleRemoveLogo}
+                      className="text-xs text-rose-600 hover:text-rose-700 font-bold flex items-center gap-1 bg-rose-50 px-2.5 py-1 rounded-lg"
+                    >
+                      <Trash2 size={13} /> Remove
+                    </button>
                   )}
                 </div>
 
-                <div className="flex-1 space-y-2">
-                  <p className="text-xs text-slate-600 font-medium">
-                    Upload your shop logo or brand image (PNG, JPG, SVG). It will be auto-optimized for invoices and thermal receipts.
+                <div className="flex flex-col items-center justify-center p-6 bg-slate-50 rounded-2xl border border-slate-200/80 text-center gap-3">
+                  <div className="w-24 h-24 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center overflow-hidden">
+                    {shopLogo ? (
+                      <img src={shopLogo} alt="Logo Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="text-slate-400 flex flex-col items-center gap-1">
+                        <ImageIcon size={28} />
+                        <span className="text-[10px] font-bold uppercase tracking-wider">No Logo</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-500 max-w-xs">
+                    Uploaded logo renders automatically on POS receipt slips, A4 invoices, and PDF statements.
                   </p>
+
                   <button
                     onClick={() => logoInputRef.current?.click()}
-                    className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-2 px-3.5 rounded-xl shadow-sm flex items-center gap-1.5 active:scale-95 transition-all"
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center justify-center gap-2 transition-all active:scale-95"
                   >
                     <Upload size={14} /> Upload Custom Logo
                   </button>
                 </div>
               </div>
-            </div>
 
-            {/* Store Details Form Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-              <div className="border-b border-slate-100 pb-3">
-                <h3 className="font-bold text-sm text-slate-800">Store & Business Details</h3>
-                <p className="text-xs text-slate-400">Update store name and contact info displayed to customers</p>
-              </div>
-
-              <div className="space-y-3.5">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Name</label>
-                  <input 
-                    type="text"
-                    value={shopName}
-                    onChange={e => setShopName(e.target.value)}
-                    placeholder="e.g. Smart Time Service Center"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-900 outline-none focus:border-blue-500 focus:bg-white transition-all"
-                  />
+              {/* Store Details Form */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-4 lg:col-span-2">
+                <div className="border-b border-slate-100 pb-3">
+                  <h3 className="font-bold text-sm text-slate-900">Store & Business Details</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Update business contact details printed on customer invoices</p>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Business Tagline / Subtitle</label>
-                  <input 
-                    type="text"
-                    value={shopTagline}
-                    onChange={e => setShopTagline(e.target.value)}
-                    placeholder="e.g. Mobile Phone Repair & Service"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Phone Number</label>
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Name</label>
                     <input 
                       type="text"
-                      value={shopPhone}
-                      onChange={e => setShopPhone(e.target.value)}
-                      placeholder="e.g. +94 77 123 4567"
+                      value={shopName}
+                      onChange={e => setShopName(e.target.value)}
+                      placeholder="e.g. Smart Time Service Center"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-900 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Tagline / Subtitle</label>
+                    <input 
+                      type="text"
+                      value={shopTagline}
+                      onChange={e => setShopTagline(e.target.value)}
+                      placeholder="e.g. Mobile Phone Repair & Service"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
                     />
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Address / City</label>
-                    <input 
-                      type="text"
-                      value={shopAddress}
-                      onChange={e => setShopAddress(e.target.value)}
-                      placeholder="e.g. Main Street, Colombo"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
-                    />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Phone Number</label>
+                      <input 
+                        type="text"
+                        value={shopPhone}
+                        onChange={e => setShopPhone(e.target.value)}
+                        placeholder="e.g. +94 77 123 4567"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Store Address / Location</label>
+                      <input 
+                        type="text"
+                        value={shopAddress}
+                        onChange={e => setShopAddress(e.target.value)}
+                        placeholder="e.g. No.05 Station Road, Matale"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
+                      />
+                    </div>
                   </div>
+                </div>
+
+                <div className="pt-3">
+                  <button
+                    onClick={handleSaveStoreProfile}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
+                  >
+                    <Check size={16} /> Save Store Details
+                  </button>
                 </div>
               </div>
 
-              <div className="pt-2">
-                <button
-                  onClick={handleSaveStoreProfile}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-sm"
-                >
-                  <Check size={16} /> Save Store Details
-                </button>
-              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Tab 2: Users & Staff Management */}
-        {profileTab === 'USERS' && (
-          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
-            {/* Header with Add User button */}
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-base text-slate-800">User Management & Rights</h3>
-                <p className="text-xs text-slate-400">Admin can assign delete rights and team roles</p>
+          {/* TAB 3: CLOUD SYNC & BACKUP */}
+          {profileTab === 'DATA' && (
+            <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in duration-200">
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-600 flex items-center justify-center text-white shadow-xs">
+                      <Database size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-900">Supabase Cloud Database</h3>
+                      <p className="text-xs text-slate-400">PostgreSQL cloud persistence & multi-tenant security</p>
+                    </div>
+                  </div>
+
+                  <span className={`text-[11px] font-bold px-3 py-1 rounded-full border ${
+                    dbStatus === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                    dbStatus === 'needs_tables' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                    'bg-rose-50 text-rose-700 border-rose-200'
+                  }`}>
+                    {dbStatus === 'connected' ? '● Connected & Synced' :
+                     dbStatus === 'needs_tables' ? '▲ Table Setup Required' : '✕ Disconnected'}
+                  </span>
+                </div>
+
+                <div className="space-y-2.5 text-xs">
+                  <div className="flex justify-between py-1.5 border-b border-slate-100">
+                    <span className="text-slate-400 font-medium">Project Name:</span>
+                    <span className="font-bold text-slate-800">{SUPABASE_PROJECT_NAME}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-slate-100">
+                    <span className="text-slate-400 font-medium">Project ID:</span>
+                    <span className="font-mono font-bold text-slate-800">{SUPABASE_PROJECT_ID}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-slate-100">
+                    <span className="text-slate-400 font-medium">Backend Endpoint:</span>
+                    <span className="font-mono text-slate-600 truncate max-w-[250px]">{SUPABASE_URL}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSqlModalOpen(true)}
+                    className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
+                  >
+                    <Copy size={14} /> View SQL Migration Script
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportBackup}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all active:scale-95"
+                  >
+                    <Download size={14} /> Export Backup (JSON)
+                  </button>
+                </div>
               </div>
-              {userCanManageUsers ? (
-                <button
-                  onClick={handleOpenAddUser}
-                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold py-2.5 px-3.5 rounded-xl shadow-md flex items-center gap-1.5 active:scale-95 transition-all"
-                >
-                  <UserPlus size={15} /> Add User
-                </button>
-              ) : (
-                <span className="text-xs bg-slate-100 text-slate-500 font-bold px-3 py-1 rounded-xl border border-slate-200">
-                  View Only
-                </span>
+
+              {/* Danger Zone: Wipe Ledger Data */}
+              {userCanDelete && userCanManageUsers && (
+                <div className="bg-rose-50/70 p-6 rounded-2xl border border-rose-200 shadow-xs space-y-3">
+                  <div className="flex items-center gap-2 text-rose-700 font-bold text-sm">
+                    <ShieldAlert size={18} /> Danger Zone: Reset Database Data
+                  </div>
+                  <p className="text-xs text-rose-600 leading-relaxed">
+                    Permanently wipes all customer transactions, ledger records, and service orders from Supabase. This action cannot be undone.
+                  </p>
+                  <button 
+                    onClick={async () => { 
+                      if (!window.confirm("RESET APP DATA? All database records will be permanently wiped.")) return; 
+                      await Promise.all([
+                        supabase.from('transactions').delete().neq('id', '0'), 
+                        supabase.from('contacts').delete().neq('id', '0')
+                      ]); 
+                      window.location.reload(); 
+                    }} 
+                    className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 px-4 rounded-xl shadow-xs active:scale-95 transition-all text-xs"
+                  >
+                    Wipe All Ledger Records
+                  </button>
+                </div>
               )}
             </div>
-
-            {!userCanManageUsers && (
-              <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-2xl text-xs text-amber-800 flex items-center gap-2 font-medium">
-                <AlertCircle size={16} className="text-amber-600 shrink-0" />
-                <span>Logged in as standard user. Administrator rights required to add, edit, or delete team accounts.</span>
-              </div>
-            )}
-
-            {/* Users List */}
-            <div className="space-y-2.5">
-              {users.map(u => {
-                const isCurrent = u.id === currentUserId;
-                const roleBadgeColor = 
-                  u.role === 'Admin' ? 'bg-purple-100 text-purple-800 border-purple-200' :
-                  u.role === 'Manager' ? 'bg-blue-100 text-blue-800 border-blue-200' :
-                  u.role === 'Cashier' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
-                  'bg-amber-100 text-amber-800 border-amber-200';
-
-                const hasDeleteRights = u.permissions?.canDeleteData !== undefined ? u.permissions.canDeleteData : (u.role === 'Admin');
-
-                return (
-                  <div 
-                    key={u.id}
-                    className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col gap-3 transition-all hover:border-slate-300"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-sm ${
-                          u.role === 'Admin' ? 'bg-purple-600' : (u.role === 'Manager' ? 'bg-blue-600' : 'bg-slate-700')
-                        }`}>
-                          {u.name[0]}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-bold text-sm text-slate-800">{u.name}</h4>
-                            {isCurrent && (
-                              <span className="text-[10px] bg-green-50 text-green-700 font-bold px-2 py-0.5 rounded-full border border-green-200">
-                                Active You
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-400 font-medium">@{u.username} {u.phone ? `• ${u.phone}` : ''}</p>
-                        </div>
-                      </div>
-
-                      <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold border ${roleBadgeColor}`}>
-                        {u.role}
-                      </span>
-                    </div>
-
-                    {/* Permissions Badges */}
-                    <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[10px]">
-                      {hasDeleteRights ? (
-                        <span className="bg-red-50 text-red-700 px-2 py-0.5 rounded-md font-bold border border-red-200/60 flex items-center gap-1">
-                          <Trash2 size={10} /> Delete Data Rights: Allowed
-                        </span>
-                      ) : (
-                        <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md font-semibold border border-slate-200 flex items-center gap-1">
-                          <Lock size={10} /> Delete Data: No Access
-                        </span>
-                      )}
-                      {u.permissions?.canManageUsers && (
-                        <span className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded-md font-bold border border-purple-200/60 flex items-center gap-1">
-                          <Shield size={10} /> Admin Rights
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${u.status === 'Active' ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
-                        <span className="text-[11px] font-semibold text-slate-500">{u.status}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        {!isCurrent && (
-                          <button
-                            onClick={() => {
-                              setCurrentUserId(u.id);
-                              localStorage.setItem('st_current_user_id', u.id);
-                              showProfileToast(`Switched active staff to ${u.name}`);
-                            }}
-                            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-bold transition-colors"
-                            title="Switch active user"
-                          >
-                            Switch Active User
-                          </button>
-                        )}
-                        {(userCanManageUsers || isCurrent) && (
-                          <button
-                            onClick={() => handleOpenEditUser(u)}
-                            className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="Edit User"
-                          >
-                            <Pencil size={15} />
-                          </button>
-                        )}
-                        {userCanManageUsers && users.length > 1 && (
-                          <button
-                            onClick={() => handleDeleteUser(u.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete User"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Authenticated Shop Owner Account Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3 mt-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shadow-xs">
-                    <ShieldCheck size={22} />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-sm text-slate-900">{userProfile?.fullName || 'Shop Owner'}</h4>
-                    <p className="text-xs text-slate-500 font-mono">{authUser?.email || 'Authenticated Shop Account'}</p>
-                  </div>
-                </div>
-                <span className="text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
-                  <CheckCircle2 size={12} /> Verified Account
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-400 font-medium">Active Operator:</span>
-                  <span className="font-bold text-slate-800">{currentUser.name} ({currentUser.role})</span>
-                </div>
-                <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${userCanDelete ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-slate-100 text-slate-600'}`}>
-                  {userCanDelete ? 'Delete: Allowed' : 'Delete: Restricted'}
-                </span>
-              </div>
-
-              <button
-                onClick={handleSignOut}
-                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 mt-2"
-              >
-                <LogOut size={16} /> Sign Out of Shop Account
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 4: Backup & Data */}
-        {profileTab === 'DATA' && (
-          <div className="p-4 sm:p-5 max-w-xl mx-auto w-full space-y-4">
-            {/* Supabase Database Connection Card */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm">
-                    <Database size={18} />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-slate-800">Supabase Cloud Database</h3>
-                    <p className="text-xs text-slate-400">PostgreSQL backend & cloud sync</p>
-                  </div>
-                </div>
-
-                <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
-                  dbStatus === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                  dbStatus === 'needs_tables' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                  dbStatus === 'checking' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                  'bg-red-50 text-red-700 border-red-200'
-                }`}>
-                  {dbStatus === 'connected' ? '● Connected & Synced' :
-                   dbStatus === 'needs_tables' ? '▲ Needs Tables Setup' :
-                   dbStatus === 'checking' ? '↻ Checking...' : '✕ Connection Error'}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-slate-50">
-                  <span className="text-slate-400 font-medium">Project Name:</span>
-                  <span className="font-bold text-slate-800">{SUPABASE_PROJECT_NAME}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-slate-50">
-                  <span className="text-slate-400 font-medium">Project ID:</span>
-                  <span className="font-mono font-bold text-slate-800">{SUPABASE_PROJECT_ID}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-slate-50">
-                  <span className="text-slate-400 font-medium">Project URL:</span>
-                  <span className="font-mono text-[11px] text-slate-600 truncate max-w-[210px]">{SUPABASE_URL}</span>
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setIsSqlModalOpen(true)}
-                  className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
-                >
-                  <Copy size={13} /> View / Copy SQL Setup
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await fetchData();
-                    if (dbStatus === 'connected') {
-                      showProfileToast('Connected and synced with Supabase!');
-                    } else if (dbStatus === 'needs_tables') {
-                      showProfileToast('Project connected! Run SQL script in Supabase to create tables.', 'error');
-                    }
-                  }}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-3.5 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all"
-                >
-                  <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} /> Test Sync
-                </button>
-              </div>
-            </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
-              <h3 className="font-bold text-sm text-slate-800">Export & Backup Ledger Data</h3>
-              <p className="text-xs text-slate-500">
-                Download a complete JSON backup file of all customer records, vendor accounts, rent cycles, service orders, and payment transactions.
-              </p>
-              <button
-                onClick={handleExportBackup}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
-              >
-                <Download size={16} /> Download Full Ledger Backup (JSON)
-              </button>
-            </div>
-
-            {userCanDelete && userCanManageUsers ? (
-              <div className="bg-red-50/70 p-5 rounded-2xl border border-red-200 shadow-sm space-y-3">
-                <div className="flex items-center gap-2 text-red-700 font-bold text-sm">
-                  <ShieldAlert size={18} /> Danger Zone: Wipe Ledger Data
-                </div>
-                <p className="text-xs text-red-600 leading-relaxed">
-                  Permanently deletes all transactions and contacts from the Supabase database. This action cannot be undone.
-                </p>
-                <button 
-                  onClick={async () => { 
-                    if (!window.confirm("RESET APP? All database data will be permanently wiped.")) return; 
-                    await Promise.all([
-                      supabase.from('transactions').delete().neq('id', '0'), 
-                      supabase.from('contacts').delete().neq('id', '0')
-                    ]); 
-                    window.location.reload(); 
-                  }} 
-                  className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-xl shadow-md active:scale-95 transition-all text-xs"
-                >
-                  Wipe All Ledger Records
-                </button>
-              </div>
-            ) : (
-              <div className="bg-slate-100 p-4 rounded-2xl border border-slate-200 text-xs text-slate-500 flex items-center gap-2">
-                <Lock size={16} className="text-slate-400 shrink-0" />
-                <span>Wipe Ledger Data is restricted to Administrators with Delete Data Rights.</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Active Session & Log Out Section */}
-        <div className="p-4 sm:p-5 max-w-xl mx-auto w-full pt-1 space-y-3">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center font-bold">
-                  <ShieldCheck size={22} className="text-blue-600" />
-                </div>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">{userProfile?.fullName || authUser?.user_metadata?.full_name || 'Shop Owner'}</h4>
-                  <p className="text-xs text-slate-500 font-medium truncate max-w-[200px]">{authUser?.email}</p>
-                </div>
-              </div>
-              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                <CheckCircle2 size={11} /> Verified Account
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-xs py-1">
-              <div className="flex items-center gap-2 text-slate-500 font-medium">
-                <UserCheck size={14} className="text-slate-400" />
-                <span>Active Role: <strong className="text-slate-700">{currentUser.name} ({currentUser.role})</strong></span>
-              </div>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${userCanDelete ? 'bg-red-50 text-red-700 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                {userCanDelete ? 'Delete: Allowed' : 'Delete: Blocked'}
-              </span>
-            </div>
-
-            <div className="pt-1">
-              <button
-                onClick={handleSignOut}
-                className="w-full py-3 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-xs"
-                title="Sign out of Supabase Shop account"
-              >
-                <LogOut size={16} /> Sign Out of Shop Account
-              </button>
-            </div>
-          </div>
-        </div>
+          )}
+        </main>
 
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
