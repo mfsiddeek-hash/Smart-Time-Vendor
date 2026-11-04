@@ -6344,7 +6344,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 }`}
               >
                 <ArrowUpRight size={13} />
-                <span>Sales ({cashbookEntries.filter(e => e.type === 'SALE').length})</span>
+                <span>Sales ({filteredCashbookEntries.filter(e => e.type === 'SALE').length})</span>
               </button>
 
               <button
@@ -6356,7 +6356,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 }`}
               >
                 <ArrowDownRight size={13} />
-                <span>Expenses ({cashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
+                <span>Expenses ({filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
               </button>
             </div>
           </div>
