@@ -8,7 +8,8 @@ import {
   ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
-  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, Minus, Tag, ArrowUpRight, ArrowDownRight
+  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, Minus, Tag, ArrowUpRight, ArrowDownRight,
+  Sun, Moon
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -123,6 +124,25 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Theme Dark / Light Mode State (default to dark mode as per design attachment)
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('st_theme_mode');
+      if (saved) return saved === 'dark';
+    } catch {}
+    return true;
+  });
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('st_theme_mode', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('st_theme_mode', 'light');
+    }
+  }, [isDarkMode]);
   
   // Supabase Auth & User Profile State
   const [authSession, setAuthSession] = useState<any>(null);
@@ -2717,58 +2737,129 @@ export default function App() {
       );
     });
 
+    // Compute pending cheques count & total for the "Needs attention" card
+    let pendingChequesCountTotal = 0;
+    let pendingChequesAmountTotal = 0;
+    contacts.forEach(c => {
+      const s = contactStats[c.id];
+      if (s && s.pendingChequesCount > 0) {
+        pendingChequesCountTotal += s.pendingChequesCount;
+        pendingChequesAmountTotal += s.pendingChequesAmount;
+      }
+    });
+
+    const userInitials = (currentUser?.name || 'User')
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col pb-20 no-scrollbar">
-        <header className="bg-white px-4 py-3 pb-0 shadow-sm z-20 sticky top-0">
-          <div className="flex justify-between items-center mb-2">
-            <div 
-              onClick={() => navigateTo('PROFILE')} 
-              className="flex items-center gap-2.5 cursor-pointer group"
-              title="Click to view & edit Profile"
-            >
-              {shopLogo ? (
-                <img src={shopLogo} alt="Logo" className="w-10 h-10 rounded-xl object-cover border border-slate-200 shadow-sm group-hover:scale-105 transition-transform" />
-              ) : (
-                <div className="w-10 h-10 rounded-xl bg-slate-800 text-white flex items-center justify-center font-bold text-sm shadow-sm group-hover:bg-slate-900 transition-colors">
-                  <Store size={20} />
+      <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-24 no-scrollbar transition-colors">
+        {/* Top App Header */}
+        <header className="bg-white dark:bg-[#0b101d] px-4 sm:px-6 py-3 shadow-xs dark:shadow-none border-b border-slate-200 dark:border-[#1e2a3c] sticky top-0 z-30 transition-colors">
+          <div className="max-w-7xl mx-auto">
+            <div className="flex justify-between items-center mb-3">
+              {/* Brand logo & Shop title */}
+              <div 
+                onClick={() => navigateTo('PROFILE')} 
+                className="flex items-center gap-3 cursor-pointer group"
+                title="Click to view & edit Profile"
+              >
+                {shopLogo ? (
+                  <img src={shopLogo} alt="Logo" className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl object-cover border border-slate-200 dark:border-[#1e2a3c] shadow-xs group-hover:scale-105 transition-transform" />
+                ) : (
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm group-hover:opacity-90 transition-opacity">
+                    <Store size={20} />
+                  </div>
+                )}
+                <div>
+                  <h1 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white leading-tight group-hover:text-blue-500 transition-colors">Ledger Book</h1>
+                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 truncate max-w-[180px]">{shopName || 'Smart Time'}</p>
                 </div>
-              )}
-              <div>
-                <h1 className="text-xl font-bold text-slate-800 leading-tight group-hover:text-blue-600 transition-colors">Ledger Book</h1>
-                <p className="text-xs font-semibold text-slate-500 truncate max-w-[160px]">{shopName}</p>
+              </div>
+
+              {/* Header Right Actions & User Profile */}
+              <div className="flex items-center gap-2">
+                {/* Dark / Light Mode Toggle Button */}
+                <button 
+                  onClick={() => setIsDarkMode(!isDarkMode)}
+                  className="p-2 rounded-xl bg-slate-100 dark:bg-[#1a2332] text-slate-600 dark:text-amber-400 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] transition-all shadow-xs active:scale-95 flex items-center justify-center"
+                  title={isDarkMode ? "Switch to Normal (Light) Mode" : "Switch to Dark Mode"}
+                >
+                  {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+                </button>
+
+                <span className="hidden sm:inline text-xs font-bold text-slate-500 dark:text-slate-400">Shop</span>
+
+                <button 
+                  onClick={() => navigateTo('PROFILE')}
+                  className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white font-bold text-xs flex items-center justify-center border border-slate-300 dark:border-slate-600 hover:ring-2 hover:ring-blue-500 transition-all"
+                  title={`Logged in as ${currentUser.name} (${currentUser.role})`}
+                >
+                  {userInitials}
+                </button>
+
+                <button 
+                  onClick={handleSignOut}
+                  className="hidden sm:flex items-center gap-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/60 text-red-600 dark:text-red-400 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-red-200 dark:border-red-900/50 transition-colors shadow-xs active:scale-95"
+                  title="Sign Out of Shop Account"
+                >
+                  <LogOut size={14} />
+                  <span>Sign Out</span>
+                </button>
+
+                <button 
+                  onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} 
+                  className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" 
+                  title="Add New Party / Order"
+                >
+                  <Plus size={18} />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-               <button 
-                 onClick={() => navigateTo('PROFILE')}
-                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl text-xs font-bold text-slate-700 transition-colors border border-slate-200"
-                 title={`Logged in as ${currentUser.name} (${currentUser.role})`}
-               >
-                 <UserCheck size={14} className="text-blue-600" />
-                 <span className="hidden sm:inline max-w-[80px] truncate">{currentUser.name.split(' ')[0]}</span>
-               </button>
-               <button 
-                 onClick={handleSignOut}
-                 className="flex items-center gap-1 bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-red-200 transition-colors shadow-sm active:scale-95"
-                 title="Sign Out of Shop Account"
-               >
-                 <LogOut size={14} />
-                 <span className="hidden sm:inline">Sign Out</span>
-               </button>
-               <button onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" title="Add New"><Plus size={20} /></button>
+
+            {/* Navigation Tabs Bar */}
+            <div className="flex gap-6 overflow-x-auto no-scrollbar pt-1 border-t border-slate-100 dark:border-[#1e2a3c]">
+              <button 
+                onClick={() => setActiveTab('CUSTOMER')} 
+                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'CUSTOMER' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
+              >
+                <Users size={17} />
+                <span>Customers</span>
+              </button>
+
+              <button 
+                onClick={() => setActiveTab('VENDOR')} 
+                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'VENDOR' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
+              >
+                <Truck size={17} />
+                <span>Vendors</span>
+              </button>
+
+              <button 
+                onClick={() => setActiveTab('RENT')} 
+                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'RENT' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
+              >
+                <Building size={17} />
+                <span>Rent</span>
+              </button>
+
+              <button 
+                onClick={() => setActiveTab('SERVICE')} 
+                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'SERVICE' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
+              >
+                <Wrench size={17} />
+                <span>Service orders</span>
+              </button>
             </div>
-          </div>
-          <div className="flex gap-4 mt-4 overflow-x-auto no-scrollbar pb-1">
-            <button onClick={() => setActiveTab('CUSTOMER')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'CUSTOMER' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Users size={17} />Customers</button>
-            <button onClick={() => setActiveTab('VENDOR')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'VENDOR' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Truck size={17} />Vendors</button>
-            <button onClick={() => setActiveTab('RENT')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'RENT' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Building size={17} />Rent</button>
-            <button onClick={() => setActiveTab('SERVICE')} className={`flex items-center gap-2 pb-2.5 border-b-2 font-medium transition-colors shrink-0 ${activeTab === 'SERVICE' ? 'border-slate-800 text-slate-800 font-bold' : 'border-transparent text-gray-500'}`}><Wrench size={17} />Service Order</button>
           </div>
         </header>
 
         {/* Supabase Table Initialization Alert Banner */}
         {dbStatus === 'needs_tables' && !dismissDbAlert && (
-          <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2.5 text-xs flex items-center justify-between shadow-sm animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2 text-xs flex items-center justify-between shadow-xs animate-in fade-in duration-200">
             <div className="flex items-center gap-2">
               <Database size={15} className="shrink-0 animate-pulse text-amber-200" />
               <div>
@@ -2779,7 +2870,7 @@ export default function App() {
             <div className="flex items-center gap-1.5 shrink-0">
               <button 
                 onClick={() => setIsSqlModalOpen(true)}
-                className="bg-white text-orange-900 font-bold px-2.5 py-1 rounded-lg text-[10px] shadow-sm hover:bg-orange-50 active:scale-95 transition-all flex items-center gap-1"
+                className="bg-white text-orange-900 font-bold px-2.5 py-1 rounded-lg text-[10px] shadow-xs hover:bg-orange-50 active:scale-95 transition-all flex items-center gap-1"
               >
                 <Copy size={11} /> Copy SQL
               </button>
@@ -2794,281 +2885,437 @@ export default function App() {
           </div>
         )}
 
-        <div className="p-4 flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-[#f0fdf4] border border-[#dcfce7] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">{activeTab === 'RENT' ? 'Total Saved' : (activeTab === 'VENDOR' ? 'Total Paid' : 'Total Received')}</p>
-              <p className="text-xl font-bold text-[#15803d]">LKR {activeTotals.totalPayments.toLocaleString()}</p>
+        {/* Main Content Area */}
+        <div className="p-4 sm:p-6 flex flex-col gap-5 max-w-7xl mx-auto w-full">
+          {/* View Heading & Primary Action Buttons (matching image attachment) */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
+                {activeTab === 'VENDOR' ? 'Vendors' : activeTab === 'CUSTOMER' ? 'Customers' : activeTab === 'RENT' ? 'Shop Rent' : 'Service orders'}
+              </h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+                {activeTab === 'VENDOR' ? 'Track balances, payments, and supplier follow-ups.' : 
+                 activeTab === 'CUSTOMER' ? 'Track customer credit, payments, and histories.' : 
+                 activeTab === 'RENT' ? 'Manage rent savings, monthly target, and expense sync.' : 
+                 'Track device repairs, service progress, and invoices.'}
+              </p>
             </div>
-            <div className="bg-[#fef2f2] border border-[#fee2e2] rounded-xl p-3 shadow-sm flex flex-col justify-center min-h-[70px]">
-              <p className="text-[10px] text-slate-600 font-bold mb-1 uppercase tracking-tighter">{activeTab === 'RENT' ? 'Monthly Debt' : (activeTab === 'VENDOR' ? 'To pay' : 'To collect')}</p>
-              <p className="text-xl font-bold text-[#b91c1c]">LKR {activeTotals.netBalance.toLocaleString()}</p>
+
+            <div className="flex items-center gap-2.5">
+              <button 
+                onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }}
+                className="bg-slate-100 hover:bg-slate-200 dark:bg-[#1a2332] dark:hover:bg-[#222e42] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#2b3950] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs active:scale-95"
+              >
+                <Plus size={15} />
+                <span>+ Add {activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'rent account' : 'order'}</span>
+              </button>
+
+              <button 
+                onClick={() => {
+                  if (filtered.length > 0) {
+                    setSelectedContact(filtered[0]);
+                    navigateTo('TRANSACTION_FORM');
+                  } else {
+                    navigateTo('CONTACT_FORM');
+                  }
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
+              >
+                <Plus size={15} />
+                <span>+ Record payment</span>
+              </button>
             </div>
           </div>
 
-          {/* Quick Sales & Expense Snapshot Widget */}
+          {/* 3 KPI Summary Cards (matching image attachment) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Card 1: Total Outstanding */}
+            <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Total outstanding</p>
+              <div>
+                <p className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-1">LKR {activeTotals.netBalance.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">
+                  Across {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'}
+                </p>
+              </div>
+            </div>
+
+            {/* Card 2: Paid This Month */}
+            <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Paid this month</p>
+              <div>
+                <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">LKR {activeTotals.totalPayments.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">
+                  Across settled transactions
+                </p>
+              </div>
+            </div>
+
+            {/* Card 3: Needs Attention */}
+            <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Needs attention</p>
+              <div>
+                <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
+                  {pendingChequesCountTotal > 0 ? `${pendingChequesCountTotal} cheque${pendingChequesCountTotal === 1 ? '' : 's'}` : 'All clear'}
+                </p>
+                <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold mt-0.5">
+                  {pendingChequesCountTotal > 0 
+                    ? `${pendingChequesCountTotal} cheque due · LKR ${pendingChequesAmountTotal.toLocaleString()}` 
+                    : 'No pending cheques on hold'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Today's Sales & Expenses Widget (matching image attachment) */}
           <div 
             onClick={() => navigateTo('CASH_BOOK')} 
-            className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-xs flex items-center justify-between cursor-pointer hover:border-blue-400 hover:shadow-sm transition-all group active:scale-[0.99]"
+            className="bg-slate-900 text-white dark:bg-[#162032] dark:border dark:border-[#223046] rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer hover:border-blue-500/80 transition-all group active:scale-[0.995]"
           >
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
-                <Wallet size={18} />
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center font-bold shrink-0">
+                <Wallet size={20} />
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-extrabold text-xs text-slate-900 group-hover:text-blue-600 transition-colors">Sales & Expense (Daybook)</span>
-                  <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-full">
-                    {todayCashbookSnapshot.count} today
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-extrabold text-sm text-white group-hover:text-blue-400 transition-colors">Today’s sales & expenses</span>
+                  <span className="text-[10px] bg-amber-950/80 text-amber-400 border border-amber-800/60 font-bold px-2.5 py-0.5 rounded-full">
+                    {todayCashbookSnapshot.count} entries
                   </span>
                 </div>
-                <div className="flex items-center gap-3 text-[11px] mt-0.5 font-bold">
-                  <span className="text-emerald-600 font-extrabold">+ LKR {todayCashbookSnapshot.sales.toLocaleString()}</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="text-red-500 font-extrabold">- LKR {todayCashbookSnapshot.expenses.toLocaleString()}</span>
-                  <span className="text-slate-300">•</span>
-                  <span className={`text-[10px] ${todayCashbookSnapshot.net >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
-                    Net {todayCashbookSnapshot.net >= 0 ? '+' : ''}{todayCashbookSnapshot.net.toLocaleString()}
-                  </span>
-                </div>
+                <p className="text-xs text-slate-400 font-medium mt-0.5">Quick view of today’s cash movement</p>
               </div>
             </div>
-            <div className="flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-xl group-hover:bg-blue-600 group-hover:text-white transition-all">
-              <span>View</span>
-              <ArrowRight size={13} />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <div className="bg-[#f1f5f9] rounded-xl px-4 py-3 flex items-center flex-1 border border-transparent focus-within:border-blue-200 transition-all shadow-sm">
-              <Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder={activeTab === 'SERVICE' ? "Search name, phone, or model" : "Search name or number here"} className="bg-transparent outline-none text-[13px] w-full placeholder:text-slate-400 font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-            </div>
-            <button onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }} className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm" title="Download Report"><Download size={18} /></button>
-            <button className="bg-[#eff6ff] text-[#2563eb] p-3 rounded-xl border border-[#dbeafe] active:scale-95 transition-transform flex items-center justify-center shadow-sm"><Filter size={18} /></button>
-          </div>
-          <div className="flex flex-col gap-2">
-            {filtered.map(c => {
-              const stats = contactStats[c.id];
-              const displayBal = stats?.balance || 0;
-              const isService = c.type === 'SERVICE';
-              const leftLabel = isService ? 'Total Cost' : (c.type === 'VENDOR' ? 'Got' : (c.type === 'CUSTOMER' ? 'Gave' : 'Out'));
-              const rightLabel = isService ? 'Advance' : (c.type === 'VENDOR' ? 'Paid' : (c.type === 'CUSTOMER' ? 'Got' : 'In'));
-              
-              if (isService) {
-                const totalCost = stats.totalCredit || c.totalCost || c.targetAmount || 0;
-                const advancePaid = stats.totalPayment || c.advancePayment || 0;
-                const balanceDue = totalCost - advancePaid;
-                const isPrintMenuOpen = printMenuContactId === c.id;
 
-                return (
-                  <div 
-                    key={c.id} 
-                    onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} 
-                    className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex flex-col gap-3 active:bg-gray-50/70 cursor-pointer transition-all relative hover:border-slate-300"
-                  >
-                    {/* Top: Customer Name, Status Badge, Phone, Model, and Balance Due */}
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3 overflow-hidden">
-                        <div className="w-11 h-11 shrink-0 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-sm">
-                          <Smartphone size={20} />
+            <div className="flex items-center gap-4 flex-wrap w-full sm:w-auto justify-between sm:justify-end">
+              <div className="flex items-center gap-3 text-xs font-bold">
+                <span className="text-emerald-400 font-extrabold">Sales +LKR {todayCashbookSnapshot.sales.toLocaleString()}</span>
+                <span className="text-slate-600">•</span>
+                <span className="text-rose-400 font-extrabold">Expenses -LKR {todayCashbookSnapshot.expenses.toLocaleString()}</span>
+                <span className="text-slate-600">•</span>
+                <span className="text-white font-black">
+                  Net {todayCashbookSnapshot.net >= 0 ? '+' : ''}LKR {todayCashbookSnapshot.net.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1 text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 dark:bg-[#1f2d42] dark:hover:bg-[#283852] border border-slate-700 dark:border-[#2e3e5a] px-3.5 py-1.5 rounded-xl transition-all">
+                <span>Open daybook</span>
+                <ArrowRight size={13} />
+              </div>
+            </div>
+          </div>
+
+          {/* Main Card Container: Balances List & Controls (matching image attachment) */}
+          <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col gap-4 transition-colors">
+            {/* Header controls bar: Title, Search, Export, Filter */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900 dark:text-white leading-tight">
+                  {activeTab === 'VENDOR' ? 'Vendor balances' : activeTab === 'CUSTOMER' ? 'Customer balances' : activeTab === 'RENT' ? 'Rent Accounts' : 'Service Order List'}
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+                  {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'} · sorted by amount owed
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="bg-slate-100 dark:bg-[#0d131f] border border-slate-200 dark:border-[#1e2a3c] rounded-xl px-3 py-1.5 flex items-center flex-1 sm:w-64 transition-all focus-within:border-blue-500">
+                  <Search size={15} className="text-slate-400 mr-2 shrink-0" />
+                  <input 
+                    type="text" 
+                    placeholder={activeTab === 'SERVICE' ? "Search name, phone, or model" : `Search ${activeTab.toLowerCase()}s...`} 
+                    className="bg-transparent outline-none text-xs w-full text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-medium" 
+                    value={searchQuery} 
+                    onChange={(e) => setSearchQuery(e.target.value)} 
+                  />
+                </div>
+
+                <button 
+                  onClick={() => { setReportTarget('CATEGORY'); setIsReportModalOpen(true); }}
+                  className="bg-slate-100 dark:bg-[#1a2332] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs shrink-0"
+                  title="Export PDF Report"
+                >
+                  <Download size={14} />
+                  <span>Export</span>
+                </button>
+
+                <button 
+                  className="bg-slate-100 dark:bg-[#1a2332] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs shrink-0"
+                  title="Filter options"
+                >
+                  <Filter size={14} />
+                  <span>Filter</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Content Table / Cards */}
+            {activeTab === 'SERVICE' ? (
+              <div className="flex flex-col gap-3">
+                {filtered.map(c => {
+                  const stats = contactStats[c.id];
+                  const totalCost = stats?.totalCredit || c.totalCost || c.targetAmount || 0;
+                  const advancePaid = stats?.totalPayment || c.advancePayment || 0;
+                  const balanceDue = totalCost - advancePaid;
+                  const isPrintMenuOpen = printMenuContactId === c.id;
+
+                  return (
+                    <div 
+                      key={c.id} 
+                      onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} 
+                      className="bg-slate-50 dark:bg-[#162032] p-4 rounded-2xl border border-slate-200 dark:border-[#223046] shadow-xs flex flex-col gap-3 active:bg-slate-100/70 dark:active:bg-[#1a273d] cursor-pointer transition-all relative hover:border-slate-300 dark:hover:border-slate-600"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <div className="w-11 h-11 shrink-0 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-xs">
+                            <Smartphone size={20} />
+                          </div>
+                          <div className="overflow-hidden">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-bold text-slate-900 dark:text-white text-base truncate leading-tight">{c.name}</h3>
+                              {c.serviceStatus && (
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                                  c.serviceStatus === 'Delivered' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-400' :
+                                  c.serviceStatus === 'Ready' ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-400' :
+                                  c.serviceStatus === 'In Progress' ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400' :
+                                  'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                                }`}>
+                                  {c.serviceStatus}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1">
+                              {c.phone && <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">{c.phone}</span>}
+                              {c.phone && c.phoneModel && <span className="text-slate-300 dark:text-slate-600">•</span>}
+                              {c.phoneModel && (
+                                <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800/50">
+                                  {c.phoneModel}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <div className="overflow-hidden">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
-                            {c.serviceStatus && (
-                              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                                c.serviceStatus === 'Delivered' ? 'bg-emerald-100 text-emerald-800' :
-                                c.serviceStatus === 'Ready' ? 'bg-blue-100 text-blue-800' :
-                                c.serviceStatus === 'In Progress' ? 'bg-amber-100 text-amber-800' :
-                                'bg-slate-100 text-slate-600'
-                              }`}>
-                                {c.serviceStatus}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            {c.phone && <span className="text-xs text-slate-500 font-medium">{c.phone}</span>}
-                            {c.phone && c.phoneModel && <span className="text-slate-300">•</span>}
-                            {c.phoneModel && (
-                              <span className="text-xs font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md">
-                                {c.phoneModel}
-                              </span>
-                            )}
-                          </div>
-                          {(c.collectedItems && c.collectedItems.length > 0) && (
-                            <div className="flex items-center gap-1 mt-1 text-[10px] text-slate-500 font-medium">
-                              <Package size={11} className="text-indigo-600 shrink-0" />
-                              <span className="truncate max-w-[220px]">
-                                {c.collectedItems.join(', ')}
-                              </span>
+
+                        <div className="text-right shrink-0">
+                          <p className="text-[9px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider mb-0.5">Balance Due</p>
+                          <p className={`font-black text-lg ${balanceDue > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                            LKR {Math.abs(balanceDue).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between bg-white dark:bg-[#0d131f] px-3 py-2 rounded-xl border border-slate-200 dark:border-[#1e2a3c] text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-400 font-bold uppercase">Total Cost:</span>
+                          <span className="font-bold text-rose-600 dark:text-rose-400">LKR {totalCost.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-400 font-bold uppercase">Advance Paid:</span>
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400">LKR {advancePaid.toLocaleString()}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1 border-t border-slate-200 dark:border-[#1e2a3c] relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPreview(c);
+                          }}
+                          className="flex-1 py-1.5 px-2 bg-slate-200 dark:bg-[#1a2332] text-slate-800 dark:text-slate-200 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-xs active:scale-95"
+                        >
+                          <Eye size={14} />
+                          <span>Preview</span>
+                        </button>
+
+                        <div className="relative flex-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPrintMenuContactId(isPrintMenuOpen ? null : c.id);
+                            }}
+                            className={`w-full py-1.5 px-2 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-xs active:scale-95 ${
+                              isPrintMenuOpen ? 'bg-blue-600 text-white' : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50'
+                            }`}
+                          >
+                            <Printer size={14} />
+                            <span>Print</span>
+                            <ChevronDown size={12} className={isPrintMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                          </button>
+
+                          {isPrintMenuOpen && (
+                            <div 
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute bottom-full mb-1 left-0 right-0 sm:w-56 bg-white dark:bg-[#131b2a] rounded-xl shadow-xl border border-slate-200 dark:border-[#1e2a3c] p-1.5 z-30 animate-in fade-in zoom-in-95 duration-150"
+                            >
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1">Choose PDF Format</p>
+                              <button
+                                onClick={() => {
+                                  setPrintMenuContactId(null);
+                                  generateServicePDF(c, 'POS');
+                                }}
+                                className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#1a2332] flex items-center gap-2"
+                              >
+                                <Receipt size={14} className="text-indigo-600 dark:text-indigo-400" />
+                                <span>POS Receipt (80mm)</span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setPrintMenuContactId(null);
+                                  generateServicePDF(c, 'A4');
+                                }}
+                                className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#1a2332] flex items-center gap-2"
+                              >
+                                <FileText size={14} className="text-blue-600 dark:text-blue-400" />
+                                <span>A4 Invoice PDF</span>
+                              </button>
                             </div>
                           )}
                         </div>
-                      </div>
 
-                      <div className="text-right shrink-0">
-                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mb-0.5">Balance Due</p>
-                        <p className={`font-black text-lg ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          LKR {Math.abs(balanceDue).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Cost and Advance breakdown */}
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-xl border border-slate-100 text-xs">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-400 font-bold uppercase">Total Cost:</span>
-                        <span className="font-bold text-red-600">LKR {totalCost.toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-400 font-bold uppercase">Advance Paid:</span>
-                        <span className="font-bold text-green-600">LKR {advancePaid.toLocaleString()}</span>
-                      </div>
-                    </div>
-
-                    {/* 4 Action Buttons: Preview, Print (POS/A4), Edit, Delete */}
-                    <div className="flex items-center gap-2 pt-1 border-t border-slate-100 relative">
-                      {/* Preview Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openPreview(c);
-                        }}
-                        className="flex-1 py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
-                        title="Preview Receipt & Invoice"
-                      >
-                        <Eye size={14} className="text-slate-600" />
-                        <span>Preview</span>
-                      </button>
-
-                      {/* Print Button with Dropdown for POS and A4 */}
-                      <div className="relative flex-1">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setPrintMenuContactId(isPrintMenuOpen ? null : c.id);
+                            handleEditServiceOrder(c);
                           }}
-                          className={`w-full py-1.5 px-2 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95 ${
-                            isPrintMenuOpen ? 'bg-blue-600 text-white' : 'bg-blue-50 hover:bg-blue-100 text-blue-700'
-                          }`}
-                          title="Print POS or A4 PDF"
+                          className="py-1.5 px-3 bg-slate-200 dark:bg-[#1a2332] text-slate-800 dark:text-slate-200 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-xs active:scale-95"
                         >
-                          <Printer size={14} />
-                          <span>Print</span>
-                          <ChevronDown size={12} className={isPrintMenuOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                          <Pencil size={14} />
+                          <span>Edit</span>
                         </button>
 
-                        {/* Print Dropdown Menu */}
-                        {isPrintMenuOpen && (
-                          <div 
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute bottom-full mb-1 left-0 right-0 sm:w-56 bg-white rounded-xl shadow-xl border border-slate-200 p-1.5 z-30 animate-in fade-in zoom-in-95 duration-150"
+                        {userCanDelete ? (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteContact(c.id, false);
+                            }}
+                            className="py-1.5 px-3 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-xs active:scale-95"
                           >
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1">Choose PDF Format</p>
-                            <button
-                              onClick={() => {
-                                setPrintMenuContactId(null);
-                                generateServicePDF(c, 'POS');
-                              }}
-                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
-                            >
-                              <Receipt size={14} className="text-indigo-600" />
-                              <span>POS Receipt (80mm)</span>
-                            </button>
-                            <button
-                              onClick={() => {
-                                setPrintMenuContactId(null);
-                                generateServicePDF(c, 'A4');
-                              }}
-                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 flex items-center gap-2"
-                            >
-                              <FileText size={14} className="text-blue-600" />
-                              <span>A4 Invoice PDF</span>
-                            </button>
-                            <div className="border-t border-slate-100 mt-1 pt-1">
-                              <button
-                                onClick={() => {
-                                  openPreview(c);
-                                }}
-                                className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-slate-500 hover:bg-slate-50 flex items-center gap-1.5"
-                              >
-                                <Eye size={12} />
-                                <span>Preview Both First</span>
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                            <Trash2 size={14} />
+                            <span>Delete</span>
+                          </button>
+                        ) : null}
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* High quality Table & Cards for Vendor / Customer / Rent matching image_f55cac7e.png */
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-[#1e2a3c] text-[11px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-3">{activeTab === 'VENDOR' ? 'VENDOR' : activeTab === 'CUSTOMER' ? 'CUSTOMER' : 'ACCOUNT'}</th>
+                      <th className="py-3 px-3 text-right">{activeTab === 'RENT' ? 'SAVED TARGET' : (activeTab === 'VENDOR' ? 'AMOUNT RECEIVED' : 'CREDIT GIVEN')}</th>
+                      <th className="py-3 px-3 text-right">{activeTab === 'RENT' ? 'SAVED THIS CYCLE' : 'PAID'}</th>
+                      <th className="py-3 px-3 text-right">BALANCE DUE</th>
+                      <th className="py-3 px-3">UPCOMING PAYMENT</th>
+                      <th className="py-3 px-3 text-center">STATUS</th>
+                      <th className="py-3 px-3 text-right">ACTIONS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#1e2a3c]/60 text-xs">
+                    {filtered.map(c => {
+                      const stats = contactStats[c.id] || { totalCredit: 0, totalPayment: 0, balance: 0, pendingChequesCount: 0, pendingChequesAmount: 0 };
+                      const displayBal = stats.balance;
+                      const initialLetter = c.name ? c.name[0].toUpperCase() : '?';
+                      
+                      let statusLabel = 'Outstanding';
+                      let statusBadgeClass = 'bg-rose-950/40 text-rose-400 border border-rose-800/50';
+                      
+                      if (displayBal <= 0 && stats.totalPayment > 0) {
+                        statusLabel = 'Settled';
+                        statusBadgeClass = 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/50';
+                      } else if (stats.totalPayment > 0) {
+                        statusLabel = 'Part paid';
+                        statusBadgeClass = 'bg-amber-950/40 text-amber-400 border border-amber-800/50';
+                      }
 
-                      {/* Edit Button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditServiceOrder(c);
-                        }}
-                        className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
-                        title="Edit Service Order"
-                      >
-                        <Pencil size={14} className="text-slate-600" />
-                        <span>Edit</span>
-                      </button>
-
-                      {/* Delete Button (Restricted by Delete Data Rights) */}
-                      {userCanDelete ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteContact(c.id, false);
-                          }}
-                          className="py-1.5 px-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors shadow-sm active:scale-95"
-                          title="Delete Service Order"
+                      return (
+                        <tr 
+                          key={c.id} 
+                          onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} 
+                          className="hover:bg-slate-50/80 dark:hover:bg-[#162032] cursor-pointer transition-colors"
                         >
-                          <Trash2 size={14} />
-                          <span>Delete</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              }
+                          <td className="py-3.5 px-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold flex items-center justify-center shrink-0 border border-slate-300 dark:border-slate-700">
+                                {initialLetter}
+                              </div>
+                              <div>
+                                <h3 className="font-bold text-slate-900 dark:text-white text-sm leading-tight">{c.name}</h3>
+                                <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium">
+                                  {activeTab === 'VENDOR' ? 'Vendor' : 'Customer'} • {c.phone || 'No phone'}
+                                </p>
+                              </div>
+                            </div>
+                          </td>
 
-              return (
-                <div key={c.id} onClick={() => { setSelectedContact(c); navigateTo('DETAIL', c.id); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex items-center justify-between active:bg-gray-50 cursor-pointer transition-colors">
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-white shadow-inner ${c.type === 'RENT' ? 'bg-[#3b82f6]' : 'bg-slate-400'}`}>
-                      {c.name[0]}
-                    </div>
-                    <div className="overflow-hidden">
-                      <h3 className="font-bold text-slate-800 text-base truncate leading-tight">{c.name}</h3>
-                      <div className="flex items-center gap-3 mt-1.5">
-                        <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{leftLabel}:</span><span className="text-xs font-bold text-red-600">LKR {stats.totalCredit.toLocaleString()}</span></div>
-                        <div className="flex items-center gap-1"><span className="text-[10px] text-gray-400 font-bold uppercase">{rightLabel}:</span><span className="text-xs font-bold text-green-600">LKR {stats.totalPayment.toLocaleString()}</span></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 ml-2">
-                    <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest mb-0.5">Balance</p>
-                    <p className={`font-bold text-[17px] ${c.type === 'RENT' ? 'text-[#2563eb]' : (displayBal > 0 ? 'text-red-600' : 'text-green-600')}`}>LKR {Math.abs(displayBal).toLocaleString()}</p>
-                    {stats.pendingChequesCount > 0 && (
-                      <div className="flex flex-col items-end mt-1 gap-0.5">
-                        <span className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded">
-                          <Clock size={9} /> {stats.pendingChequesCount} Chq (LKR {stats.pendingChequesAmount.toLocaleString()})
-                        </span>
-                        <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
-                          If Pass: LKR {Math.abs(stats.balance - stats.pendingChequesAmount).toLocaleString()}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                          <td className="py-3.5 px-3 text-right font-bold text-slate-800 dark:text-slate-200">
+                            LKR {stats.totalCredit.toLocaleString()}
+                          </td>
+
+                          <td className="py-3.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400">
+                            LKR {stats.totalPayment.toLocaleString()}
+                          </td>
+
+                          <td className="py-3.5 px-3 text-right font-black text-rose-600 dark:text-rose-400 text-sm">
+                            LKR {Math.abs(displayBal).toLocaleString()}
+                          </td>
+
+                          <td className="py-3.5 px-3 font-medium">
+                            {stats.pendingChequesCount > 0 ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 bg-amber-950/40 border border-amber-800/50 px-2.5 py-0.5 rounded-full">
+                                <Clock size={11} />
+                                {stats.pendingChequesCount} cheque - LKR {stats.pendingChequesAmount.toLocaleString()}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 dark:text-slate-500 text-xs">No upcoming payment</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-3 text-center">
+                            <span className={`inline-block px-3 py-1 rounded-full text-[11px] font-bold ${statusBadgeClass}`}>
+                              {statusLabel}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3 text-right">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedContact(c);
+                                navigateTo('DETAIL', c.id);
+                              }}
+                              className="bg-slate-100 hover:bg-slate-200 dark:bg-[#1a2332] dark:hover:bg-[#243146] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#2b3b54] px-3.5 py-1 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             {filtered.length === 0 && (
-              <div className="p-16 text-center text-slate-400">
+              <div className="p-12 text-center text-slate-400 dark:text-slate-500 font-semibold">
                 No {activeTab === 'SERVICE' ? 'service orders' : activeTab.toLowerCase() + 's'} recorded yet
               </div>
             )}
+
+            {/* Table Footer */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-3 border-t border-slate-100 dark:border-[#1e2a3c] text-xs text-slate-400 dark:text-slate-500 font-semibold">
+              <span>Showing {filtered.length} of {contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER')).length} {activeTab.toLowerCase()}s</span>
+              <span>Tip: select a {activeTab.toLowerCase()} to see their full payment history.</span>
+            </div>
           </div>
         </div>
+
+        {/* Global Bottom Navigation */}
         <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
       </div>
     );
@@ -6159,14 +6406,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     });
 
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col pb-28 no-scrollbar">
+      <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-28 no-scrollbar transition-colors">
         {/* Top Header */}
-        <header className="bg-white px-4 py-3 shadow-xs border-b border-slate-200/80 sticky top-0 z-20">
+        <header className="bg-white dark:bg-[#0b101d] px-4 py-3 shadow-xs dark:shadow-none border-b border-slate-200 dark:border-[#1e2a3c] sticky top-0 z-20 transition-colors">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <button 
                 onClick={() => navigateTo('DASHBOARD')}
-                className="p-1.5 -ml-1 text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 transition-colors"
+                className="p-1.5 -ml-1 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-[#1a2332] transition-colors"
                 title="Back to Dashboard"
               >
                 <ChevronLeft size={22} />
@@ -6176,16 +6423,24 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <Wallet size={18} />
                 </div>
                 <div>
-                  <h1 className="text-lg font-black text-slate-800 leading-tight">Sales & Expense</h1>
-                  <p className="text-[11px] text-slate-500 font-semibold">{shopName} • Daybook</p>
+                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Sales & Expense</h1>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName} • Daybook</p>
                 </div>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className="p-2 rounded-xl bg-slate-100 dark:bg-[#1a2332] text-slate-600 dark:text-amber-400 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] transition-all shadow-xs active:scale-95 flex items-center justify-center"
+                title={isDarkMode ? "Switch to Normal (Light) Mode" : "Switch to Dark Mode"}
+              >
+                {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+
               <button
                 onClick={generateCashbookPDF}
-                className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-all shadow-xs active:scale-95 flex items-center gap-1.5 text-xs font-bold"
+                className="p-2 bg-slate-100 dark:bg-[#1a2332] hover:bg-slate-200 dark:hover:bg-[#222e42] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-[#263448] rounded-xl transition-all shadow-xs active:scale-95 flex items-center gap-1.5 text-xs font-bold"
                 title="Download PDF Statement"
               >
                 <Download size={15} />
@@ -6226,7 +6481,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all shrink-0 border ${
                   cashbookDateFilter === filter.id
                     ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                    : 'bg-slate-100 text-slate-600 border-slate-200/80 hover:bg-slate-200'
+                    : 'bg-slate-100 dark:bg-[#131b2a] text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-[#1e2a3c] hover:bg-slate-200 dark:hover:bg-[#1a2332]'
                 }`}
               >
                 {filter.label}
@@ -6236,23 +6491,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
           {/* Custom Date Pickers (if CUSTOM is selected) */}
           {cashbookDateFilter === 'CUSTOM' && (
-            <div className="mt-2.5 p-3 bg-blue-50/80 border border-blue-200/90 rounded-2xl flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
+            <div className="mt-2.5 p-3 bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/90 dark:border-blue-800/50 rounded-2xl flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
               <div className="flex items-center gap-2 flex-1 min-w-[140px]">
-                <span className="font-bold text-blue-900 uppercase text-[10px]">From:</span>
+                <span className="font-bold text-blue-900 dark:text-blue-300 uppercase text-[10px]">From:</span>
                 <input
                   type="date"
                   value={cashbookCustomStart}
                   onChange={e => setCashbookCustomStart(e.target.value)}
-                  className="bg-white border border-blue-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 outline-none w-full"
+                  className="bg-white dark:bg-[#0d131f] border border-blue-200 dark:border-blue-800/50 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 outline-none w-full"
                 />
               </div>
               <div className="flex items-center gap-2 flex-1 min-w-[140px]">
-                <span className="font-bold text-blue-900 uppercase text-[10px]">To:</span>
+                <span className="font-bold text-blue-900 dark:text-blue-300 uppercase text-[10px]">To:</span>
                 <input
                   type="date"
                   value={cashbookCustomEnd}
                   onChange={e => setCashbookCustomEnd(e.target.value)}
-                  className="bg-white border border-blue-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 outline-none w-full"
+                  className="bg-white dark:bg-[#0d131f] border border-blue-200 dark:border-blue-800/50 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 outline-none w-full"
                 />
               </div>
             </div>
@@ -6264,36 +6519,36 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           {/* Top KPI Cards (Sales, Expense, Net) */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Total Sales Card */}
-            <div className="bg-white rounded-2xl p-4 border border-emerald-100 shadow-xs flex flex-col justify-between">
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-emerald-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Sales (Cash In)</span>
-                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Total Sales (Cash In)</span>
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
                   <TrendingUp size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-emerald-600">
+                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
                   + LKR {cashbookTotals.totalSales.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
                   {baseFilteredCashbookEntries.filter(e => e.type === 'SALE').length} sales recorded
                 </p>
               </div>
             </div>
 
             {/* Total Expenses Card */}
-            <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-xs flex flex-col justify-between">
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-rose-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Expenses (Cash Out)</span>
-                <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Total Expenses (Cash Out)</span>
+                <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center">
                   <TrendingDown size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-rose-600">
+                <h3 className="text-2xl font-black text-rose-600 dark:text-rose-400">
                   - LKR {cashbookTotals.totalExpenses.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
                   {baseFilteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} expenses recorded
                 </p>
               </div>

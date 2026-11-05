@@ -111,15 +111,15 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
   return (
     <div 
       onClick={() => onClick?.(transaction)}
-      className={`p-4 border-b border-gray-100 flex flex-col gap-2 transition-colors cursor-pointer hover:bg-slate-50/70 ${
-        pendingCheque ? 'bg-amber-50/40 border-l-4 border-l-amber-500' : 'bg-white'
+      className={`p-4 border-b border-slate-100 dark:border-[#1e2a3c] flex flex-col gap-2 transition-colors cursor-pointer hover:bg-slate-50/70 dark:hover:bg-[#172235] ${
+        pendingCheque ? 'bg-amber-50/40 dark:bg-amber-950/20 border-l-4 border-l-amber-500' : 'bg-white dark:bg-[#131b2a]'
       }`}
     >
       <div className="flex justify-between items-start">
         <div className="flex items-center gap-2">
-          <span className="font-bold text-base text-slate-800">{transaction.date}</span>
+          <span className="font-bold text-base text-slate-800 dark:text-slate-100">{transaction.date}</span>
           {pendingCheque && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400 border border-amber-300 dark:border-amber-800/50">
               <Clock size={11} className="animate-pulse" />
               On Hold • Not Passed
             </span>
@@ -128,15 +128,15 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
         <div className="text-right">
           <span className={`font-bold text-base ${
             pendingCheque 
-              ? 'text-amber-800 font-extrabold' 
+              ? 'text-amber-800 dark:text-amber-400 font-extrabold' 
               : isPayment 
-              ? 'text-green-700' 
-              : 'text-red-600'
+              ? 'text-emerald-700 dark:text-emerald-400' 
+              : 'text-rose-600 dark:text-rose-400'
           }`}>
             {pendingCheque ? '⏳ ' : (isPayment ? '+' : '-')} LKR {transaction.amount.toLocaleString()}
           </span>
           {pendingCheque && (
-            <p className="text-[10px] text-amber-700 font-bold uppercase tracking-wider">Amount Not Changed</p>
+            <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold uppercase tracking-wider">Amount Not Changed</p>
           )}
         </div>
       </div>
@@ -147,10 +147,10 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             {isCheque ? (
               <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md border ${
                 pendingCheque
-                  ? 'bg-amber-100 text-amber-900 border-amber-300'
-                  : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border-amber-300 dark:border-amber-800/60'
+                  : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800/60'
               }`}>
-                {pendingCheque ? <Clock size={12} className="text-amber-700" /> : <CheckCircle2 size={12} className="text-emerald-700" />}
+                {pendingCheque ? <Clock size={12} className="text-amber-700 dark:text-amber-400" /> : <CheckCircle2 size={12} className="text-emerald-700 dark:text-emerald-400" />}
                 <span>Cheque {pendingCheque ? '(Pending Clearance)' : '(Passed / Cleared)'}</span>
                 {parsed.chequeNumber && (
                   <span className="opacity-90 font-mono">#{parsed.chequeNumber}</span>
@@ -160,10 +160,10 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
               isPayment && parsed.method && (
                 <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md border ${
                   parsed.method === 'Bank Transfer' 
-                    ? 'bg-blue-50 text-blue-700 border-blue-200' 
+                    ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/50' 
                     : parsed.method === 'Card'
-                    ? 'bg-purple-50 text-purple-700 border-purple-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/50'
+                    : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50'
                 }`}>
                   {parsed.method === 'Bank Transfer' ? <Building2 size={12} /> : parsed.method === 'Card' ? <CreditCard size={12} /> : <Banknote size={12} />}
                   {parsed.method}
@@ -174,12 +174,12 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             {(isPayment || (contactType === 'RENT' && transaction.type === 'CREDIT')) && contactType && (
               <span className={`inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border ${
                 contactType === 'CUSTOMER'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50'
                   : contactType === 'VENDOR'
-                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                  ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
                   : contactType === 'RENT'
-                  ? (transaction.type === 'CREDIT' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')
-                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                  ? (transaction.type === 'CREDIT' ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50' : 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/50')
+                  : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/50'
               }`}>
                 {contactType === 'CUSTOMER' ? 'Linked to Sales' :
                  contactType === 'VENDOR' ? 'Linked to Expenses' :
@@ -189,21 +189,21 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             )}
 
             {parsed.chequeDate && (
-              <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">
+              <span className="text-[10px] font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2b3a54]">
                 Cheque Date: {parsed.chequeDate}
               </span>
             )}
 
             {parsed.cleanNotes ? (
-              <span className="text-sm text-slate-600 font-medium truncate">{parsed.cleanNotes}</span>
+              <span className="text-sm text-slate-600 dark:text-slate-300 font-medium truncate">{parsed.cleanNotes}</span>
             ) : (!parsed.method && transaction.description ? (
-              <span className="text-sm text-gray-500 uppercase font-medium truncate">{transaction.description}</span>
+              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{transaction.description}</span>
             ) : null)}
           </div>
 
           {transaction.hasAttachment && (
-            <div className="w-8 h-10 border border-gray-200 rounded flex items-center justify-center bg-gray-50 mt-1">
-              <FileText size={14} className="text-gray-400" />
+            <div className="w-8 h-10 border border-slate-200 dark:border-slate-700 rounded flex items-center justify-center bg-slate-50 dark:bg-slate-800 mt-1">
+              <FileText size={14} className="text-slate-400" />
             </div>
           )}
         </div>
@@ -223,7 +223,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
               <span>Pass Cheque</span>
             </button>
           )}
-          <span className="text-xs text-gray-500 font-bold">
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-bold">
             Bal. LKR {transaction.balanceAfter.toLocaleString()}
           </span>
         </div>
