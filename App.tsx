@@ -502,9 +502,20 @@ export default function App() {
     return { totalPaid, totalCredit };
   }, [transactions, contacts, activeTab, selectedContact, reportRange, reportTarget]);
 
+  // Helper to identify pending cheques in cashbook entries
+  const isPendingCashbookEntry = (entry: CashbookEntry): boolean => {
+    if (entry.paymentMethod === 'Cheque') {
+      const desc = entry.description || '';
+      if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
+      if (desc.includes('[BOUNCED]')) return false;
+      return true;
+    }
+    return false;
+  };
+
   const todayCashbookSnapshot = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const todayEntries = cashbookEntries.filter(e => e.date === todayStr);
+    const todayEntries = cashbookEntries.filter(e => e.date === todayStr && !isPendingCashbookEntry(e));
     const sales = todayEntries.filter(e => e.type === 'SALE').reduce((s, e) => s + e.amount, 0);
     const expenses = todayEntries.filter(e => e.type === 'EXPENSE').reduce((s, e) => s + e.amount, 0);
     return {
@@ -5689,17 +5700,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   // ==========================================
   // CASHBOOK / SALES & EXPENSES MODULE
   // ==========================================
-  // Helper to identify pending cheques in cashbook entries
-  const isPendingCashbookEntry = (entry: CashbookEntry): boolean => {
-    if (entry.paymentMethod === 'Cheque') {
-      const desc = entry.description || '';
-      if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
-      if (desc.includes('[BOUNCED]')) return false;
-      return true;
-    }
-    return false;
-  };
-
   // Base entries filtered by Date Period, Category, and Search (EXCLUDES pending cheques)
   const baseFilteredCashbookEntries = useMemo(() => {
     const now = new Date();
