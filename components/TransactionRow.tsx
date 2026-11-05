@@ -171,19 +171,19 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
               )
             )}
 
-            {isPayment && contactType && (
+            {(isPayment || (contactType === 'RENT' && transaction.type === 'CREDIT')) && contactType && (
               <span className={`inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border ${
                 contactType === 'CUSTOMER'
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                   : contactType === 'VENDOR'
                   ? 'bg-rose-50 text-rose-700 border-rose-200'
                   : contactType === 'RENT'
-                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  ? (transaction.type === 'CREDIT' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200')
                   : 'bg-blue-50 text-blue-700 border-blue-200'
               }`}>
                 {contactType === 'CUSTOMER' ? 'Linked to Sales' :
                  contactType === 'VENDOR' ? 'Linked to Expenses' :
-                 contactType === 'RENT' ? 'Shop Rent Expense' :
+                 contactType === 'RENT' ? (transaction.type === 'CREDIT' ? 'Linked to Sales (+ Sale)' : 'Shop Rent Expense') :
                  'Linked to Sales'}
               </span>
             )}

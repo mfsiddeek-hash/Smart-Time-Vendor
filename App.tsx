@@ -1789,12 +1789,13 @@ export default function App() {
 
   const handleBack = () => { window.history.back(); };
 
-  // Helper: Automatically link Customer payments to Sales, Vendor payments to Expenses, Rent deposits to Expenses, and Service payments to Sales
+  // Helper: Automatically link Customer payments to Sales, Vendor payments to Expenses, Rent deposits to Expenses / withdrawals to Sales, and Service payments to Sales
   const recordOrUpdateLinkedCashbookEntry = async (params: {
     txId: string;
     contactId: string;
     contactName: string;
     contactType: ContactType;
+    txType?: TransactionType;
     phoneModel?: string;
     amount: number;
     date: string;
@@ -1821,10 +1822,17 @@ export default function App() {
       refPrefix = 'VEND';
       desc = `Payment to Vendor - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
     } else if (params.contactType === 'RENT') {
-      entryType = 'EXPENSE';
-      category = 'Shop Rent';
-      refPrefix = 'RENT';
-      desc = `Rent Deposit / Payment - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+      if (params.txType === 'CREDIT') {
+        entryType = 'SALE';
+        category = 'Shop Rent';
+        refPrefix = 'RENT';
+        desc = `Rent Withdrawal - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+      } else {
+        entryType = 'EXPENSE';
+        category = 'Shop Rent';
+        refPrefix = 'RENT';
+        desc = `Rent Deposit / Payment - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+      }
     } else if (params.contactType === 'SERVICE') {
       entryType = 'SALE';
       category = 'Repair Charges';
@@ -2386,8 +2394,16 @@ export default function App() {
             setTransactions(prev => [fallbackTx, ...prev]);
           }
 
-          // Link payment to Cashbook in fallback mode (Customer -> Sales, Vendor -> Expenses, Rent -> Shop Rent, Service -> Sales)
-          if (transType === 'PAYMENT' && amountVal > 0) {
+          // Link to Cashbook:
+          // Customer got money -> Sales
+          // Vendor paid money -> Expense
+          // Rent deposit -> Expense (Shop Rent) / Rent withdrawal -> Sale (Shop Rent)
+          // Service payment -> Sales (Repair Charges)
+          const shouldLinkToCashbook = (
+            (transType === 'PAYMENT' || (selectedContact.type === 'RENT' && transType === 'CREDIT')) && amountVal > 0
+          );
+
+          if (shouldLinkToCashbook) {
             const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
             if (isPendingChq) {
               await removeLinkedCashbookEntry(fallbackTx.id);
@@ -2397,6 +2413,7 @@ export default function App() {
                 contactId: selectedContact.id,
                 contactName: selectedContact.name,
                 contactType: selectedContact.type,
+                txType: transType,
                 phoneModel: selectedContact.phoneModel,
                 amount: amountVal,
                 date: effectiveTxDate,
@@ -2405,7 +2422,7 @@ export default function App() {
                 isAdvance: formattedDesc?.toLowerCase().includes('advance')
               });
             }
-          } else if (editingTransaction && transType !== 'PAYMENT') {
+          } else if (editingTransaction && !shouldLinkToCashbook) {
             await removeLinkedCashbookEntry(editingTransaction.id);
           }
 
@@ -2443,12 +2460,16 @@ export default function App() {
           setTransactions([saved, ...transactions]); 
         }
 
-        // Link payment to Cashbook:
+        // Link to Cashbook:
         // Customer got money -> Sales
         // Vendor paid money -> Expense
-        // Rent deposit/paid -> Expense (Shop Rent)
+        // Rent deposit -> Expense (Shop Rent) / Rent withdrawal -> Sale (Shop Rent)
         // Service payment -> Sales (Repair Charges)
-        if (transType === 'PAYMENT' && amountVal > 0) {
+        const shouldLinkToCashbook = (
+          (transType === 'PAYMENT' || (selectedContact.type === 'RENT' && transType === 'CREDIT')) && amountVal > 0
+        );
+
+        if (shouldLinkToCashbook) {
           const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
           if (isPendingChq) {
             await removeLinkedCashbookEntry(saved.id);
@@ -2459,6 +2480,7 @@ export default function App() {
               contactId: selectedContact.id,
               contactName: selectedContact.name,
               contactType: selectedContact.type,
+              txType: transType,
               phoneModel: selectedContact.phoneModel,
               amount: amountVal,
               date: effectiveTxDate,
@@ -2470,11 +2492,11 @@ export default function App() {
             const toastMsg = 
               selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
               selectedContact.type === 'VENDOR' ? "Vendor payment saved & linked to Expenses (- Expense)!" :
-              selectedContact.type === 'RENT' ? "Rent payment saved & linked to Expenses (Shop Rent)!" :
+              selectedContact.type === 'RENT' ? (transType === 'CREDIT' ? "Rent withdrawal saved & linked to Sales (+ Sale)!" : "Rent deposit saved & linked to Expenses (Shop Rent)!") :
               "Service payment saved & linked to Sales (Repair Charges)!";
             showProfileToast(toastMsg);
           }
-        } else if (editingTransaction && transType !== 'PAYMENT') {
+        } else if (editingTransaction && !shouldLinkToCashbook) {
           await removeLinkedCashbookEntry(editingTransaction.id);
         }
       }
@@ -3711,17 +3733,17 @@ export default function App() {
                 </span>
               </div>
             )}
-            {selectedContact.type === 'RENT' && (
-              <div className="px-4 py-2.5 bg-amber-50/80 border-b border-amber-100 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2 text-amber-950 font-semibold">
-                  <Building size={15} className="text-amber-700" />
-                  <span>Rent savings & payments automatically sync to <strong>Cashbook Expenses (Shop Rent)</strong></span>
+              {selectedContact.type === 'RENT' && (
+                <div className="px-4 py-2.5 bg-amber-50/80 border-b border-amber-100 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 text-amber-950 font-semibold">
+                    <Building size={15} className="text-amber-700" />
+                    <span>Rent deposits sync to <strong>Expenses (Shop Rent)</strong> & withdrawals sync to <strong>Sales (+ Sale)</strong></span>
+                  </div>
+                  <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full uppercase">
+                    Shop Rent
+                  </span>
                 </div>
-                <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full uppercase">
-                  Shop Rent
-                </span>
-              </div>
-            )}
+              )}
 
             {computedWithBalance.map(t => (
               <TransactionRow 
@@ -3818,9 +3840,15 @@ export default function App() {
                 </div>
               )}
               {selectedContact.type === 'RENT' && (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200">
-                  <Building size={14} className="text-amber-700" />
-                  <span>Rent Deposit / Payment: Automatically links to <strong>Cashbook Expenses (Shop Rent)</strong></span>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                  transType === 'CREDIT' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-900 border-amber-200'
+                }`}>
+                  <Building size={14} className={transType === 'CREDIT' ? 'text-emerald-600' : 'text-amber-700'} />
+                  <span>
+                    {transType === 'CREDIT' 
+                      ? 'Rent Withdrawal: Automatically links to Cashbook Sales (+ Sale)' 
+                      : 'Rent Deposit: Automatically links to Cashbook Expenses (Shop Rent)'}
+                  </span>
                 </div>
               )}
               {selectedContact.type === 'SERVICE' && (
