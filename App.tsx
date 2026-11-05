@@ -5689,7 +5689,19 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   // ==========================================
   // CASHBOOK / SALES & EXPENSES MODULE
   // ==========================================
-  const filteredCashbookEntries = useMemo(() => {
+  // Helper to identify pending cheques in cashbook entries
+  const isPendingCashbookEntry = (entry: CashbookEntry): boolean => {
+    if (entry.paymentMethod === 'Cheque') {
+      const desc = entry.description || '';
+      if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
+      if (desc.includes('[BOUNCED]')) return false;
+      return true;
+    }
+    return false;
+  };
+
+  // Base entries filtered by Date Period, Category, and Search (EXCLUDES pending cheques)
+  const baseFilteredCashbookEntries = useMemo(() => {
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000);
@@ -5704,9 +5716,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     return cashbookEntries.filter(entry => {
-      if (cashbookTypeFilter !== 'ALL' && entry.type !== cashbookTypeFilter) return false;
+      // 1. Pending cheques do NOT show in Sales & Expense Daybook until passed
+      if (isPendingCashbookEntry(entry)) return false;
+
+      // 2. Category filter
       if (cashbookCategoryFilter !== 'ALL' && entry.category !== cashbookCategoryFilter) return false;
 
+      // 3. Search filter
       if (cashbookSearch.trim()) {
         const q = cashbookSearch.toLowerCase();
         const matchesCat = entry.category?.toLowerCase().includes(q);
@@ -5717,6 +5733,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         if (!matchesCat && !matchesDesc && !matchesParty && !matchesRef && !matchesAmt) return false;
       }
 
+      // 4. Date period filter
       const entryD = normalizeToLocalMidnight(entry.date);
       if (cashbookDateFilter === 'TODAY') {
         return entry.date === todayStr;
@@ -5733,14 +5750,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         return entryD >= start && entryD <= end;
       }
       return true;
+    });
+  }, [cashbookEntries, cashbookCategoryFilter, cashbookSearch, cashbookDateFilter, cashbookCustomStart, cashbookCustomEnd]);
+
+  // Entries filtered by Type tab (All / Sales / Expenses) for list view display
+  const filteredCashbookEntries = useMemo(() => {
+    return baseFilteredCashbookEntries.filter(entry => {
+      if (cashbookTypeFilter !== 'ALL' && entry.type !== cashbookTypeFilter) return false;
+      return true;
     }).sort((a, b) => {
       const timeA = new Date(a.date).getTime();
       const timeB = new Date(b.date).getTime();
       if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeB - timeA;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
-  }, [cashbookEntries, cashbookTypeFilter, cashbookCategoryFilter, cashbookSearch, cashbookDateFilter, cashbookCustomStart, cashbookCustomEnd]);
+  }, [baseFilteredCashbookEntries, cashbookTypeFilter]);
 
+  // Period totals (KPI cards) computed from baseFilteredCashbookEntries so switching Sales/Expenses tabs keeps total cards accurate
   const cashbookTotals = useMemo(() => {
     let totalSales = 0;
     let totalExpenses = 0;
@@ -5751,7 +5777,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     let chequeSales = 0;
     let chequeExpenses = 0;
 
-    filteredCashbookEntries.forEach(e => {
+    baseFilteredCashbookEntries.forEach(e => {
       if (e.type === 'SALE') {
         totalSales += e.amount;
         if (e.paymentMethod === 'Cash') cashSales += e.amount;
@@ -5774,7 +5800,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       bankBalance: bankSales - bankExpenses,
       chequeBalance: chequeSales - chequeExpenses
     };
-  }, [filteredCashbookEntries]);
+  }, [baseFilteredCashbookEntries]);
 
   const existingCategories = useMemo(() => {
     const set = new Set<string>();
@@ -6039,14 +6065,53 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
   const renderCashBook = () => {
     const todayDateStr = new Date().toISOString().slice(0, 10);
-    const dueCashbookCheques = cashbookEntries.filter(e => {
-      if (e.paymentMethod !== 'Cheque') return false;
-      const desc = e.description || '';
-      if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
-      if (desc.includes('[BOUNCED]')) return false;
-      const match = desc.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
-      const chqDate = match ? match[1] : e.date;
-      return chqDate <= todayDateStr;
+    const duePendingCheques: Array<{
+      id: string;
+      tx?: Transaction;
+      entry?: CashbookEntry;
+      amount: number;
+      contactName: string;
+      chequeDate: string;
+      type: 'SALE' | 'EXPENSE';
+    }> = [];
+
+    // 1. Pending cheques from transactions
+    transactions.forEach(t => {
+      if (isPendingCheque(t)) {
+        const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus);
+        const chqDate = parsed.chequeDate || t.chequeDate || t.date;
+        if (chqDate <= todayDateStr) {
+          const contact = contacts.find(c => c.id === t.contactId);
+          const contactType = contact?.type || 'CUSTOMER';
+          const type = (contactType === 'VENDOR' || contactType === 'RENT') ? 'EXPENSE' : 'SALE';
+          duePendingCheques.push({
+            id: t.id,
+            tx: t,
+            amount: t.amount,
+            contactName: contact?.name || 'Party',
+            chequeDate: chqDate,
+            type
+          });
+        }
+      }
+    });
+
+    // 2. Pending cheques from cashbookEntries (if any legacy entries)
+    cashbookEntries.forEach(e => {
+      if (isPendingCashbookEntry(e) && !duePendingCheques.some(item => item.id === e.id)) {
+        const match = e.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+        const chqDate = match ? match[1] : e.date;
+        if (chqDate <= todayDateStr) {
+          duePendingCheques.push({
+            id: e.id,
+            entry: e,
+            amount: e.amount,
+            contactName: e.contactName || 'Party',
+            chequeDate: chqDate,
+            type: e.type
+          });
+        }
+      }
     });
 
     return (
@@ -6167,7 +6232,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   + LKR {cashbookTotals.totalSales.toLocaleString()}
                 </h3>
                 <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
-                  {filteredCashbookEntries.filter(e => e.type === 'SALE').length} sales recorded
+                  {baseFilteredCashbookEntries.filter(e => e.type === 'SALE').length} sales recorded
                 </p>
               </div>
             </div>
@@ -6185,7 +6250,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   - LKR {cashbookTotals.totalExpenses.toLocaleString()}
                 </h3>
                 <p className="text-[10px] text-slate-500 font-semibold mt-0.5">
-                  {filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} expenses recorded
+                  {baseFilteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} expenses recorded
                 </p>
               </div>
             </div>
@@ -6216,7 +6281,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
 
           {/* Due / Passed Cheques Maturity Alert Banner */}
-          {dueCashbookCheques.length > 0 && (
+          {duePendingCheques.length > 0 && (
             <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs space-y-2">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2.5">
@@ -6225,36 +6290,35 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   </div>
                   <div>
                     <h3 className="text-xs sm:text-sm font-black text-slate-800">
-                      Cheque Maturity Date Passed / Due ({dueCashbookCheques.length})
+                      Cheque Maturity Date Passed / Due ({duePendingCheques.length})
                     </h3>
                     <p className="text-[11px] text-slate-600 font-medium">
                       Post-dated cheques have reached maturity date. Clear them to update the Sales or Expenses date.
                     </p>
                   </div>
                 </div>
-                {dueCashbookCheques.length > 1 && (
+                {duePendingCheques.length > 1 && (
                   <button
                     type="button"
                     onClick={async () => {
-                      for (const chq of dueCashbookCheques) {
-                        await handlePassChequeFromCashbook(chq);
+                      for (const chq of duePendingCheques) {
+                        if (chq.tx) await handleQuickPassCheque(chq.tx);
+                        else if (chq.entry) await handlePassChequeFromCashbook(chq.entry);
                       }
                     }}
                     className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1 shrink-0"
                   >
                     <CheckCircle2 size={13} />
-                    <span>Pass All ({dueCashbookCheques.length})</span>
+                    <span>Pass All ({duePendingCheques.length})</span>
                   </button>
                 )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
-                {dueCashbookCheques.map(e => {
-                  const match = e.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
-                  const chqDate = match ? match[1] : e.date;
-                  const isSale = e.type === 'SALE';
+                {duePendingCheques.map(item => {
+                  const isSale = item.type === 'SALE';
                   return (
-                    <div key={e.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                    <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
                       <div className="overflow-hidden">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
@@ -6263,19 +6327,22 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
                           </span>
                           <span className="font-extrabold text-xs text-slate-800">
-                            LKR {e.amount.toLocaleString()}
+                            LKR {item.amount.toLocaleString()}
                           </span>
                         </div>
                         <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
-                          {e.contactName ? `${e.contactName} • ` : ''}{e.description || 'Cheque Payment'}
+                          Party: {item.contactName}
                         </p>
                         <p className="text-[10px] text-amber-800 font-bold mt-0.5 flex items-center gap-1">
-                          <Clock size={10} /> Cheque Date: {formatDisplayDate(chqDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
+                          <Clock size={10} /> Cheque Date: {formatDisplayDate(item.chequeDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
                         </p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => handlePassChequeFromCashbook(e)}
+                        onClick={() => {
+                          if (item.tx) handleQuickPassCheque(item.tx);
+                          else if (item.entry) handlePassChequeFromCashbook(item.entry);
+                        }}
                         className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
                       >
                         <CheckCircle2 size={12} />
@@ -6332,7 +6399,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                 }`}
               >
-                All Entries ({filteredCashbookEntries.length})
+                All Entries ({baseFilteredCashbookEntries.length})
               </button>
 
               <button
@@ -6344,7 +6411,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 }`}
               >
                 <ArrowUpRight size={13} />
-                <span>Sales ({filteredCashbookEntries.filter(e => e.type === 'SALE').length})</span>
+                <span>Sales ({baseFilteredCashbookEntries.filter(e => e.type === 'SALE').length})</span>
               </button>
 
               <button
@@ -6356,7 +6423,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 }`}
               >
                 <ArrowDownRight size={13} />
-                <span>Expenses ({filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
+                <span>Expenses ({baseFilteredCashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
               </button>
             </div>
           </div>
