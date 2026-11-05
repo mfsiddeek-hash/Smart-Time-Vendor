@@ -1598,28 +1598,37 @@ export default function App() {
       }
 
       if (cashbookRes.data) {
-        mappedCb = cashbookRes.data.map((c: any) => ({
-          id: c.id,
-          userId: c.user_id,
-          type: (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE') as CashbookEntryType,
-          amount: Number(c.amount) || 0,
-          date: c.date,
-          category: c.category || 'General',
-          description: c.description || '',
-          paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
-          referenceNo: c.reference_no || '',
-          contactName: c.contact_name || '',
-          createdAt: c.created_at
-        }));
+        mappedCb = cashbookRes.data.map((c: any) => {
+          let cbType: CashbookEntryType = (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE');
+          if (c.category === 'Shop Rent' && c.description?.toLowerCase().includes('withdrawal')) {
+            cbType = 'SALE';
+          }
+          return {
+            id: c.id,
+            userId: c.user_id,
+            type: cbType,
+            amount: Number(c.amount) || 0,
+            date: c.date,
+            category: c.category || 'General',
+            description: c.description || '',
+            paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
+            referenceNo: c.reference_no || '',
+            contactName: c.contact_name || '',
+            createdAt: c.created_at
+          };
+        });
 
-        // Auto-link any customer (Sales), vendor (Expenses), rent (Expenses), or service (Sales) payments if missing in Cashbook
+        // Auto-link any customer (Sales), vendor (Expenses), rent deposits (Expenses) / rent withdrawals (Sales), or service (Sales) payments if missing in Cashbook
         const existingCbIds = new Set(mappedCb.map(c => c.id));
         const allContactsMap = new Map(mappedContacts.map(c => [c.id, c]));
         const missingCbEntries: CashbookEntry[] = [];
 
         for (const tx of mappedTx) {
-          if (tx.type === 'PAYMENT' && allContactsMap.has(tx.contactId) && !existingCbIds.has(tx.id) && tx.amount > 0) {
-            const contact = allContactsMap.get(tx.contactId)!;
+          if (!allContactsMap.has(tx.contactId) || existingCbIds.has(tx.id) || !tx.amount || tx.amount <= 0) continue;
+          const contact = allContactsMap.get(tx.contactId)!;
+          const shouldAutoSync = tx.type === 'PAYMENT' || (contact.type === 'RENT' && tx.type === 'CREDIT');
+
+          if (shouldAutoSync) {
             const parsed = parsePaymentMethod(tx.description);
             const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
             const parsedDesc = parsed.cleanNotes || tx.description || 'Payment';
@@ -1640,10 +1649,17 @@ export default function App() {
               refNo = `VEND-${contact.id.slice(0, 6).toUpperCase()}`;
               desc = `Payment to Vendor - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
             } else if (contact.type === 'RENT') {
-              entryType = 'EXPENSE';
-              category = 'Shop Rent';
-              refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
-              desc = `Rent Deposit / Payment - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
+              if (tx.type === 'CREDIT') {
+                entryType = 'SALE';
+                category = 'Shop Rent';
+                refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
+                desc = `Rent Withdrawal - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
+              } else {
+                entryType = 'EXPENSE';
+                category = 'Shop Rent';
+                refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
+                desc = `Rent Deposit / Payment - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
+              }
             } else if (contact.type === 'SERVICE') {
               entryType = 'SALE';
               category = 'Repair Charges';
