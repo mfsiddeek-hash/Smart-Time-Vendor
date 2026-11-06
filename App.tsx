@@ -388,6 +388,7 @@ export default function App() {
   };
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterNeedsAttention, setFilterNeedsAttention] = useState(false);
 
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
@@ -2727,25 +2728,32 @@ export default function App() {
   };
 
   const renderDashboard = () => {
-    const filtered = contacts.filter(c => {
-      const matchesTab = c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER');
+    const currentTabContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
+
+    // Compute pending cheques count & total strictly for contacts in the CURRENT active tab (Customer or Vendor)
+    const contactsWithPendingCheques = currentTabContacts.filter(c => {
+      const s = contactStats[c.id];
+      return s && s.pendingChequesCount > 0;
+    });
+
+    const pendingChequesCountTotal = contactsWithPendingCheques.reduce((sum, c) => sum + (contactStats[c.id]?.pendingChequesCount || 0), 0);
+    const pendingChequesAmountTotal = contactsWithPendingCheques.reduce((sum, c) => sum + (contactStats[c.id]?.pendingChequesAmount || 0), 0);
+
+    const tabNounSingular = activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'account' : 'order';
+    const tabNounPlural = activeTab === 'VENDOR' ? 'vendors' : activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
+
+    const filtered = currentTabContacts.filter(c => {
       const q = searchQuery.toLowerCase();
-      return matchesTab && (
+      const matchesSearch = (
         c.name.toLowerCase().includes(q) || 
         (c.phone && c.phone.includes(q)) ||
         (c.phoneModel && c.phoneModel.toLowerCase().includes(q))
       );
-    });
-
-    // Compute pending cheques count & total for the "Needs attention" card
-    let pendingChequesCountTotal = 0;
-    let pendingChequesAmountTotal = 0;
-    contacts.forEach(c => {
-      const s = contactStats[c.id];
-      if (s && s.pendingChequesCount > 0) {
-        pendingChequesCountTotal += s.pendingChequesCount;
-        pendingChequesAmountTotal += s.pendingChequesAmount;
+      if (!matchesSearch) return false;
+      if (filterNeedsAttention) {
+        return (contactStats[c.id]?.pendingChequesCount || 0) > 0;
       }
+      return true;
     });
 
     const userInitials = (currentUser?.name || 'User')
@@ -2823,7 +2831,7 @@ export default function App() {
             {/* Navigation Tabs Bar */}
             <div className="flex gap-6 overflow-x-auto no-scrollbar pt-1 border-t border-slate-100 dark:border-[#1e2a3c]">
               <button 
-                onClick={() => setActiveTab('CUSTOMER')} 
+                onClick={() => { setActiveTab('CUSTOMER'); setFilterNeedsAttention(false); }} 
                 className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'CUSTOMER' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
               >
                 <Users size={17} />
@@ -2831,7 +2839,7 @@ export default function App() {
               </button>
 
               <button 
-                onClick={() => setActiveTab('VENDOR')} 
+                onClick={() => { setActiveTab('VENDOR'); setFilterNeedsAttention(false); }} 
                 className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'VENDOR' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
               >
                 <Truck size={17} />
@@ -2839,7 +2847,7 @@ export default function App() {
               </button>
 
               <button 
-                onClick={() => setActiveTab('RENT')} 
+                onClick={() => { setActiveTab('RENT'); setFilterNeedsAttention(false); }} 
                 className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'RENT' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
               >
                 <Building size={17} />
@@ -2847,7 +2855,7 @@ export default function App() {
               </button>
 
               <button 
-                onClick={() => setActiveTab('SERVICE')} 
+                onClick={() => { setActiveTab('SERVICE'); setFilterNeedsAttention(false); }} 
                 className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${activeTab === 'SERVICE' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
               >
                 <Wrench size={17} />
@@ -2951,16 +2959,39 @@ export default function App() {
               </div>
             </div>
 
-            {/* Card 3: Needs Attention */}
-            <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Needs attention</p>
+            {/* Card 3: Needs Attention - Filtered strictly by activeTab */}
+            <div 
+              onClick={() => {
+                if (contactsWithPendingCheques.length > 0) {
+                  setFilterNeedsAttention(!filterNeedsAttention);
+                }
+              }}
+              className={`bg-white dark:bg-[#131b2a] border rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-all ${
+                contactsWithPendingCheques.length > 0 ? 'cursor-pointer' : ''
+              } ${
+                filterNeedsAttention 
+                  ? 'border-amber-500 ring-2 ring-amber-500/30 dark:ring-amber-400/20' 
+                  : 'border-slate-200 dark:border-[#1e2a3c] hover:border-amber-400/70 dark:hover:border-amber-500/40'
+              }`}
+              title={contactsWithPendingCheques.length > 0 ? (filterNeedsAttention ? 'Click to show all' : `Click to filter ${activeTab.toLowerCase()}s with pending cheques`) : undefined}
+            >
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Needs attention</p>
+                {filterNeedsAttention && (
+                  <span className="text-[10px] font-extrabold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 px-2 py-0.5 rounded-full border border-amber-300 dark:border-amber-700">
+                    Filter Active
+                  </span>
+                )}
+              </div>
               <div>
                 <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">
-                  {pendingChequesCountTotal > 0 ? `${pendingChequesCountTotal} cheque${pendingChequesCountTotal === 1 ? '' : 's'}` : 'All clear'}
+                  {contactsWithPendingCheques.length > 0 
+                    ? `${contactsWithPendingCheques.length} ${contactsWithPendingCheques.length === 1 ? tabNounSingular : tabNounPlural}` 
+                    : 'All clear'}
                 </p>
                 <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold mt-0.5">
                   {pendingChequesCountTotal > 0 
-                    ? `${pendingChequesCountTotal} cheque due · LKR ${pendingChequesAmountTotal.toLocaleString()}` 
+                    ? `${pendingChequesCountTotal} cheque${pendingChequesCountTotal === 1 ? '' : 's'} due · LKR ${pendingChequesAmountTotal.toLocaleString()}` 
                     : 'No pending cheques on hold'}
                 </p>
               </div>
@@ -3013,9 +3044,19 @@ export default function App() {
                 <h2 className="text-lg font-extrabold text-slate-900 dark:text-white leading-tight">
                   {activeTab === 'VENDOR' ? 'Vendor balances' : activeTab === 'CUSTOMER' ? 'Customer balances' : activeTab === 'RENT' ? 'Rent Accounts' : 'Service Order List'}
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                  {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'} · sorted by amount owed
-                </p>
+                <div className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5 flex items-center gap-2 flex-wrap">
+                  <span>
+                    {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'} {filterNeedsAttention ? 'with pending cheques' : '· sorted by amount owed'}
+                  </span>
+                  {filterNeedsAttention && (
+                    <button 
+                      onClick={() => setFilterNeedsAttention(false)}
+                      className="text-blue-600 dark:text-blue-400 underline font-bold hover:opacity-80 text-[11px]"
+                    >
+                      Show all {activeTab.toLowerCase()}s
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
