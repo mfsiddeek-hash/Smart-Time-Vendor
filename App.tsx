@@ -1596,10 +1596,10 @@ export default function App() {
             phone: c.phone || '', 
             type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
             balance: c.balance || 0, 
-            targetAmount: c.target_amount,
+            targetAmount: c.target_amount != null ? Number(c.target_amount) : (c.type === 'RENT' ? 30000 : undefined),
             phoneModel: c.start_date || '',
             serviceStatus: parsedStatus,
-            totalCost: c.target_amount || 0,
+            totalCost: c.target_amount != null ? Number(c.target_amount) : 0,
             advancePayment: parsedAdvance,
             advanceDate: parsedAdvDate,
             orderDate: parsedOrderDate,
@@ -2023,6 +2023,9 @@ export default function App() {
     setIsSubmitting(true);
     try {
       const isService = editingContact ? editingContact.type === 'SERVICE' : activeTab === 'SERVICE';
+      const isRent = editingContact ? editingContact.type === 'RENT' : activeTab === 'RENT';
+      const contactType: ContactType = editingContact ? editingContact.type : activeTab;
+      const rentTargetVal = isRent ? (parseFloat(targetAmount) || 30000) : null;
       const costVal = isService ? (parseFloat(addTotalCost) || 0) : null;
       const advanceVal = isService ? (parseFloat(addAdvancePayment) || 0) : null;
       const effectiveOrderDate = addOrderDate || new Date().toISOString().slice(0, 10);
@@ -2032,8 +2035,8 @@ export default function App() {
         user_id: authUser?.id,
         name: addName.trim(), 
         phone: addPhone.trim(),
-        type: isService ? 'SERVICE' : activeTab, 
-        target_amount: isService ? costVal : (activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null), 
+        type: isService ? 'SERVICE' : contactType, 
+        target_amount: isService ? costVal : rentTargetVal, 
         start_date: isService ? addPhoneModel.trim() : null,
         end_date: isService ? JSON.stringify({ 
           status: addServiceStatus, 
@@ -2066,9 +2069,9 @@ export default function App() {
             userId: authUser?.id,
             name: addName.trim(), 
             phone: addPhone.trim(),
-            type: isService ? 'SERVICE' : activeTab,
+            type: isService ? 'SERVICE' : contactType,
             balance: 0,
-            targetAmount: isService ? costVal : (activeTab === 'RENT' ? (parseFloat(targetAmount) || 30000) : null),
+            targetAmount: isService ? costVal : (isRent ? rentTargetVal : null),
             phoneModel: isService ? addPhoneModel.trim() : '',
             serviceStatus: addServiceStatus,
             totalCost: costVal || 0,
@@ -2121,7 +2124,7 @@ export default function App() {
           phone: savedData.phone || '',
           type: savedData.type === 'SUPPLIER' ? 'VENDOR' : savedData.type,
           balance: savedData.balance || 0,
-          targetAmount: savedData.target_amount,
+          targetAmount: isRent ? (rentTargetVal || 30000) : (savedData.target_amount != null ? Number(savedData.target_amount) : costVal),
           phoneModel: savedData.start_date || '',
           serviceStatus: addServiceStatus,
           totalCost: costVal || 0,
@@ -2289,12 +2292,18 @@ export default function App() {
           }
         }
         
-        if (editingContact) {
-          setContacts(contacts.map(c => c.id === editingContact.id ? updatedContact : c));
-          if (selectedContact?.id === editingContact.id) setSelectedContact(updatedContact);
-        } else {
-          setContacts([...contacts, updatedContact]);
+        const nextContacts = editingContact 
+          ? contacts.map(c => c.id === editingContact.id ? updatedContact : c)
+          : [...contacts, updatedContact];
+        setContacts(nextContacts);
+        if (selectedContact?.id === editingContact?.id) {
+          setSelectedContact(updatedContact);
         }
+        try {
+          const cacheKey = authUser?.id ? `st_cached_contacts_${authUser.id}` : 'st_cached_contacts';
+          localStorage.setItem(cacheKey, JSON.stringify(nextContacts));
+          localStorage.setItem('st_cached_contacts', JSON.stringify(nextContacts));
+        } catch {}
       }
       
       setAddName(''); 
@@ -3305,19 +3314,39 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-[#1e2a3c]/60 text-xs">
                     {filtered.map(c => {
+                      const isRentAccount = activeTab === 'RENT' || c.type === 'RENT';
                       const stats = contactStats[c.id] || { totalCredit: 0, totalPayment: 0, balance: 0, pendingChequesCount: 0, pendingChequesAmount: 0 };
-                      const displayBal = stats.balance;
+                      
+                      // Rent Target and Cycle Savings calculations
+                      const rentTarget = c.targetAmount != null ? Number(c.targetAmount) : 30000;
+                      const rentSavedThisCycle = cycleSavingsMap[c.id] !== undefined ? cycleSavingsMap[c.id] : stats.totalPayment;
+                      const rentRemaining = Math.max(0, rentTarget - rentSavedThisCycle);
+
+                      const displayBal = isRentAccount ? rentRemaining : stats.balance;
                       const initialLetter = c.name ? c.name[0].toUpperCase() : '?';
                       
                       let statusLabel = 'Outstanding';
                       let statusBadgeClass = 'bg-rose-950/40 text-rose-400 border border-rose-800/50';
                       
-                      if (displayBal <= 0 && stats.totalPayment > 0) {
-                        statusLabel = 'Settled';
-                        statusBadgeClass = 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/50';
-                      } else if (stats.totalPayment > 0) {
-                        statusLabel = 'Part paid';
-                        statusBadgeClass = 'bg-amber-950/40 text-amber-400 border border-amber-800/50';
+                      if (isRentAccount) {
+                        if (rentRemaining <= 0 && rentSavedThisCycle > 0) {
+                          statusLabel = 'Target Reached';
+                          statusBadgeClass = 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/50';
+                        } else if (rentSavedThisCycle > 0) {
+                          statusLabel = 'Part paid';
+                          statusBadgeClass = 'bg-amber-950/40 text-amber-400 border border-amber-800/50';
+                        } else {
+                          statusLabel = 'Pending';
+                          statusBadgeClass = 'bg-slate-800 text-slate-400 border border-slate-700';
+                        }
+                      } else {
+                        if (displayBal <= 0 && stats.totalPayment > 0) {
+                          statusLabel = 'Settled';
+                          statusBadgeClass = 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/50';
+                        } else if (stats.totalPayment > 0) {
+                          statusLabel = 'Part paid';
+                          statusBadgeClass = 'bg-amber-950/40 text-amber-400 border border-amber-800/50';
+                        }
                       }
 
                       return (
@@ -3334,21 +3363,21 @@ export default function App() {
                               <div>
                                 <h3 className="font-bold text-slate-900 dark:text-white text-sm leading-tight">{c.name}</h3>
                                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium">
-                                  {activeTab === 'VENDOR' ? 'Vendor' : 'Customer'} • {c.phone || 'No phone'}
+                                  {isRentAccount ? 'Rent Account' : (activeTab === 'VENDOR' ? 'Vendor' : 'Customer')} • {c.phone || 'No phone'}
                                 </p>
                               </div>
                             </div>
                           </td>
 
                           <td className="py-3.5 px-3 text-right font-bold text-slate-800 dark:text-slate-200">
-                            LKR {stats.totalCredit.toLocaleString()}
+                            LKR {(isRentAccount ? rentTarget : stats.totalCredit).toLocaleString()}
                           </td>
 
                           <td className="py-3.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400">
-                            LKR {stats.totalPayment.toLocaleString()}
+                            LKR {(isRentAccount ? rentSavedThisCycle : stats.totalPayment).toLocaleString()}
                           </td>
 
-                          <td className="py-3.5 px-3 text-right font-black text-rose-600 dark:text-rose-400 text-sm">
+                          <td className={`py-3.5 px-3 text-right font-black text-sm ${displayBal <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                             LKR {Math.abs(displayBal).toLocaleString()}
                           </td>
 
@@ -4523,10 +4552,11 @@ export default function App() {
   };
 
   const renderContactForm = () => {
-    const isService = activeTab === 'SERVICE';
+    const isService = editingContact ? editingContact.type === 'SERVICE' : activeTab === 'SERVICE';
+    const isRent = editingContact ? editingContact.type === 'RENT' : activeTab === 'RENT';
     const formHeading = editingContact 
-      ? `Edit ${isService ? 'Service Order' : activeTab}` 
-      : `New ${isService ? 'Service Order' : activeTab}`;
+      ? `Edit ${isService ? 'Service Order' : (isRent ? 'RENT' : activeTab)}` 
+      : `New ${isService ? 'Service Order' : (isRent ? 'RENT' : activeTab)}`;
 
     return (
       <div className="min-h-screen bg-white flex flex-col">
@@ -4771,7 +4801,7 @@ export default function App() {
               </div>
             </>
           )}
-          {activeTab === 'RENT' && (<div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label><input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>)}
+          {isRent && (<div className="flex flex-col gap-1"><label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Monthly Target (LKR)</label><input value={targetAmount} onChange={e => setTargetAmount(e.target.value)} type="number" placeholder="30000" className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" /></div>)}
           <button disabled={isSubmitting || !addName.trim()} onClick={handleSaveContact} className="w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg mt-8 flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">{isSubmitting ? <Loader2 className="animate-spin" size={20} /> : (editingContact ? 'Update ' + (isService ? 'Service Order' : 'Contact') : 'Save ' + (isService ? 'Service Order' : 'Contact'))}</button>
         </div>
       </div>
