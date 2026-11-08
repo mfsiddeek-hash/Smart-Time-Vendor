@@ -13,13 +13,15 @@ interface AuthScreenProps {
   initialMode?: AuthMode;
   initialEmail?: string;
   onCancelRecovery?: () => void;
+  onEnterRecoveryMode?: () => void;
 }
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ 
   onAuthSuccess, 
   initialMode = 'SIGN_IN',
   initialEmail = '',
-  onCancelRecovery
+  onCancelRecovery,
+  onEnterRecoveryMode
 }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [fullName, setFullName] = useState('');
@@ -47,11 +49,19 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
   // Listen for recovery hash in URL (e.g., #type=recovery&access_token=...)
   useEffect(() => {
+    const isStoredRecovery = typeof window !== 'undefined' && sessionStorage.getItem('st_password_recovery') === 'true';
+    if (initialMode === 'RESET_PASSWORD' || isStoredRecovery) {
+      setMode('RESET_PASSWORD');
+      if (onEnterRecoveryMode) onEnterRecoveryMode();
+    }
+
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
       const href = window.location.href || '';
       if (hash.includes('type=recovery') || hash.includes('access_token') || href.includes('type=recovery')) {
         setMode('RESET_PASSWORD');
+        sessionStorage.setItem('st_password_recovery', 'true');
+        if (onEnterRecoveryMode) onEnterRecoveryMode();
 
         // Extract tokens directly if present
         const hashPart = hash.startsWith('#') ? hash.substring(1) : hash;
@@ -65,7 +75,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
       }
     }
-  }, []);
+  }, [initialMode]);
 
   const validateEmail = (val: string) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
@@ -345,12 +355,22 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           return;
         }
 
+        // Crucial: Set recovery mode in session storage, history, and parent callback BEFORE setSession!
+        sessionStorage.setItem('st_password_recovery', 'true');
+        if (typeof window !== 'undefined' && window.history?.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname + '#type=recovery');
+        }
+        if (onEnterRecoveryMode) {
+          onEnterRecoveryMode();
+        }
+
         const { data, error } = await supabase.auth.setSession({
           access_token: accessToken,
           refresh_token: refreshToken,
         });
 
         if (error) {
+          sessionStorage.removeItem('st_password_recovery');
           setErrorMsg('The reset link has expired or is invalid. Please request a new one.');
           return;
         }
@@ -370,6 +390,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         return;
       }
 
+      sessionStorage.setItem('st_password_recovery', 'true');
+      if (typeof window !== 'undefined' && window.history?.replaceState) {
+        window.history.replaceState(null, '', window.location.pathname + '#type=recovery');
+      }
+      if (onEnterRecoveryMode) {
+        onEnterRecoveryMode();
+      }
+
       const { data, error } = await supabase.auth.verifyOtp({
         email: targetEmail,
         token: cleanToken,
@@ -377,6 +405,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       });
 
       if (error) {
+        sessionStorage.removeItem('st_password_recovery');
         setErrorMsg(formatAuthError(error.message));
         return;
       }
@@ -415,6 +444,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       if (error) {
         setErrorMsg(error.message);
       } else {
+        sessionStorage.removeItem('st_password_recovery');
+        if (typeof window !== 'undefined' && window.history?.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
         setSuccessMsg('Password updated successfully! Signing you in...');
         setTimeout(() => {
           if (data.user) {
@@ -946,6 +979,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 onClick={() => {
                   setErrorMsg('');
                   setSuccessMsg('');
+                  sessionStorage.removeItem('st_password_recovery');
                   if (typeof window !== 'undefined' && window.history?.replaceState) {
                     window.history.replaceState(null, '', window.location.pathname);
                   }

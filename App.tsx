@@ -153,7 +153,8 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
       const href = window.location.href || '';
-      return hash.includes('type=recovery') || href.includes('type=recovery') || hash.includes('access_token');
+      const isStored = sessionStorage.getItem('st_password_recovery') === 'true';
+      return isStored || hash.includes('type=recovery') || href.includes('type=recovery') || hash.includes('access_token');
     }
     return false;
   });
@@ -1815,14 +1816,15 @@ export default function App() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
-      if (event === 'PASSWORD_RECOVERY') {
+      const isRecovery = event === 'PASSWORD_RECOVERY' ||
+        sessionStorage.getItem('st_password_recovery') === 'true' ||
+        (typeof window !== 'undefined' && (
+          window.location.hash.includes('type=recovery') ||
+          window.location.href.includes('type=recovery') ||
+          window.location.hash.includes('access_token')
+        ));
+      if (isRecovery) {
         setIsPasswordRecoveryMode(true);
-      }
-      if (typeof window !== 'undefined') {
-        const hash = window.location.hash || '';
-        if (hash.includes('type=recovery')) {
-          setIsPasswordRecoveryMode(true);
-        }
       }
       setAuthSession(session);
       setAuthUser(session?.user || null);
@@ -7595,8 +7597,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       <AuthScreen
         initialMode="RESET_PASSWORD"
         initialEmail={authUser?.email || ''}
-        onCancelRecovery={() => setIsPasswordRecoveryMode(false)}
+        onCancelRecovery={() => {
+          sessionStorage.removeItem('st_password_recovery');
+          setIsPasswordRecoveryMode(false);
+        }}
+        onEnterRecoveryMode={() => setIsPasswordRecoveryMode(true)}
         onAuthSuccess={async (user, profile) => {
+          sessionStorage.removeItem('st_password_recovery');
           setIsPasswordRecoveryMode(false);
           setAuthUser(user);
           if (profile) {
@@ -7622,7 +7629,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   if (!authUser) {
     return (
       <AuthScreen
+        onEnterRecoveryMode={() => setIsPasswordRecoveryMode(true)}
         onAuthSuccess={async (user, profile) => {
+          sessionStorage.removeItem('st_password_recovery');
           setAuthUser(user);
           if (profile) {
             setUserProfile(profile);
