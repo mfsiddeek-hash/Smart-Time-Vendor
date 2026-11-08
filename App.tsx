@@ -1762,9 +1762,22 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
+    // Safety timeout: Ensure the loading screen never stays longer than 1.5 seconds
+    const safetyTimer = setTimeout(() => {
+      if (mounted) {
+        setIsAuthLoading(false);
+      }
+    }, 1500);
+
     const initAuth = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        // Race getSession with a 1.2s fallback in case of slow or blocked lock in iframe
+        const sessionPromise = supabase.auth.getSession();
+        const fallbackPromise = new Promise<{ data: { session: any } }>((resolve) =>
+          setTimeout(() => resolve({ data: { session: null } }), 1200)
+        );
+        const { data: { session } } = await Promise.race([sessionPromise, fallbackPromise]);
+
         if (!mounted) return;
         setAuthSession(session);
         setAuthUser(session?.user || null);
@@ -1785,14 +1798,20 @@ export default function App() {
             setShopLogo(prof?.logoUrl || null);
           }
 
-          await fetchData(session.user.id);
+          fetchData(session.user.id).catch(e => console.warn('Fetch data init warning:', e));
         }
       } catch (err) {
         console.warn('Auth check error:', err);
       } finally {
-        if (mounted) setIsAuthLoading(false);
+        if (mounted) {
+          setIsAuthLoading(false);
+          clearTimeout(safetyTimer);
+        }
       }
     };
+
+    // Explicitly run initial authentication check
+    initAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
@@ -1824,7 +1843,7 @@ export default function App() {
           setShopLogo(prof?.logoUrl || null);
         }
 
-        await fetchData(session.user.id);
+        fetchData(session.user.id).catch(e => console.warn('Fetch data on change warning:', e));
       } else {
         setUserProfile(null);
         setShopName('');
@@ -1838,10 +1857,16 @@ export default function App() {
         setIsAuthenticated(false);
         sessionStorage.removeItem('st_auth_active');
       }
+
+      if (mounted) {
+        setIsAuthLoading(false);
+        clearTimeout(safetyTimer);
+      }
     });
 
     return () => {
       mounted = false;
+      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
   }, []);
@@ -7516,13 +7541,20 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   // 1. Initial Session Loading from Supabase
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4">
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4 select-none">
         <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white mb-4 shadow-xl shadow-blue-500/20">
           <Store size={32} />
         </div>
         <Loader2 className="animate-spin text-blue-400 mb-3" size={32} />
         <h2 className="text-base font-bold text-white">Ledger Book</h2>
         <p className="text-xs font-semibold text-slate-400 mt-1">Checking secure session...</p>
+        <button
+          type="button"
+          onClick={() => setIsAuthLoading(false)}
+          className="mt-6 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-blue-400 hover:text-blue-300 font-semibold border border-slate-700 transition-all active:scale-95"
+        >
+          Continue to Sign In &rarr;
+        </button>
       </div>
     );
   }
