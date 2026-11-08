@@ -12,12 +12,14 @@ interface AuthScreenProps {
   onAuthSuccess: (user: any, profile?: UserProfile | null) => void;
   initialMode?: AuthMode;
   initialEmail?: string;
+  onCancelRecovery?: () => void;
 }
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ 
   onAuthSuccess, 
   initialMode = 'SIGN_IN',
-  initialEmail = ''
+  initialEmail = '',
+  onCancelRecovery
 }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [fullName, setFullName] = useState('');
@@ -26,6 +28,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [recoveryInput, setRecoveryInput] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
@@ -45,9 +48,21 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   // Listen for recovery hash in URL (e.g., #type=recovery&access_token=...)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const hash = window.location.hash;
-      if (hash && (hash.includes('type=recovery') || hash.includes('access_token'))) {
+      const hash = window.location.hash || '';
+      const href = window.location.href || '';
+      if (hash.includes('type=recovery') || hash.includes('access_token') || href.includes('type=recovery')) {
         setMode('RESET_PASSWORD');
+
+        // Extract tokens directly if present
+        const hashPart = hash.startsWith('#') ? hash.substring(1) : hash;
+        const params = new URLSearchParams(hashPart);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+
+        if (accessToken && refreshToken) {
+          supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+            .catch(err => console.warn('Recovery setSession error:', err));
+        }
       }
     }
   }, []);
@@ -283,17 +298,95 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     setIsLoading(true);
     try {
+      const liveOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
       const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: typeof window !== 'undefined' ? `${window.location.origin}#type=recovery` : undefined,
+        redirectTo: `${liveOrigin}#type=recovery`,
       });
 
       if (error) {
         setErrorMsg(formatAuthError(error.message));
       } else {
-        setSuccessMsg(`Password reset instructions sent to ${cleanEmail}. Please check your email inbox.`);
+        setSuccessMsg(`Password reset instructions sent to ${cleanEmail}. Please check your email inbox. If your email link starts with http://localhost:3000, simply copy the link and paste it into the box below!`);
       }
     } catch (err: any) {
       setErrorMsg(formatAuthError(err.message || 'Failed to send reset email.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyRecoveryInput = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    const raw = recoveryInput.trim();
+    if (!raw) {
+      setErrorMsg('Please paste the reset link or 6-digit code from your email.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // 1. Check if user pasted a link (e.g. http://localhost:3000/#access_token=... or #access_token=...)
+      if (raw.includes('access_token')) {
+        let hashStr = raw;
+        if (raw.includes('#')) {
+          hashStr = raw.substring(raw.indexOf('#') + 1);
+        } else if (raw.includes('?')) {
+          hashStr = raw.substring(raw.indexOf('?') + 1);
+        }
+        const params = new URLSearchParams(hashStr);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+
+        if (!accessToken || !refreshToken) {
+          setErrorMsg('Could not find access tokens in the pasted link. Please make sure to copy the full link from your email.');
+          return;
+        }
+
+        const { data, error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+
+        if (error) {
+          setErrorMsg('The reset link has expired or is invalid. Please request a new one.');
+          return;
+        }
+
+        if (data.session) {
+          setMode('RESET_PASSWORD');
+          setSuccessMsg('Reset link verified! Please enter your new password below.');
+          return;
+        }
+      }
+
+      // 2. Check if user entered an OTP code (6-digit token or confirmation token)
+      const cleanToken = raw.replace(/\s+/g, '');
+      const targetEmail = email.trim();
+      if (!targetEmail) {
+        setErrorMsg('Please enter your email address in the field above to verify this code.');
+        return;
+      }
+
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: targetEmail,
+        token: cleanToken,
+        type: 'recovery',
+      });
+
+      if (error) {
+        setErrorMsg(formatAuthError(error.message));
+        return;
+      }
+
+      if (data.session) {
+        setMode('RESET_PASSWORD');
+        setSuccessMsg('Code verified! Please enter your new password below.');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Verification failed. Please check the link or code.');
     } finally {
       setIsLoading(false);
     }
@@ -718,7 +811,41 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               )}
             </button>
 
-            <div className="pt-3 border-t border-slate-700/80 text-center">
+            {/* Direct Link or Code Verification (for emails with localhost links or 6-digit codes) */}
+            <div className="pt-3 border-t border-slate-700/80 space-y-2.5">
+              <div className="text-left">
+                <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider block">
+                  Already have the reset link or code?
+                </span>
+                <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                  If the link in your email starts with <code className="text-amber-300 font-mono bg-slate-900 px-1 py-0.5 rounded text-[10px]">http://localhost:3000</code>, simply paste that entire link or 6-digit code below!
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="relative">
+                  <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                  <input
+                    type="text"
+                    value={recoveryInput}
+                    onChange={e => setRecoveryInput(e.target.value)}
+                    placeholder="Paste link or 6-digit code..."
+                    className="w-full bg-slate-900/90 border border-amber-500/50 rounded-xl pl-10 pr-3.5 py-2.5 text-xs font-semibold text-white placeholder-slate-500 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition-all font-mono"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleVerifyRecoveryInput()}
+                  disabled={isLoading || !recoveryInput.trim()}
+                  className="w-full bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-bold py-2.5 rounded-xl text-xs shadow-md shadow-amber-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <ShieldCheck size={15} />
+                  <span>Verify Link / Code & Set New Password</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-700/80 text-center">
               <button
                 type="button"
                 onClick={() => {
@@ -738,6 +865,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         {mode === 'RESET_PASSWORD' && (
           <form onSubmit={handleResetPassword} className="space-y-4">
             <div className="text-center mb-2">
+              <div className="w-12 h-12 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl mx-auto flex items-center justify-center text-emerald-400 mb-2">
+                <Lock size={24} />
+              </div>
               <h2 className="text-lg font-bold text-white">Create New Password</h2>
               <p className="text-xs text-slate-400">Set a strong new password for your account</p>
             </div>
@@ -809,6 +939,26 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 </>
               )}
             </button>
+
+            <div className="pt-2 border-t border-slate-700/80 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg('');
+                  setSuccessMsg('');
+                  if (typeof window !== 'undefined' && window.history?.replaceState) {
+                    window.history.replaceState(null, '', window.location.pathname);
+                  }
+                  if (onCancelRecovery) {
+                    onCancelRecovery();
+                  }
+                  setMode('SIGN_IN');
+                }}
+                className="text-xs text-slate-400 hover:text-slate-200 transition-colors flex items-center justify-center gap-1.5 mx-auto font-medium"
+              >
+                <ArrowLeft size={14} /> Back to Sign In
+              </button>
+            </div>
           </form>
         )}
       </div>

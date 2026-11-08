@@ -9,7 +9,7 @@ import {
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
   Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, Minus, Tag, ArrowUpRight, ArrowDownRight,
-  Sun, Moon
+  Sun, Moon, AlertTriangle
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -149,6 +149,14 @@ export default function App() {
   const [authUser, setAuthUser] = useState<any>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [isPasswordRecoveryMode, setIsPasswordRecoveryMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      const href = window.location.href || '';
+      return hash.includes('type=recovery') || href.includes('type=recovery') || hash.includes('access_token');
+    }
+    return false;
+  });
   
   const [contacts, setContacts] = useState<Contact[]>(() => {
     try {
@@ -296,6 +304,13 @@ export default function App() {
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [adminPasswordError, setAdminPasswordError] = useState('');
   const [isVerifyingAdmin, setIsVerifyingAdmin] = useState(false);
+
+  // Wipe Ledger Confirmation Modal States
+  const [isWipeModalOpen, setIsWipeModalOpen] = useState(false);
+  const [wipeAdminPassword, setWipeAdminPassword] = useState('');
+  const [showWipePassword, setShowWipePassword] = useState(false);
+  const [wipeAdminPasswordError, setWipeAdminPasswordError] = useState('');
+  const [isWipingData, setIsWipingData] = useState(false);
 
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
@@ -1779,10 +1794,17 @@ export default function App() {
       }
     };
 
-    initAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecoveryMode(true);
+      }
+      if (typeof window !== 'undefined') {
+        const hash = window.location.hash || '';
+        if (hash.includes('type=recovery')) {
+          setIsPasswordRecoveryMode(true);
+        }
+      }
       setAuthSession(session);
       setAuthUser(session?.user || null);
 
@@ -5267,6 +5289,198 @@ export default function App() {
       </div>
     );
   };
+
+  const handleVerifyAndWipeRecords = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setWipeAdminPasswordError('');
+
+    const cleanPassword = wipeAdminPassword.trim();
+    if (!cleanPassword) {
+      setWipeAdminPasswordError('Please enter your Administrator password.');
+      return;
+    }
+
+    setIsWipingData(true);
+    try {
+      const adminEmail = authUser?.email || '';
+      if (!adminEmail) {
+        setWipeAdminPasswordError('No active administrator session found. Please sign in again.');
+        setIsWipingData(false);
+        return;
+      }
+
+      // Verify the administrator password against Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: adminEmail,
+        password: cleanPassword,
+      });
+
+      if (authError || !authData?.user) {
+        setWipeAdminPasswordError('Incorrect administrator password. Wipe operation aborted.');
+        setIsWipingData(false);
+        return;
+      }
+
+      // Deletion of records in Supabase
+      const uid = authUser.id;
+      await Promise.allSettled([
+        supabase.from('transactions').delete().neq('id', '0'),
+        supabase.from('contacts').delete().neq('id', '0'),
+        supabase.from('cashbook_entries').delete().neq('id', '0')
+      ]);
+
+      // Clear local storage and caches
+      try {
+        localStorage.removeItem('st_cached_contacts');
+        localStorage.removeItem(`st_cached_contacts_${uid}`);
+        localStorage.removeItem('st_cached_transactions');
+        localStorage.removeItem(`st_cached_transactions_${uid}`);
+        localStorage.removeItem('st_cashbook_entries');
+        localStorage.removeItem(`st_cashbook_entries_${uid}`);
+      } catch (err) {
+        console.warn('Cache clear error:', err);
+      }
+
+      // Clear React states
+      setContacts([]);
+      setTransactions([]);
+      setCashbookEntries([]);
+      setSelectedContact(null);
+      setIsWipeModalOpen(false);
+      setWipeAdminPassword('');
+
+      showProfileToast('All ledger records and transactions have been permanently wiped.', 'success');
+
+      // Reload page to re-initialize fresh empty state
+      setTimeout(() => {
+        window.location.reload();
+      }, 800);
+    } catch (err: any) {
+      setWipeAdminPasswordError(err.message || 'Failed to wipe database records.');
+    } finally {
+      setIsWipingData(false);
+    }
+  };
+
+  const renderWipeModal = () => {
+    if (!isWipeModalOpen) return null;
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[140] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-rose-200 dark:border-rose-900/50">
+          <div className="bg-gradient-to-r from-rose-700 via-rose-600 to-red-600 text-white p-5 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-white shadow-inner">
+                <ShieldAlert size={22} className="text-white" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-white">Administrator Password Required</h3>
+                <p className="text-[11px] text-rose-100/90">Danger: Permanent Database Wipe</p>
+              </div>
+            </div>
+            <button 
+              type="button"
+              onClick={() => {
+                if (isWipingData) return;
+                setIsWipeModalOpen(false);
+                setWipeAdminPassword('');
+                setWipeAdminPasswordError('');
+              }}
+              disabled={isWipingData}
+              className="p-1.5 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors disabled:opacity-50"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <form onSubmit={handleVerifyAndWipeRecords} className="p-6 space-y-4">
+            <div className="p-3.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 rounded-2xl text-xs space-y-1">
+              <div className="font-bold flex items-center gap-1.5 text-rose-900 dark:text-rose-200">
+                <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+                <span>PERMANENT DATABASE RESET</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-rose-700 dark:text-rose-300">
+                This action cannot be undone. All transactions, contacts, cheques, cashbook entries, and service orders will be permanently wiped from the database.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-800/70 p-3 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
+              <span className="text-slate-500 dark:text-slate-400 font-medium text-[11px]">Administrator Account:</span>
+              <p className="font-bold text-slate-900 dark:text-slate-100 truncate mt-0.5">{authUser?.email || 'Admin'}</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider block">
+                Enter Admin Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                <input 
+                  type={showWipePassword ? 'text' : 'password'}
+                  value={wipeAdminPassword}
+                  onChange={e => {
+                    setWipeAdminPassword(e.target.value);
+                    if (wipeAdminPasswordError) setWipeAdminPasswordError('');
+                  }}
+                  placeholder="Enter administrator password..."
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-10 py-3 text-sm font-semibold text-slate-900 dark:text-white outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500 transition-all placeholder:text-slate-400"
+                  autoFocus
+                  disabled={isWipingData}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowWipePassword(!showWipePassword)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  {showWipePassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {wipeAdminPasswordError && (
+                <div className="p-2.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-400 text-xs font-semibold mt-1.5">
+                  <AlertCircle size={15} className="shrink-0 text-rose-600" />
+                  <span>{wipeAdminPasswordError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2 flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isWipingData) return;
+                  setIsWipeModalOpen(false);
+                  setWipeAdminPassword('');
+                  setWipeAdminPasswordError('');
+                }}
+                disabled={isWipingData}
+                className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-xl active:scale-95 transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isWipingData || !wipeAdminPassword.trim()}
+                className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-600/30 active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isWipingData ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Wiping Records...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={15} />
+                    <span>Confirm & Wipe Records</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
   const renderSqlModal = () => {
     if (!isSqlModalOpen) return null;
     const sqlScript = `-- ==============================================================================
@@ -5998,25 +6212,25 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
               {/* Danger Zone: Wipe Ledger Data */}
               {userCanDelete && userCanManageUsers && (
-                <div className="bg-rose-50/70 p-6 rounded-2xl border border-rose-200 shadow-xs space-y-3">
-                  <div className="flex items-center gap-2 text-rose-700 font-bold text-sm">
+                <div className="bg-rose-50/70 dark:bg-rose-950/20 p-6 rounded-2xl border border-rose-200 dark:border-rose-900/40 shadow-xs space-y-3">
+                  <div className="flex items-center gap-2 text-rose-700 dark:text-rose-400 font-bold text-sm">
                     <ShieldAlert size={18} /> Danger Zone: Reset Database Data
                   </div>
-                  <p className="text-xs text-rose-600 leading-relaxed">
+                  <p className="text-xs text-rose-600 dark:text-rose-400/80 leading-relaxed">
                     Permanently wipes all customer transactions, ledger records, and service orders from Supabase. This action cannot be undone.
                   </p>
                   <button 
-                    onClick={async () => { 
-                      if (!window.confirm("RESET APP DATA? All database records will be permanently wiped.")) return; 
-                      await Promise.all([
-                        supabase.from('transactions').delete().neq('id', '0'), 
-                        supabase.from('contacts').delete().neq('id', '0')
-                      ]); 
-                      window.location.reload(); 
+                    type="button"
+                    onClick={() => {
+                      setWipeAdminPassword('');
+                      setWipeAdminPasswordError('');
+                      setShowWipePassword(false);
+                      setIsWipeModalOpen(true);
                     }} 
-                    className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 px-4 rounded-xl shadow-xs active:scale-95 transition-all text-xs"
+                    className="w-full bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold py-3 px-4 rounded-xl shadow-xs active:scale-95 transition-all text-xs flex items-center justify-center gap-2"
                   >
-                    Wipe All Ledger Records
+                    <ShieldAlert size={15} />
+                    <span>Wipe All Ledger Records</span>
                   </button>
                 </div>
               )}
@@ -7313,6 +7527,35 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     );
   }
 
+  // 1.5. User is in Password Recovery Flow (Clicked email reset link or entered recovery tokens)
+  if (isPasswordRecoveryMode) {
+    return (
+      <AuthScreen
+        initialMode="RESET_PASSWORD"
+        initialEmail={authUser?.email || ''}
+        onCancelRecovery={() => setIsPasswordRecoveryMode(false)}
+        onAuthSuccess={async (user, profile) => {
+          setIsPasswordRecoveryMode(false);
+          setAuthUser(user);
+          if (profile) {
+            setUserProfile(profile);
+            setShopName(profile.shopName || '');
+            setShopPhone(profile.phone || '');
+            setShopAddress(profile.address || '');
+            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
+            setShopLogo(profile.logoUrl || null);
+          }
+          setIsAuthenticated(true);
+          sessionStorage.setItem('st_auth_active', 'true');
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+          await fetchData(user.id);
+        }}
+      />
+    );
+  }
+
   // 2. User is not signed in
   if (!authUser) {
     return (
@@ -7397,6 +7640,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderPreviewModal()}
       {renderUserModal()}
       {renderPasswordModal()}
+      {renderWipeModal()}
       {renderSqlModal()}
       {renderCashbookModal()}
     </>
