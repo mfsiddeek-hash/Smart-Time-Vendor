@@ -11,6 +11,7 @@ export interface Contact {
   startDate?: string; // Stored in DB (used for phoneModel in SERVICE)
   endDate?: string;   // Stored in DB (used for serviceStatus in SERVICE)
   phoneModel?: string;
+  deviceIssue?: string;
   serviceStatus?: string;
   totalCost?: number;
   advancePayment?: number;

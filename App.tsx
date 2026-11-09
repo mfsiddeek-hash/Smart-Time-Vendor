@@ -409,6 +409,7 @@ export default function App() {
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
   const [addPhoneModel, setAddPhoneModel] = useState('');
+  const [addDeviceIssue, setAddDeviceIssue] = useState('');
   const [addTotalCost, setAddTotalCost] = useState('');
   const [addAdvancePayment, setAddAdvancePayment] = useState('');
   const [addOrderDate, setAddOrderDate] = useState(new Date().toISOString().slice(0, 10));
@@ -803,6 +804,11 @@ export default function App() {
         y += 4.5;
         doc.text(`Device   : ${contact.phoneModel || '-'}`, 6, y);
         y += 4.5;
+        if (contact.deviceIssue) {
+          const issueStr = contact.deviceIssue;
+          doc.text(`Issue    : ${issueStr.length > 34 ? issueStr.slice(0, 31) + '...' : issueStr}`, 6, y);
+          y += 4.5;
+        }
         doc.text(`Status   : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 6, y);
         y += 4.5;
         const posItems = contact.collectedItems || [];
@@ -948,8 +954,9 @@ export default function App() {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(10);
         doc.text(`Customer Name : ${contact.name}`, 14, 46);
-        doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 53);
-        doc.text(`Service Type  : Walk-in Repair Order`, 14, 60);
+        doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 52);
+        doc.text(`Device Issue  : ${contact.deviceIssue || 'General Service & Repair'}`, 14, 58);
+        doc.text(`Service Type  : Walk-in Repair Order`, 14, 64);
 
         const itemsArr = contact.collectedItems || [];
         const itemsStr = itemsArr.length > 0 
@@ -1095,6 +1102,7 @@ export default function App() {
     setAddName(contact.name);
     setAddPhone(contact.phone || '');
     setAddPhoneModel(contact.phoneModel || '');
+    setAddDeviceIssue(contact.deviceIssue || '');
     const stats = contactStats[contact.id];
     const cost = contact.totalCost || contact.targetAmount || stats?.totalCredit || '';
     const adv = contact.advancePayment || stats?.totalPayment || '';
@@ -1233,6 +1241,9 @@ export default function App() {
                   <div className="flex justify-between"><span className="text-slate-500">Customer:</span><span className="font-bold text-slate-900">{previewServiceOrder.name}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Phone:</span><span>{previewServiceOrder.phone || '-'}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Device:</span><span className="font-bold text-indigo-700">{previewServiceOrder.phoneModel || '-'}</span></div>
+                  {previewServiceOrder.deviceIssue && (
+                    <div className="flex justify-between"><span className="text-slate-500">Issue:</span><span className="font-bold text-amber-700">{previewServiceOrder.deviceIssue}</span></div>
+                  )}
                   <div className="flex justify-between items-center"><span className="text-slate-500">Status:</span>
                     <span className="font-bold uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-800">
                       {previewServiceOrder.serviceStatus || 'Pending'}
@@ -1351,6 +1362,9 @@ export default function App() {
                     <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Device Details</p>
                       <p className="font-bold text-sm text-indigo-700">{previewServiceOrder.phoneModel || 'Device'}</p>
+                      {previewServiceOrder.deviceIssue && (
+                        <p className="text-amber-800 text-xs font-semibold mt-0.5">Issue: <span className="text-slate-700 font-normal">{previewServiceOrder.deviceIssue}</span></p>
+                      )}
                       <p className="text-slate-600 mt-0.5 font-semibold">Status: <span className="uppercase text-slate-800">{previewServiceOrder.serviceStatus || 'Pending'}</span></p>
                       <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-[11px]">
                         <span className="font-bold text-slate-500">Items Received: </span>
@@ -1573,6 +1587,7 @@ export default function App() {
           let parsedOrderDate = '';
           let parsedCollectedItems: string[] = [];
           let parsedOtherCollectedItems = '';
+          let parsedDeviceIssue = '';
           if (c.end_date) {
             try {
               if (c.end_date.startsWith('{')) {
@@ -1583,6 +1598,7 @@ export default function App() {
                 parsedOrderDate = parsed.orderDate || '';
                 parsedCollectedItems = Array.isArray(parsed.collectedItems) ? parsed.collectedItems : [];
                 parsedOtherCollectedItems = parsed.otherCollectedItems || '';
+                parsedDeviceIssue = parsed.deviceIssue || '';
               } else {
                 parsedStatus = c.end_date;
               }
@@ -1599,6 +1615,7 @@ export default function App() {
             balance: c.balance || 0, 
             targetAmount: c.target_amount != null ? Number(c.target_amount) : (c.type === 'RENT' ? 30000 : undefined),
             phoneModel: c.start_date || '',
+            deviceIssue: parsedDeviceIssue,
             serviceStatus: parsedStatus,
             totalCost: c.target_amount != null ? Number(c.target_amount) : 0,
             advancePayment: parsedAdvance,
@@ -2046,7 +2063,8 @@ export default function App() {
           advanceDate: effectiveAdvDate,
           orderDate: effectiveOrderDate,
           collectedItems: addCollectedItems,
-          otherCollectedItems: addOtherCollectedItems.trim()
+          otherCollectedItems: addOtherCollectedItems.trim(),
+          deviceIssue: addDeviceIssue.trim()
         }) : null,
         last_updated: new Date().toISOString() 
       };
@@ -2075,6 +2093,7 @@ export default function App() {
             balance: 0,
             targetAmount: isService ? costVal : (isRent ? rentTargetVal : null),
             phoneModel: isService ? addPhoneModel.trim() : '',
+            deviceIssue: isService ? addDeviceIssue.trim() : undefined,
             serviceStatus: addServiceStatus,
             totalCost: costVal || 0,
             advancePayment: advanceVal || 0,
@@ -2102,6 +2121,7 @@ export default function App() {
           setAddName(''); 
           setAddPhone(''); 
           setAddPhoneModel('');
+          setAddDeviceIssue('');
           setAddTotalCost('');
           setAddAdvancePayment('');
           setAddOrderDate(new Date().toISOString().slice(0, 10));
@@ -2128,6 +2148,7 @@ export default function App() {
           balance: savedData.balance || 0,
           targetAmount: isRent ? (rentTargetVal || 30000) : (savedData.target_amount != null ? Number(savedData.target_amount) : costVal),
           phoneModel: savedData.start_date || '',
+          deviceIssue: isService ? addDeviceIssue.trim() : undefined,
           serviceStatus: addServiceStatus,
           totalCost: costVal || 0,
           advancePayment: advanceVal || 0,
@@ -2311,6 +2332,7 @@ export default function App() {
       setAddName(''); 
       setAddPhone(''); 
       setAddPhoneModel('');
+      setAddDeviceIssue('');
       setAddTotalCost('');
       setAddAdvancePayment('');
       setAddOrderDate(new Date().toISOString().slice(0, 10));
@@ -2801,11 +2823,29 @@ export default function App() {
     const tabNounPlural = activeTab === 'VENDOR' ? 'vendors' : activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
 
     const filtered = currentTabContacts.filter(c => {
-      const q = searchQuery.toLowerCase();
+      const q = searchQuery.toLowerCase().trim();
+      if (!q) {
+        if (filterNeedsAttention) {
+          return (contactStats[c.id]?.pendingChequesCount || 0) > 0;
+        }
+        return true;
+      }
+
+      const cleanQ = q.replace(/^#/, '').trim();
+      const orderIdFull = `so-${c.id.slice(0, 6).toLowerCase()}`;
+      const orderIdShort = c.id.slice(0, 6).toLowerCase();
+
       const matchesSearch = (
         c.name.toLowerCase().includes(q) || 
         (c.phone && c.phone.includes(q)) ||
-        (c.phoneModel && c.phoneModel.toLowerCase().includes(q))
+        (c.phoneModel && c.phoneModel.toLowerCase().includes(q)) ||
+        (c.deviceIssue && c.deviceIssue.toLowerCase().includes(q)) ||
+        (c.type === 'SERVICE' && (
+          orderIdFull.includes(q) ||
+          orderIdFull.includes(cleanQ) ||
+          orderIdShort.includes(cleanQ) ||
+          c.id.toLowerCase().includes(cleanQ)
+        ))
       );
       if (!matchesSearch) return false;
       if (filterNeedsAttention) {
@@ -2877,7 +2917,7 @@ export default function App() {
                 </button>
 
                 <button 
-                  onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} 
+                  onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddDeviceIssue(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }} 
                   className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" 
                   title="Add New Party / Order"
                 >
@@ -2969,7 +3009,7 @@ export default function App() {
 
             <div className="flex items-center gap-2.5">
               <button 
-                onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }}
+                onClick={() => { setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddDeviceIssue(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM'); }}
                 className="bg-slate-100 hover:bg-slate-200 dark:bg-[#1a2332] dark:hover:bg-[#222e42] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#2b3950] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs active:scale-95"
               >
                 <Plus size={15} />
@@ -3122,11 +3162,21 @@ export default function App() {
                   <Search size={15} className="text-slate-400 mr-2 shrink-0" />
                   <input 
                     type="text" 
-                    placeholder={activeTab === 'SERVICE' ? "Search name, phone, or model" : `Search ${activeTab.toLowerCase()}s...`} 
+                    placeholder={activeTab === 'SERVICE' ? "Search order ID, name, phone, or model" : `Search ${activeTab.toLowerCase()}s...`} 
                     className="bg-transparent outline-none text-xs w-full text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-medium" 
                     value={searchQuery} 
                     onChange={(e) => setSearchQuery(e.target.value)} 
                   />
+                  {searchQuery && (
+                    <button 
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 ml-1"
+                      title="Clear search"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
                 </div>
 
                 <button 
@@ -3172,6 +3222,9 @@ export default function App() {
                           <div className="overflow-hidden">
                             <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="font-bold text-slate-900 dark:text-white text-base truncate leading-tight">{c.name}</h3>
+                              <span className="text-[10px] font-mono font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800/60 shrink-0">
+                                #{`SO-${c.id.slice(0, 6).toUpperCase()}`}
+                              </span>
                               {c.serviceStatus && (
                                 <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                                   c.serviceStatus === 'Delivered' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-400' :
@@ -3183,12 +3236,18 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="flex items-center gap-2 mt-1">
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
                               {c.phone && <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">{c.phone}</span>}
                               {c.phone && c.phoneModel && <span className="text-slate-300 dark:text-slate-600">•</span>}
                               {c.phoneModel && (
                                 <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800/50">
                                   {c.phoneModel}
+                                </span>
+                              )}
+                              {c.deviceIssue && (
+                                <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded-md border border-amber-200 dark:border-amber-800/50 flex items-center gap-1">
+                                  <AlertCircle size={11} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                                  <span>{c.deviceIssue}</span>
                                 </span>
                               )}
                             </div>
@@ -3497,7 +3556,14 @@ export default function App() {
         <header className="bg-white sticky top-0 z-30 shadow-sm px-4 py-3 flex items-center gap-3">
           <button onClick={handleBack} className="p-1"><ChevronLeft size={24} /></button>
           <div className="flex-1 overflow-hidden">
-            <h1 className="font-bold text-lg truncate">{selectedContact.name}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-lg truncate">{selectedContact.name}</h1>
+              {isService && (
+                <span className="text-xs font-mono font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200 shrink-0">
+                  #{`SO-${selectedContact.id.slice(0, 6).toUpperCase()}`}
+                </span>
+              )}
+            </div>
             <p className="text-[11px] text-slate-400 font-medium truncate">
               {selectedContact.phone || 'No phone'}
               {isService && selectedContact.phoneModel ? ` • ${selectedContact.phoneModel}` : ''}
@@ -3615,6 +3681,11 @@ export default function App() {
                   {selectedContact.phoneModel && (
                     <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
                       <Smartphone size={13} /> {selectedContact.phoneModel}
+                    </span>
+                  )}
+                  {selectedContact.deviceIssue && (
+                    <span className="bg-amber-50 border border-amber-200 text-amber-800 text-xs px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
+                      <AlertCircle size={13} className="text-amber-600" /> {selectedContact.deviceIssue}
                     </span>
                   )}
                   {selectedContact.serviceStatus && (
@@ -4582,6 +4653,58 @@ export default function App() {
                   placeholder="e.g. iPhone 13 Pro, Samsung A12" 
                   className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors" 
                 />
+              </div>
+
+              {/* Device Issue input column below Phone Model */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Device Issue</label>
+                  <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full font-semibold border border-amber-200">
+                    Repair Complaint
+                  </span>
+                </div>
+                <input 
+                  value={addDeviceIssue} 
+                  onChange={e => setAddDeviceIssue(e.target.value)} 
+                  placeholder="e.g. Display Broken, Touch Not Working, Battery Draining, No Power" 
+                  className="w-full border-b-2 py-3 text-lg font-semibold outline-none focus:border-blue-500 transition-colors text-slate-800" 
+                />
+                {/* Quick preset chips for common phone issues */}
+                <div className="flex gap-1.5 flex-wrap pt-1">
+                  {[
+                    'Display Broken', 
+                    'Touch Issue', 
+                    'Battery Replace', 
+                    'Not Charging', 
+                    'Water Damage', 
+                    'No Power / Dead', 
+                    'Mic / Speaker'
+                  ].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => {
+                        if (!addDeviceIssue.trim()) {
+                          setAddDeviceIssue(preset);
+                        } else if (!addDeviceIssue.includes(preset)) {
+                          setAddDeviceIssue(`${addDeviceIssue.trim()}, ${preset}`);
+                        }
+                      }}
+                      className="text-[10px] font-bold bg-slate-100 hover:bg-amber-100 text-slate-700 hover:text-amber-900 px-2.5 py-1 rounded-lg border border-slate-200 hover:border-amber-300 transition-colors active:scale-95"
+                    >
+                      + {preset}
+                    </button>
+                  ))}
+                  {addDeviceIssue && (
+                    <button
+                      type="button"
+                      onClick={() => setAddDeviceIssue('')}
+                      className="text-[10px] font-bold bg-rose-50 text-rose-600 hover:bg-rose-100 px-2 py-1 rounded-lg border border-rose-200 transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Collected Items with Device Checklist */}
