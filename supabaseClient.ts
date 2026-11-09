@@ -46,6 +46,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
         phone: pData.phone || '',
         address: pData.address || '',
         logoUrl: pData.logo_url || null,
+        receiptTerms: pData.receipt_terms || undefined,
         setupCompleted: isCompleted
       };
     }
@@ -71,6 +72,7 @@ export const loadUserProfile = async (userId: string, userMetadata?: any): Promi
               phone: parsed.phone || '',
               address: parsed.address || '',
               logoUrl: parsed.logo_url || parsed.logoUrl || null,
+              receiptTerms: parsed.receipt_terms || parsed.receiptTerms || undefined,
               setupCompleted: true
             };
           }

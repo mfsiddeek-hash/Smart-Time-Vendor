@@ -216,11 +216,16 @@ export default function App() {
   const [dismissDbAlert, setDismissDbAlert] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   
+const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***`;
+
   const [shopName, setShopName] = useState<string>('');
   const [shopTagline, setShopTagline] = useState<string>('Mobile Phone Repair & Service');
   const [shopPhone, setShopPhone] = useState<string>('');
   const [shopAddress, setShopAddress] = useState<string>('');
   const [shopLogo, setShopLogo] = useState<string | null>(null);
+  const [shopReceiptTerms, setShopReceiptTerms] = useState<string>(() => {
+    return localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS;
+  });
 
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string>(() => localStorage.getItem('st_current_user_id') || '');
@@ -893,11 +898,14 @@ export default function App() {
         doc.setFontSize(7);
         doc.text('------------------------------------------', 40, y, { align: 'center' });
         y += 4;
-        doc.text('* Please present this receipt upon pickup', 40, y, { align: 'center' });
-        y += 3.5;
-        doc.text('* Repaired devices kept up to 30 days', 40, y, { align: 'center' });
-        y += 4;
-        doc.text('*** THANK YOU FOR YOUR BUSINESS! ***', 40, y, { align: 'center' });
+        const posTermsLines = (shopReceiptTerms || DEFAULT_RECEIPT_TERMS)
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean);
+        posTermsLines.forEach(line => {
+          doc.text(line, 40, y, { align: 'center' });
+          y += 3.8;
+        });
 
         const safeName = `POS_${orderNo}_${contact.name.replace(/[^a-z0-9]/gi, '_')}.pdf`;
         if (action === 'print') {
@@ -1064,9 +1072,16 @@ export default function App() {
         doc.text('TERMS & CONDITIONS:', 14, boxY + 45);
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(8);
-        doc.text('1. Please produce this receipt when collecting your repaired device.', 14, boxY + 51);
-        doc.text('2. Repaired items not claimed within 30 days are subject to storage charges.', 14, boxY + 56);
-        doc.text('3. Warranty applies exclusively to parts replaced during this repair.', 14, boxY + 61);
+        const a4TermsLines = (shopReceiptTerms || DEFAULT_RECEIPT_TERMS)
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean);
+        a4TermsLines.forEach((line, idx) => {
+          const formattedLine = line.startsWith('•') || line.startsWith('*') || /^\d+\./.test(line) 
+            ? line 
+            : `${idx + 1}. ${line}`;
+          doc.text(formattedLine, 14, boxY + 51 + (idx * 5));
+        });
 
         doc.setDrawColor(203, 213, 225);
         doc.line(14, boxY + 85, 75, boxY + 85);
@@ -1318,9 +1333,16 @@ export default function App() {
                 </div>
 
                 <div className="pt-2 text-center text-[10px] text-slate-400 space-y-1 font-sans">
-                  <p>• Please present this receipt upon pickup</p>
-                  <p>• Repaired devices kept up to 30 days</p>
-                  <p className="font-bold text-slate-600 mt-2">*** THANK YOU FOR YOUR BUSINESS! ***</p>
+                  {(shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n').map((l, i) => {
+                    const trimmed = l.trim();
+                    if (!trimmed) return null;
+                    const isThankYou = trimmed.toUpperCase().includes('THANK YOU');
+                    return (
+                      <p key={i} className={isThankYou ? "font-bold text-slate-700 dark:text-slate-300 mt-2 tracking-wide" : ""}>
+                        {trimmed}
+                      </p>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
@@ -1478,8 +1500,13 @@ export default function App() {
                   {/* Terms */}
                   <div className="border-t border-slate-100 pt-3 text-[10px] text-slate-400 space-y-0.5">
                     <p className="font-bold text-slate-500 uppercase">Terms & Conditions:</p>
-                    <p>1. Please present this receipt upon pickup.</p>
-                    <p>2. Repaired items not claimed within 30 days are subject to storage charges.</p>
+                    {(shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n').map((l, i) => {
+                      const trimmed = l.trim();
+                      if (!trimmed) return null;
+                      return (
+                        <p key={i}>{trimmed}</p>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -1814,6 +1841,7 @@ export default function App() {
             setShopPhone(prof?.phone || '');
             setShopAddress(prof?.address || '');
             setShopLogo(prof?.logoUrl || null);
+            setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
 
           fetchData(session.user.id).catch(e => console.warn('Fetch data init warning:', e));
@@ -1860,6 +1888,7 @@ export default function App() {
           setShopPhone(prof?.phone || '');
           setShopAddress(prof?.address || '');
           setShopLogo(prof?.logoUrl || null);
+          setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
         }
 
         fetchData(session.user.id).catch(e => console.warn('Fetch data on change warning:', e));
@@ -1870,6 +1899,7 @@ export default function App() {
         setShopAddress('');
         setShopLogo(null);
         setShopTagline('Mobile Phone Repair & Service');
+        setShopReceiptTerms(DEFAULT_RECEIPT_TERMS);
         setContacts([]);
         setTransactions([]);
         setCashbookEntries([]);
@@ -4980,10 +5010,12 @@ export default function App() {
       showProfileToast('Store name cannot be empty', 'error');
       return;
     }
+    const cleanTerms = shopReceiptTerms.trim() || DEFAULT_RECEIPT_TERMS;
     localStorage.setItem('st_shop_name', shopName.trim());
     localStorage.setItem('st_shop_tagline', shopTagline.trim());
     localStorage.setItem('st_shop_phone', shopPhone.trim());
     localStorage.setItem('st_shop_address', shopAddress.trim());
+    localStorage.setItem('st_shop_receipt_terms', cleanTerms);
     if (shopLogo) {
       localStorage.setItem('st_shop_logo', shopLogo);
     }
@@ -4998,16 +5030,20 @@ export default function App() {
           phone: shopPhone.trim(),
           address: shopAddress.trim(),
           logo_url: shopLogo,
+          receipt_terms: cleanTerms,
           setup_completed: true,
           updated_at: new Date().toISOString()
         };
         await supabase.from('profiles').upsert(payload);
-        setUserProfile(prev => prev ? { ...prev, ...payload, setupCompleted: true } : { ...payload, setupCompleted: true });
+        try {
+          localStorage.setItem(`st_shop_profile_${authUser.id}`, JSON.stringify({ ...payload, receiptTerms: cleanTerms }));
+        } catch {}
+        setUserProfile(prev => prev ? { ...prev, ...payload, receiptTerms: cleanTerms, setupCompleted: true } : { ...payload, receiptTerms: cleanTerms, setupCompleted: true });
       } catch (err) {
         console.warn('Profile sync to Supabase warning:', err);
       }
     }
-    showProfileToast('Store profile details saved successfully!');
+    showProfileToast('Store profile & receipt details saved successfully!');
   };
 
   const handleOpenAddUser = () => {
@@ -5679,10 +5715,12 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     phone TEXT NOT NULL DEFAULT '',
     address TEXT NOT NULL DEFAULT '',
     logo_url TEXT,
+    receipt_terms TEXT,
     setup_completed BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS receipt_terms TEXT;
 
 -- 2. Create Contacts Table with Multi-Tenant user_id
 CREATE TABLE IF NOT EXISTS public.contacts (
@@ -6315,6 +6353,83 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         placeholder="e.g. No.05 Station Road, Matale"
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all"
                       />
+                    </div>
+                  </div>
+
+                  {/* Receipt Terms, Pickup Policy & Footer Notes Editor */}
+                  <div className="space-y-2.5 pt-3 border-t border-slate-100">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <FileText size={15} className="text-blue-600" />
+                        <span>Receipt Terms, Pickup Policy & Footer Notes</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShopReceiptTerms(DEFAULT_RECEIPT_TERMS)}
+                        className="text-[11px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-lg transition-colors active:scale-95 shadow-xs"
+                      >
+                        Reset to Default
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-slate-500">
+                      Printed at the bottom of all customer POS thermal slips (80mm) and A4 invoice PDFs. You can customize pickup conditions, warranty disclaimers, or thank you notes (one item per line).
+                    </p>
+
+                    <textarea 
+                      rows={4}
+                      value={shopReceiptTerms}
+                      onChange={e => setShopReceiptTerms(e.target.value)}
+                      placeholder="Please present this receipt upon pickup&#10;• Repaired devices kept up to 30 days&#10;*** THANK YOU FOR YOUR BUSINESS! ***"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-mono font-medium text-slate-800 outline-none focus:border-blue-500 focus:bg-white transition-all leading-relaxed"
+                    />
+
+                    {/* Quick Preset Add Buttons */}
+                    <div className="flex gap-1.5 flex-wrap pt-1">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider self-center mr-1">Quick Add:</span>
+                      {[
+                        '• 30-Day warranty on replaced parts only',
+                        '• No warranty for water damage or physical shock',
+                        '• Unclaimed items sold after 60 days to recover cost',
+                        '• Working Hours: 9:00 AM - 8:30 PM (Mon-Sat)',
+                        '• WhatsApp Follow-up: ' + (shopPhone || '+94 77 123 4567')
+                      ].map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            if (!shopReceiptTerms.includes(preset)) {
+                              setShopReceiptTerms(prev => prev.trim() ? `${prev.trim()}\n${preset}` : preset);
+                            }
+                          }}
+                          className="text-[10px] font-bold bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 px-2.5 py-1 rounded-lg border border-slate-200 hover:border-blue-300 transition-colors active:scale-95"
+                        >
+                          + {preset.replace(/^• /, '')}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Live Slip Preview */}
+                    <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3 mt-1.5">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                        <Receipt size={12} className="text-slate-500" />
+                        <span>Receipt Slip Preview (Printed Footer)</span>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-200 text-center font-mono text-[11px] text-slate-600 space-y-1 shadow-inner">
+                        <div className="border-b border-dashed border-slate-200 pb-1 mb-1 text-[9px] text-slate-400">
+                          - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                        </div>
+                        {shopReceiptTerms.split('\n').map((l, i) => {
+                          const trimmed = l.trim();
+                          if (!trimmed) return null;
+                          const isBold = trimmed.startsWith('***') || trimmed.toUpperCase().includes('THANK YOU');
+                          return (
+                            <p key={i} className={isBold ? "font-bold text-slate-900 mt-1" : ""}>
+                              {trimmed}
+                            </p>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -7736,6 +7851,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopAddress(profile.address || '');
             setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
             setShopLogo(profile.logoUrl || null);
+            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -7763,6 +7879,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopAddress(profile.address || '');
             setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
             setShopLogo(profile.logoUrl || null);
+            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -7787,6 +7904,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopAddress(profile.address || '');
             setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
             setShopLogo(profile.logoUrl || null);
+            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -7810,6 +7928,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           setShopAddress(newProfile.address || '');
           setShopTagline(newProfile.tagline || 'Mobile Phone Repair & Service');
           setShopLogo(newProfile.logoUrl || null);
+          setShopReceiptTerms(newProfile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
           await fetchData(authUser.id);

@@ -114,6 +114,7 @@ export const ShopSetupScreen: React.FC<ShopSetupScreenProps> = ({
         address: cleanAddress,
         tagline: tagline.trim() || 'Mobile Phone Repair & Service',
         logo_url: finalLogoUrl,
+        receipt_terms: "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***",
         setup_completed: true,
         updated_at: new Date().toISOString(),
       };
@@ -135,6 +136,7 @@ export const ShopSetupScreen: React.FC<ShopSetupScreenProps> = ({
         localStorage.setItem('st_shop_phone', cleanPhone);
         localStorage.setItem('st_shop_address', cleanAddress);
         localStorage.setItem('st_shop_tagline', tagline.trim());
+        localStorage.setItem('st_shop_receipt_terms', "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***");
         if (finalLogoUrl) {
           localStorage.setItem('st_shop_logo', finalLogoUrl);
         }
@@ -148,6 +150,7 @@ export const ShopSetupScreen: React.FC<ShopSetupScreenProps> = ({
         address: cleanAddress,
         tagline: tagline.trim(),
         logoUrl: finalLogoUrl,
+        receiptTerms: "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***",
         setupCompleted: true,
       };
 

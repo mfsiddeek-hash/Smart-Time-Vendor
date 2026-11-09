@@ -74,6 +74,7 @@ export interface StoreProfile {
   phone: string;
   address: string;
   logoUrl?: string | null;
+  receiptTerms?: string;
 }
 
 export interface UserProfile {
@@ -84,6 +85,7 @@ export interface UserProfile {
   phone: string;
   address: string;
   logoUrl?: string | null;
+  receiptTerms?: string;
   setupCompleted: boolean;
   createdAt?: string;
   updatedAt?: string;
