@@ -119,6 +119,21 @@ const formatDisplayDate = (dStr: string | null | undefined) => {
   return dStr;
 };
 
+const getDaysRemaining = (dueDateStr: string | null | undefined, todayStr?: string): string => {
+  if (!dueDateStr) return '';
+  const nowStr = todayStr || new Date().toISOString().slice(0, 10);
+  const d1 = new Date(nowStr + 'T00:00:00');
+  const d2 = new Date(dueDateStr + 'T00:00:00');
+  const diffTime = d2.getTime() - d1.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return 'Due today';
+  if (diffDays === 1) return 'Due tomorrow';
+  if (diffDays > 1) return `Due in ${diffDays} days`;
+  if (diffDays === -1) return '1 day overdue';
+  if (diffDays < -1) return `${Math.abs(diffDays)} days overdue`;
+  return '';
+};
+
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('DASHBOARD');
   const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
@@ -3580,6 +3595,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const chqDate = parsed.chequeDate || t.chequeDate || t.date;
       return chqDate <= todayStr;
     });
+    const upcomingContactCheques = pendingContactCheques.filter(t => {
+      const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+      const chqDate = parsed.chequeDate || t.chequeDate || t.date;
+      return chqDate > todayStr;
+    }).sort((a, b) => {
+      const pA = parsePaymentMethod(a.description, a.paymentMethod, a.chequeStatus, a.chequeDate);
+      const pB = parsePaymentMethod(b.description, b.paymentMethod, b.chequeStatus, b.chequeDate);
+      const dA = pA.chequeDate || a.chequeDate || a.date;
+      const dB = pB.chequeDate || b.chequeDate || b.date;
+      return dA.localeCompare(dB);
+    });
 
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pb-28 no-scrollbar">
@@ -3961,6 +3987,70 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     >
                       <CheckCircle2 size={13} />
                       <span>Pass Cheque</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {upcomingContactCheques.length > 0 && (
+          <div className="mx-4 mb-3 p-3.5 bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 border-2 border-indigo-400 rounded-2xl shadow-xs">
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Calendar size={16} />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-slate-800">
+                    Upcoming Cheque Due Dates ({upcomingContactCheques.length})
+                  </h4>
+                  <p className="text-[10px] text-slate-600 font-medium">
+                    Post-dated cheques with future maturity dates. Will automatically prompt for passing when due date arrives.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2 mt-2 pt-2 border-t border-slate-200/70">
+              {upcomingContactCheques.map(chq => {
+                const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus, chq.chequeDate);
+                const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
+                const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+                const daysLeft = getDaysRemaining(chqDate, todayStr);
+                return (
+                  <div key={chq.id} className="bg-white/95 rounded-xl p-2.5 border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                    <div className="overflow-hidden">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-extrabold text-xs text-slate-900">
+                          LKR {chq.amount.toLocaleString()}
+                        </span>
+                        {parsed.chequeNumber && (
+                          <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                            #{parsed.chequeNumber}
+                          </span>
+                        )}
+                        <span className="text-[10px] font-bold text-indigo-900 bg-indigo-100 border border-indigo-300 px-1.5 py-0.5 rounded flex items-center gap-1">
+                          <Calendar size={10} /> Due Date: {formatDisplayDate(chqDate)}
+                        </span>
+                        {daysLeft && (
+                          <span className="text-[10px] font-extrabold text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded flex items-center gap-1">
+                            <Clock size={10} /> {daysLeft}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Post-dated cheque • Will clear into {targetSection} on <strong className="text-slate-700">{formatDisplayDate(chqDate)}</strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickPassCheque(chq)}
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                      title="Pass cheque early if cleared ahead of time"
+                    >
+                      <CheckCircle2 size={13} />
+                      <span>Pass Early</span>
                     </button>
                   </div>
                 );
@@ -6931,6 +7021,18 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       contactName: string;
       chequeDate: string;
       type: 'SALE' | 'EXPENSE';
+      chequeNumber?: string;
+    }> = [];
+
+    const upcomingPendingCheques: Array<{
+      id: string;
+      tx?: Transaction;
+      entry?: CashbookEntry;
+      amount: number;
+      contactName: string;
+      chequeDate: string;
+      type: 'SALE' | 'EXPENSE';
+      chequeNumber?: string;
     }> = [];
 
     // 1. Pending cheques from transactions
@@ -6938,39 +7040,50 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       if (isPendingCheque(t)) {
         const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
         const chqDate = parsed.chequeDate || t.chequeDate || t.date;
+        const contact = contacts.find(c => c.id === t.contactId);
+        const contactType = contact?.type || 'CUSTOMER';
+        const type: 'SALE' | 'EXPENSE' = (contactType === 'VENDOR' || contactType === 'RENT') ? 'EXPENSE' : 'SALE';
+        const item = {
+          id: t.id,
+          tx: t,
+          amount: t.amount,
+          contactName: contact?.name || 'Party',
+          chequeDate: chqDate,
+          type,
+          chequeNumber: parsed.chequeNumber
+        };
         if (chqDate <= todayDateStr) {
-          const contact = contacts.find(c => c.id === t.contactId);
-          const contactType = contact?.type || 'CUSTOMER';
-          const type = (contactType === 'VENDOR' || contactType === 'RENT') ? 'EXPENSE' : 'SALE';
-          duePendingCheques.push({
-            id: t.id,
-            tx: t,
-            amount: t.amount,
-            contactName: contact?.name || 'Party',
-            chequeDate: chqDate,
-            type
-          });
+          duePendingCheques.push(item);
+        } else {
+          upcomingPendingCheques.push(item);
         }
       }
     });
 
     // 2. Pending cheques from cashbookEntries (if any legacy entries)
     cashbookEntries.forEach(e => {
-      if (isPendingCashbookEntry(e) && !duePendingCheques.some(item => item.id === e.id)) {
+      if (isPendingCashbookEntry(e) && !duePendingCheques.some(item => item.id === e.id) && !upcomingPendingCheques.some(item => item.id === e.id)) {
         const match = e.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
         const chqDate = match ? match[1] : e.date;
+        const item = {
+          id: e.id,
+          entry: e,
+          amount: e.amount,
+          contactName: e.contactName || 'Party',
+          chequeDate: chqDate,
+          type: e.type,
+          chequeNumber: ''
+        };
         if (chqDate <= todayDateStr) {
-          duePendingCheques.push({
-            id: e.id,
-            entry: e,
-            amount: e.amount,
-            contactName: e.contactName || 'Party',
-            chequeDate: chqDate,
-            type: e.type
-          });
+          duePendingCheques.push(item);
+        } else {
+          upcomingPendingCheques.push(item);
         }
       }
     });
+
+    duePendingCheques.sort((a, b) => a.chequeDate.localeCompare(b.chequeDate));
+    upcomingPendingCheques.sort((a, b) => a.chequeDate.localeCompare(b.chequeDate));
 
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-28 no-scrollbar transition-colors">
@@ -7146,78 +7259,160 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
           </div>
 
-          {/* Due / Passed Cheques Maturity Alert Banner */}
-          {duePendingCheques.length > 0 && (
-            <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs space-y-2">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                    <Landmark size={16} />
-                  </div>
-                  <div>
-                    <h3 className="text-xs sm:text-sm font-black text-slate-800">
-                      Cheque Maturity Date Passed / Due ({duePendingCheques.length})
-                    </h3>
-                    <p className="text-[11px] text-slate-600 font-medium">
-                      Post-dated cheques have reached maturity date. Clear them to update the Sales or Expenses date.
-                    </p>
-                  </div>
-                </div>
-                {duePendingCheques.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      for (const chq of duePendingCheques) {
-                        if (chq.tx) await handleQuickPassCheque(chq.tx);
-                        else if (chq.entry) await handlePassChequeFromCashbook(chq.entry);
-                      }
-                    }}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1 shrink-0"
-                  >
-                    <CheckCircle2 size={13} />
-                    <span>Pass All ({duePendingCheques.length})</span>
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
-                {duePendingCheques.map(item => {
-                  const isSale = item.type === 'SALE';
-                  return (
-                    <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
-                      <div className="overflow-hidden">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
-                            isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
-                          }`}>
-                            {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
-                          </span>
-                          <span className="font-extrabold text-xs text-slate-800">
-                            LKR {item.amount.toLocaleString()}
-                          </span>
-                        </div>
-                        <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
-                          Party: {item.contactName}
-                        </p>
-                        <p className="text-[10px] text-amber-800 font-bold mt-0.5 flex items-center gap-1">
-                          <Clock size={10} /> Cheque Date: {formatDisplayDate(item.chequeDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
+          {/* Due & Upcoming Cheques Maturity Alert Banners */}
+          {(duePendingCheques.length > 0 || upcomingPendingCheques.length > 0) && (
+            <div className="space-y-3">
+              {duePendingCheques.length > 0 && (
+                <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <Landmark size={16} />
+                      </div>
+                      <div>
+                        <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                          Cheque Maturity Date Passed / Due ({duePendingCheques.length})
+                        </h3>
+                        <p className="text-[11px] text-slate-600 font-medium">
+                          Post-dated cheques have reached maturity date. Clear them to update the Sales or Expenses date.
                         </p>
                       </div>
+                    </div>
+                    {duePendingCheques.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (item.tx) handleQuickPassCheque(item.tx);
-                          else if (item.entry) handlePassChequeFromCashbook(item.entry);
+                        onClick={async () => {
+                          for (const chq of duePendingCheques) {
+                            if (chq.tx) await handleQuickPassCheque(chq.tx);
+                            else if (chq.entry) await handlePassChequeFromCashbook(chq.entry);
+                          }
                         }}
-                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs active:scale-95 transition-all flex items-center gap-1 shrink-0"
                       >
-                        <CheckCircle2 size={12} />
-                        <span>Pass</span>
+                        <CheckCircle2 size={13} />
+                        <span>Pass All ({duePendingCheques.length})</span>
                       </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
+                    {duePendingCheques.map(item => {
+                      const isSale = item.type === 'SALE';
+                      return (
+                        <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                          <div className="overflow-hidden">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
+                                isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                              }`}>
+                                {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
+                              </span>
+                              <span className="font-extrabold text-xs text-slate-800">
+                                LKR {item.amount.toLocaleString()}
+                              </span>
+                              {item.chequeNumber && (
+                                <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1 py-0.5 rounded">
+                                  #{item.chequeNumber}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
+                              Party: {item.contactName}
+                            </p>
+                            <p className="text-[10px] text-amber-800 font-bold mt-0.5 flex items-center gap-1">
+                              <Clock size={10} /> Cheque Date: {formatDisplayDate(item.chequeDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (item.tx) handleQuickPassCheque(item.tx);
+                              else if (item.entry) handlePassChequeFromCashbook(item.entry);
+                            }}
+                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                          >
+                            <CheckCircle2 size={12} />
+                            <span>Pass</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {upcomingPendingCheques.length > 0 && (
+                <div className="p-3.5 bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 border-2 border-indigo-400 rounded-2xl shadow-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <Calendar size={16} />
+                      </div>
+                      <div>
+                        <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                          Upcoming Cheque Due Dates ({upcomingPendingCheques.length})
+                        </h3>
+                        <p className="text-[11px] text-slate-600 font-medium">
+                          Post-dated cheques with future maturity dates. Will automatically prompt for passing when due date arrives.
+                        </p>
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
+                    {upcomingPendingCheques.map(item => {
+                      const isSale = item.type === 'SALE';
+                      const daysLeft = getDaysRemaining(item.chequeDate, todayDateStr);
+                      return (
+                        <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                          <div className="overflow-hidden">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
+                                isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                              }`}>
+                                {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
+                              </span>
+                              <span className="font-extrabold text-xs text-slate-800">
+                                LKR {item.amount.toLocaleString()}
+                              </span>
+                              {item.chequeNumber && (
+                                <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1 py-0.5 rounded">
+                                  #{item.chequeNumber}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
+                              Party: {item.contactName}
+                            </p>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              <p className="text-[10px] text-indigo-900 font-bold flex items-center gap-1">
+                                <Calendar size={10} /> Due Date: {formatDisplayDate(item.chequeDate)}
+                              </p>
+                              {daysLeft && (
+                                <span className="text-[9px] font-extrabold text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                                  <Clock size={9} /> {daysLeft}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (item.tx) handleQuickPassCheque(item.tx);
+                              else if (item.entry) handlePassChequeFromCashbook(item.entry);
+                            }}
+                            className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                            title="Pass cheque early if cleared ahead of time"
+                          >
+                            <CheckCircle2 size={12} />
+                            <span>Pass Early</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -7408,7 +7603,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                     isChequeMatured ? 'bg-amber-100 text-amber-900 border-amber-300 animate-pulse' : 'bg-amber-50 text-amber-900 border-amber-200'
                                   }`}>
                                     <Clock size={10} />
-                                    {isChequeMatured ? `Maturity Reached (Due: ${chequeDueDate})` : `On Hold (Due: ${chequeDueDate})`}
+                                    {isChequeMatured ? `Maturity Reached (Due: ${formatDisplayDate(chequeDueDate)})` : `On Hold (Due: ${formatDisplayDate(chequeDueDate)})`}
                                   </span>
                                 )}
                                 {isCheque && entry.description?.includes('[PASSED]') && (
