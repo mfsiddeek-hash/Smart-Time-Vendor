@@ -24,10 +24,29 @@ export const isPendingCheque = (t: Transaction): boolean => {
   return true;
 };
 
-export const parsePaymentMethod = (desc?: string, explicitMethod?: PaymentMethod, explicitStatus?: ChequeStatus): ParsedTransactionMetadata => {
+const formatDisplayDate = (dStr: string | null | undefined) => {
+  if (!dStr) return '-';
+  const parts = dStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (parts) {
+    const y = parseInt(parts[1]);
+    const m = parseInt(parts[2]) - 1;
+    const d = parseInt(parts[3]);
+    const dateObj = new Date(y, m, d);
+    return dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  return dStr;
+};
+
+export const parsePaymentMethod = (
+  desc?: string, 
+  explicitMethod?: PaymentMethod, 
+  explicitStatus?: ChequeStatus,
+  explicitChequeDate?: string
+): ParsedTransactionMetadata => {
   const result: ParsedTransactionMetadata = {
     method: explicitMethod,
     chequeStatus: explicitStatus,
+    chequeDate: explicitChequeDate,
     cleanNotes: desc || ''
   };
 
@@ -59,6 +78,8 @@ export const parsePaymentMethod = (desc?: string, explicitMethod?: PaymentMethod
     const dueDateMatch = trimmed.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
     if (dueDateMatch) {
       result.chequeDate = dueDateMatch[1];
+    } else if (explicitChequeDate) {
+      result.chequeDate = explicitChequeDate;
     }
 
     // Clean notes by removing technical prefixes
@@ -104,9 +125,15 @@ interface TransactionRowProps {
 
 export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque }) => {
   const isPayment = transaction.type === 'PAYMENT';
-  const parsed = parsePaymentMethod(transaction.description, transaction.paymentMethod, transaction.chequeStatus);
+  const parsed = parsePaymentMethod(
+    transaction.description, 
+    transaction.paymentMethod, 
+    transaction.chequeStatus,
+    transaction.chequeDate
+  );
   const pendingCheque = isPendingCheque(transaction);
   const isCheque = parsed.method === 'Cheque' || transaction.paymentMethod === 'Cheque';
+  const chqDueDate = parsed.chequeDate || transaction.chequeDate || transaction.date;
 
   return (
     <div 
@@ -117,11 +144,11 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
     >
       <div className="flex justify-between items-start">
         <div className="flex items-center gap-2">
-          <span className="font-bold text-base text-slate-800 dark:text-slate-100">{transaction.date}</span>
+          <span className="font-bold text-base text-slate-800 dark:text-slate-100">{formatDisplayDate(transaction.date)}</span>
           {pendingCheque && (
             <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400 border border-amber-300 dark:border-amber-800/50">
               <Clock size={11} className="animate-pulse" />
-              On Hold • Not Passed
+              Post-Dated Cheque (On Hold)
             </span>
           )}
         </div>
@@ -136,7 +163,9 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             {pendingCheque ? '⏳ ' : (isPayment ? '+' : '-')} LKR {transaction.amount.toLocaleString()}
           </span>
           {pendingCheque && (
-            <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold uppercase tracking-wider">Amount Not Changed</p>
+            <p className="text-[10px] text-amber-800 dark:text-amber-400 font-bold tracking-wider">
+              Due Date: {formatDisplayDate(chqDueDate)} • Amount On Hold
+            </p>
           )}
         </div>
       </div>
@@ -188,9 +217,10 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
               </span>
             )}
 
-            {parsed.chequeDate && (
-              <span className="text-[10px] font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-[#2b3a54]">
-                Cheque Date: {parsed.chequeDate}
+            {isCheque && chqDueDate && (
+              <span className="text-[10px] font-bold bg-amber-100 dark:bg-[#1a2538] text-amber-950 dark:text-amber-300 px-2 py-0.5 rounded border border-amber-300 dark:border-[#2b3a54] flex items-center gap-1">
+                <Clock size={10} className="text-amber-700 dark:text-amber-400" />
+                <span>Due Date: {formatDisplayDate(chqDueDate)}</span>
               </span>
             )}
 

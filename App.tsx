@@ -1710,7 +1710,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           const shouldAutoSync = tx.type === 'PAYMENT' || (contact.type === 'RENT' && tx.type === 'CREDIT');
 
           if (shouldAutoSync) {
-            const parsed = parsePaymentMethod(tx.description);
+            const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
             const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
             const parsedDesc = parsed.cleanNotes || tx.description || 'Payment';
 
@@ -2655,7 +2655,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handleQuickPassCheque = async (tx: Transaction) => {
     const contact = contacts.find(c => c.id === tx.contactId);
-    const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus);
+    const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
     const effectiveChequeDate = parsed.chequeDate || tx.chequeDate || new Date().toISOString().slice(0, 10);
     const sectionName = contact?.type === 'VENDOR' ? 'Expenses' : (contact?.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
 
@@ -3576,7 +3576,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const todayStr = new Date().toISOString().slice(0, 10);
     const pendingContactCheques = contactTransactions.filter(t => isPendingCheque(t));
     const dueOrPassedCheques = pendingContactCheques.filter(t => {
-      const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus);
+      const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
       const chqDate = parsed.chequeDate || t.chequeDate || t.date;
       return chqDate <= todayStr;
     });
@@ -3931,7 +3931,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             </div>
             <div className="space-y-2 mt-2 pt-2 border-t border-slate-200/70">
               {dueOrPassedCheques.map(chq => {
-                const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus);
+                const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus, chq.chequeDate);
                 const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
                 const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
                 return (
@@ -4013,9 +4013,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               ) : (
                 <div className="divide-y divide-slate-100">
                   {contactTransactions.filter(t => t.type === 'PAYMENT').map(p => {
-                    const parsed = parsePaymentMethod(p.description, p.paymentMethod, p.chequeStatus);
+                    const parsed = parsePaymentMethod(p.description, p.paymentMethod, p.chequeStatus, p.chequeDate);
                     const pendingChq = isPendingCheque(p);
                     const isChq = parsed.method === 'Cheque' || p.paymentMethod === 'Cheque';
+                    const chqDueDate = parsed.chequeDate || p.chequeDate || p.date;
                     return (
                       <div 
                         key={p.id}
@@ -4072,9 +4073,25 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                                 <Calendar size={10} className="text-slate-400" />
                                 {formatDisplayDate(p.date)}
                               </span>
+                              {isChq && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded-md font-extrabold flex items-center gap-1 border ${
+                                  pendingChq 
+                                    ? 'bg-amber-100 text-amber-950 border-amber-300' 
+                                    : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                }`}>
+                                  <Clock size={10} className={pendingChq ? 'text-amber-700' : 'text-emerald-700'} />
+                                  <span>Due: {formatDisplayDate(chqDueDate)}</span>
+                                </span>
+                              )}
                             </div>
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              {pendingChq ? '⏳ Post-dated cheque • Amount not added until passed' : 'Tap to update date, payment method, or amount'}
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              {pendingChq ? (
+                                <span>
+                                  ⏳ Post-dated cheque • <strong className="font-bold text-amber-950">Due Date: {formatDisplayDate(chqDueDate)}</strong> • Amount not added until passed
+                                </span>
+                              ) : (
+                                isChq ? `✓ Cleared cheque • Due Date: ${formatDisplayDate(chqDueDate)}` : 'Tap to update date, payment method, or amount'
+                              )}
                             </p>
                           </div>
                         </div>
@@ -4235,7 +4252,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 contactType={selectedContact.type}
                 onPassCheque={handleQuickPassCheque}
                 onClick={(tx) => { 
-                  const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus);
+                  const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
                   setEditingTransaction(tx); 
                   setTransType(tx.type); 
                   setTransAmount(tx.amount.toString()); 
@@ -6919,7 +6936,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     // 1. Pending cheques from transactions
     transactions.forEach(t => {
       if (isPendingCheque(t)) {
-        const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus);
+        const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
         const chqDate = parsed.chequeDate || t.chequeDate || t.date;
         if (chqDate <= todayDateStr) {
           const contact = contacts.find(c => c.id === t.contactId);
