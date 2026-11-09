@@ -229,6 +229,34 @@ export default function App() {
   const [cashbookRefNo, setCashbookRefNo] = useState('');
   const [cashbookContactName, setCashbookContactName] = useState('');
 
+  // Invoice / Receipt Modal State
+  const [invoiceModalItem, setInvoiceModalItem] = useState<{
+    type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE';
+    item: any;
+    contact?: Contact | null;
+  } | null>(null);
+  const [invoiceFormat, setInvoiceFormat] = useState<'POS' | 'A4'>('POS');
+
+  const openInvoiceModalForCashbook = (entry: CashbookEntry) => {
+    let matchedContact = contacts.find(c => c.name.toLowerCase() === (entry.contactName || '').toLowerCase());
+    setInvoiceModalItem({
+      type: 'CASHBOOK',
+      item: entry,
+      contact: matchedContact || null
+    });
+    setInvoiceFormat('POS');
+  };
+
+  const openInvoiceModalForTransaction = (tx: Transaction) => {
+    const contact = contacts.find(c => c.id === tx.contactId);
+    setInvoiceModalItem({
+      type: 'TRANSACTION',
+      item: tx,
+      contact: contact || null
+    });
+    setInvoiceFormat('POS');
+  };
+
   // Cashbook filter states
   const [cashbookDateFilter, setCashbookDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL' | 'CUSTOM'>('THIS_MONTH');
   const [cashbookCustomStart, setCashbookCustomStart] = useState(() => {
@@ -1169,6 +1197,473 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     setAddOtherCollectedItems(contact.otherCollectedItems || '');
 
     navigateTo('CONTACT_FORM');
+  };
+
+  const generateGeneralInvoicePDF = (
+    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
+    format: 'POS' | 'A4',
+    action: 'download' | 'print' = 'download'
+  ) => {
+    const { item, contact, type } = data;
+    const isCashbook = type === 'CASHBOOK';
+    const isTx = type === 'TRANSACTION';
+
+    const invoiceNo = isCashbook
+      ? `INV-${item.referenceNo || item.id.slice(0, 6).toUpperCase()}`
+      : isTx
+      ? `INV-${item.id.slice(0, 6).toUpperCase()}`
+      : `SO-${item.id.slice(0, 6).toUpperCase()}`;
+
+    const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
+    const dateStr = formatDisplayDate(rawDate);
+    const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const customerName = item.contactName || contact?.name || 'Valued Customer';
+    const customerPhone = contact?.phone || '-';
+    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : 'Service Order');
+    const description = item.description || item.cleanNotes || 'Payment / Sale Entry';
+    const paymentMethod = item.paymentMethod || 'Cash';
+    const amount = item.amount || item.totalCost || item.targetAmount || 0;
+
+    if (format === 'POS') {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: [80, 160]
+      });
+
+      let y = 10;
+      if (shopLogo && shopLogo.startsWith('data:image/')) {
+        try {
+          doc.addImage(shopLogo, 'PNG', 32, 6, 16, 16);
+          y = 26;
+        } catch (e) {
+          console.error('Logo render error', e);
+        }
+      }
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(13);
+      doc.text(shopName.toUpperCase(), 40, y, { align: 'center' });
+
+      y += 5;
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(8);
+      doc.text(shopTagline.toUpperCase().slice(0, 36), 40, y, { align: 'center' });
+
+      if (shopPhone || shopAddress) {
+        y += 4;
+        doc.text(`${shopPhone} • ${shopAddress}`.slice(0, 38), 40, y, { align: 'center' });
+      }
+
+      y += 4;
+      doc.text('------------------------------------------', 40, y, { align: 'center' });
+
+      y += 4;
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(9);
+      doc.text('OFFICIAL INVOICE / RECEIPT', 40, y, { align: 'center' });
+
+      y += 5;
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(8);
+      doc.text(`Invoice No: #${invoiceNo}`, 6, y);
+      y += 4.5;
+      doc.text(`Date      : ${dateStr} ${timeStr}`, 6, y);
+      y += 4.5;
+      doc.text(`Customer  : ${customerName}`, 6, y);
+      y += 4.5;
+      doc.text(`Phone     : ${customerPhone}`, 6, y);
+      y += 4.5;
+      doc.text(`Method    : ${paymentMethod}`, 6, y);
+
+      y += 4;
+      doc.text('------------------------------------------', 40, y, { align: 'center' });
+      y += 4;
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(8.5);
+      doc.text('ITEMS / SERVICE DETAILS', 6, y);
+      doc.text('AMOUNT', 74, y, { align: 'right' });
+
+      y += 4.5;
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(8);
+      doc.text(`${categoryName} - ${description}`.slice(0, 26), 6, y);
+      doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+
+      y += 4;
+      doc.text('------------------------------------------', 40, y, { align: 'center' });
+      y += 5;
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(10);
+      doc.text('TOTAL PAID    :', 6, y);
+      doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+
+      y += 6;
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(7);
+      doc.text('------------------------------------------', 40, y, { align: 'center' });
+      y += 4;
+      const terms = (shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n').map(l => l.trim()).filter(Boolean);
+      terms.forEach(line => {
+        doc.text(line, 40, y, { align: 'center' });
+        y += 3.8;
+      });
+
+      if (action === 'print') {
+        doc.autoPrint();
+        const blobUrl = doc.output('bloburl');
+        window.open(blobUrl, '_blank');
+      } else {
+        doc.save(`Invoice_${invoiceNo}.pdf`);
+      }
+    } else {
+      // A4 Format
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      doc.setFillColor(30, 41, 59);
+      doc.rect(0, 0, 210, 28, 'F');
+
+      let titleX = 14;
+      if (shopLogo && shopLogo.startsWith('data:image/')) {
+        try {
+          doc.addImage(shopLogo, 'PNG', 12, 5, 18, 18);
+          titleX = 35;
+        } catch (e) {
+          console.error('Logo render error', e);
+        }
+      }
+
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text(shopName.toUpperCase(), titleX, 14);
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(shopTagline.toUpperCase(), titleX, 21);
+
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`INVOICE: #${invoiceNo}`, 196, 15, { align: 'right' });
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Date: ${dateStr}`, 196, 22, { align: 'right' });
+
+      // Customer Details Box
+      doc.setTextColor(30, 41, 59);
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Billed To (Customer Information)', 14, 38);
+      doc.text('Shop Information', 115, 38);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.text(`Customer Name : ${customerName}`, 14, 46);
+      doc.text(`Phone Number  : ${customerPhone}`, 14, 52);
+      doc.text(`Payment Method: ${paymentMethod}`, 14, 58);
+
+      doc.text(`Store Name : ${shopName}`, 115, 46);
+      doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 52);
+      doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 58);
+
+      autoTable(doc, {
+        startY: 68,
+        head: [['#', 'Item / Category', 'Description', 'Payment Method', 'Total Amount (LKR)']],
+        body: [
+          ['1', categoryName, description, paymentMethod, `LKR ${amount.toLocaleString()}`]
+        ],
+        theme: 'striped',
+        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+        styles: { fontSize: 10, cellPadding: 4 }
+      });
+
+      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : 90;
+
+      // Summary Box
+      doc.setFillColor(248, 250, 252);
+      doc.rect(120, finalY + 8, 76, 26, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.text('TOTAL PAID:', 124, finalY + 22);
+      doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+
+      // Terms & Conditions
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('Terms & Conditions', 14, finalY + 45);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      const termsLines = (shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n');
+      let termY = finalY + 52;
+      termsLines.forEach(line => {
+        doc.text(line, 14, termY);
+        termY += 5;
+      });
+
+      if (action === 'print') {
+        doc.autoPrint();
+        const blobUrl = doc.output('bloburl');
+        window.open(blobUrl, '_blank');
+      } else {
+        doc.save(`Invoice_${invoiceNo}.pdf`);
+      }
+    }
+  };
+
+  const renderInvoiceModal = () => {
+    if (!invoiceModalItem) return null;
+    const { item, contact, type } = invoiceModalItem;
+
+    const invoiceNo = type === 'CASHBOOK'
+      ? `INV-${item.referenceNo || item.id.slice(0, 6).toUpperCase()}`
+      : type === 'TRANSACTION'
+      ? `INV-${item.id.slice(0, 6).toUpperCase()}`
+      : `SO-${item.id.slice(0, 6).toUpperCase()}`;
+
+    const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
+    const dateStr = formatDisplayDate(rawDate);
+    const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const customerName = item.contactName || contact?.name || 'Valued Customer';
+    const customerPhone = contact?.phone || '-';
+    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : 'Service Order');
+    const description = item.description || item.cleanNotes || 'Payment / Sale Entry';
+    const paymentMethod = item.paymentMethod || 'Cash';
+    const amount = item.amount || item.totalCost || item.targetAmount || 0;
+
+    const shareToWhatsApp = () => {
+      const shareText = `🧾 *${shopName.toUpperCase()} - INVOICE / RECEIPT*\n` +
+        `Ref #: #${invoiceNo}\n` +
+        `Date: ${dateStr}\n` +
+        `Customer: ${customerName}\n` +
+        `Category: ${categoryName}\n` +
+        `Details: ${description}\n` +
+        `Payment Method: ${paymentMethod}\n` +
+        `Total Amount: LKR ${amount.toLocaleString()}\n\n` +
+        `Thank you for your business!`;
+
+      const cleanPhone = customerPhone.replace(/[^0-9]/g, '');
+      const url = cleanPhone.length >= 7
+        ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(shareText)}`
+        : `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+      window.open(url, '_blank');
+    };
+
+    const copyInvoiceText = () => {
+      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}\nMethod: ${paymentMethod}\nStore: ${shopName}`;
+      navigator.clipboard.writeText(text);
+      showProfileToast('Invoice details copied to clipboard!');
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+        <div className="bg-slate-100 dark:bg-[#0e1626] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh] border border-slate-200 dark:border-[#1e2a3c]">
+          {/* Header */}
+          <div className="bg-white dark:bg-[#131b2a] px-5 py-4 border-b border-slate-200 dark:border-[#1e2a3c] flex items-center justify-between shrink-0">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-extrabold text-slate-800 dark:text-slate-100 text-lg">Invoice / Receipt</h3>
+                <span className="text-[11px] font-mono bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded-full font-bold">
+                  #{invoiceNo}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">{customerName} • {dateStr}</p>
+            </div>
+            <button 
+              onClick={() => setInvoiceModalItem(null)}
+              className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#1a2538] rounded-full transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Format Switcher Tabs */}
+          <div className="bg-white dark:bg-[#131b2a] px-5 py-2.5 border-b border-slate-200 dark:border-[#1e2a3c] flex gap-2 shrink-0">
+            <button
+              onClick={() => setInvoiceFormat('POS')}
+              className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all ${
+                invoiceFormat === 'POS'
+                  ? 'bg-slate-900 text-white dark:bg-blue-600 shadow-md'
+                  : 'bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#202d44]'
+              }`}
+            >
+              <Receipt size={15} /> POS Thermal (80mm)
+            </button>
+            <button
+              onClick={() => setInvoiceFormat('A4')}
+              className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all ${
+                invoiceFormat === 'A4'
+                  ? 'bg-slate-900 text-white dark:bg-blue-600 shadow-md'
+                  : 'bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#202d44]'
+              }`}
+            >
+              <FileText size={15} /> A4 Official PDF
+            </button>
+          </div>
+
+          {/* Preview Container */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-200/80 dark:bg-[#080d16] flex justify-center">
+            {invoiceFormat === 'POS' ? (
+              /* POS 80mm Thermal Receipt Preview Card */
+              <div className="bg-white text-slate-900 p-5 rounded-xl shadow-md border border-slate-300 w-full max-w-[320px] font-mono text-xs space-y-3 select-none">
+                {shopLogo && shopLogo.startsWith('data:image/') && (
+                  <div className="flex justify-center mb-2">
+                    <img src={shopLogo} alt="Shop Logo" className="h-10 w-10 object-contain" />
+                  </div>
+                )}
+                <div className="text-center border-b border-dashed border-slate-300 pb-3">
+                  <h4 className="font-extrabold text-sm uppercase tracking-wide">{shopName}</h4>
+                  <p className="text-[10px] text-slate-600 mt-0.5">{shopTagline}</p>
+                  {(shopPhone || shopAddress) && (
+                    <p className="text-[10px] text-slate-500 mt-0.5">{shopPhone} • {shopAddress}</p>
+                  )}
+                </div>
+
+                <div className="text-center font-bold text-xs bg-slate-100 py-1 rounded">
+                  OFFICIAL RECEIPT / INVOICE
+                </div>
+
+                <div className="space-y-1 text-[11px] border-b border-dashed border-slate-300 pb-3">
+                  <div className="flex justify-between"><span className="text-slate-500">Invoice #:</span> <span className="font-bold">#{invoiceNo}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Date:</span> <span>{dateStr} {timeStr}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Customer:</span> <span className="font-semibold">{customerName}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Phone:</span> <span>{customerPhone}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Method:</span> <span className="font-bold">{paymentMethod}</span></div>
+                </div>
+
+                <div className="space-y-2 border-b border-dashed border-slate-300 pb-3">
+                  <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase">
+                    <span>Item / Details</span>
+                    <span>Amount</span>
+                  </div>
+                  <div className="flex justify-between items-start text-xs font-semibold">
+                    <div className="pr-2">
+                      <p className="font-bold text-slate-900">{categoryName}</p>
+                      <p className="text-[10px] text-slate-500 leading-tight">{description}</p>
+                    </div>
+                    <span className="font-bold whitespace-nowrap">LKR {amount.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center text-sm font-extrabold pt-1">
+                  <span>TOTAL PAID:</span>
+                  <span className="text-emerald-700 text-base">LKR {amount.toLocaleString()}</span>
+                </div>
+
+                <div className="text-center pt-3 border-t border-dashed border-slate-300 space-y-1 text-[10px] text-slate-500">
+                  {(shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n').map((l, i) => (
+                    <p key={i}>{l}</p>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* A4 Formal Invoice Preview Card */
+              <div className="bg-white text-slate-900 p-6 rounded-2xl shadow-md border border-slate-300 w-full max-w-lg space-y-4 text-xs select-none">
+                <div className="bg-slate-900 text-white p-4 rounded-xl flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    {shopLogo && shopLogo.startsWith('data:image/') && (
+                      <img src={shopLogo} alt="Logo" className="w-9 h-9 object-contain bg-white rounded-lg p-0.5" />
+                    )}
+                    <div>
+                      <h4 className="font-extrabold text-sm tracking-wide">{shopName.toUpperCase()}</h4>
+                      <p className="text-[10px] text-slate-300">{shopTagline}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] uppercase tracking-wider font-bold text-blue-300">Invoice</span>
+                    <p className="font-mono font-bold text-sm">#{invoiceNo}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Customer</span>
+                    <p className="font-bold text-slate-800 text-xs mt-0.5">{customerName}</p>
+                    <p className="text-[11px] text-slate-500">{customerPhone}</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Store & Payment</span>
+                    <p className="font-semibold text-slate-800 text-xs mt-0.5">{shopPhone || 'N/A'}</p>
+                    <p className="text-[11px] font-bold text-emerald-700 mt-0.5">{paymentMethod} Payment</p>
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                      <tr>
+                        <th className="p-2.5">Category</th>
+                        <th className="p-2.5">Description</th>
+                        <th className="p-2.5 text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      <tr>
+                        <td className="p-2.5 font-bold text-slate-800">{categoryName}</td>
+                        <td className="p-2.5 text-slate-600">{description}</td>
+                        <td className="p-2.5 text-right font-extrabold text-slate-900">LKR {amount.toLocaleString()}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <div className="bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-xl text-right">
+                    <span className="text-[10px] font-bold text-emerald-800 uppercase block">Total Amount Paid</span>
+                    <span className="text-base font-black text-emerald-700">LKR {amount.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 pt-3 text-[10px] text-slate-500 space-y-0.5">
+                  <span className="font-bold text-slate-700 block mb-1">Receipt Terms:</span>
+                  {(shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n').map((l, i) => (
+                    <p key={i}>{l}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons Footer */}
+          <div className="p-4 bg-white dark:bg-[#131b2a] border-t border-slate-200 dark:border-[#1e2a3c] flex flex-wrap gap-2 shrink-0">
+            <button
+              onClick={() => generateGeneralInvoicePDF(invoiceModalItem, invoiceFormat, 'print')}
+              className="flex-1 py-2.5 px-3 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <Printer size={15} />
+              <span>Print {invoiceFormat === 'POS' ? 'POS (80mm)' : 'A4'}</span>
+            </button>
+
+            <button
+              onClick={() => generateGeneralInvoicePDF(invoiceModalItem, invoiceFormat, 'download')}
+              className="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <Download size={15} />
+              <span>Download PDF</span>
+            </button>
+
+            <button
+              onClick={shareToWhatsApp}
+              className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center justify-center gap-1.5"
+              title="Share invoice summary on WhatsApp"
+            >
+              <Share2 size={15} />
+              <span>WhatsApp</span>
+            </button>
+
+            <button
+              onClick={copyInvoiceText}
+              className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-[#1a2538] dark:hover:bg-[#202e46] dark:text-slate-200 rounded-xl text-xs font-bold border border-slate-200 dark:border-[#26354d] active:scale-95 transition-all flex items-center justify-center gap-1.5"
+              title="Copy invoice details text"
+            >
+              <Copy size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const renderPreviewModal = () => {
@@ -4210,6 +4705,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openInvoiceModalForTransaction(p);
+                            }}
+                            className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 border border-indigo-200 active:scale-95"
+                            title="View & Print Invoice / POS Receipt"
+                          >
+                            <Receipt size={13} />
+                            <span>Invoice</span>
+                          </button>
+
                           <span className={`font-black text-sm ${pendingChq ? 'text-amber-700' : 'text-emerald-700'}`}>
                             {pendingChq ? '⏳ ' : '+ '}LKR {p.amount.toLocaleString()}
                           </span>
@@ -4365,6 +4873,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 transaction={t} 
                 contactType={selectedContact.type}
                 onPassCheque={handleQuickPassCheque}
+                onViewInvoice={openInvoiceModalForTransaction}
                 onClick={(tx) => { 
                   const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
                   setEditingTransaction(tx); 
@@ -7676,6 +8185,19 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             </span>
 
                             <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openInvoiceModalForCashbook(entry);
+                                }}
+                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 dark:text-indigo-300 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 border border-indigo-200 dark:border-indigo-800 active:scale-95"
+                                title="View & Print Invoice / POS Receipt"
+                              >
+                                <Receipt size={13} />
+                                <span className="hidden sm:inline">Invoice</span>
+                              </button>
+
                               {isPendingChequeEntry && (
                                 <button
                                   type="button"
@@ -8193,6 +8715,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {content}
       {renderReportModal()}
       {renderPreviewModal()}
+      {renderInvoiceModal()}
       {renderUserModal()}
       {renderPasswordModal()}
       {renderWipeModal()}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
+import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt } from 'lucide-react';
 import { Transaction, PaymentMethod, ChequeStatus, ContactType } from '../types';
 
 export interface ParsedTransactionMetadata {
@@ -121,9 +121,10 @@ interface TransactionRowProps {
   contactType?: ContactType;
   onClick?: (transaction: Transaction) => void;
   onPassCheque?: (transaction: Transaction) => void;
+  onViewInvoice?: (transaction: Transaction) => void;
 }
 
-export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque }) => {
+export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque, onViewInvoice }) => {
   const isPayment = transaction.type === 'PAYMENT';
   const parsed = parsePaymentMethod(
     transaction.description, 
@@ -238,21 +239,39 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
           )}
         </div>
 
-        <div className="flex flex-col items-end gap-1 shrink-0">
-          {pendingCheque && onPassCheque && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPassCheque(transaction);
-              }}
-              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
-              title="Pass / Clear this cheque and apply amount to balance"
-            >
-              <CheckCircle2 size={13} />
-              <span>Pass Cheque</span>
-            </button>
-          )}
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <div className="flex items-center gap-1">
+            {onViewInvoice && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewInvoice(transaction);
+                }}
+                className="px-2 py-1 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs active:scale-95 transition-all"
+                title="View & Print Invoice / POS Receipt"
+              >
+                <Receipt size={13} />
+                <span>Invoice</span>
+              </button>
+            )}
+
+            {pendingCheque && onPassCheque && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPassCheque(transaction);
+                }}
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
+                title="Pass / Clear this cheque and apply amount to balance"
+              >
+                <CheckCircle2 size={13} />
+                <span>Pass Cheque</span>
+              </button>
+            )}
+          </div>
+
           <span className="text-xs text-slate-500 dark:text-slate-400 font-bold">
             Bal. LKR {transaction.balanceAfter.toLocaleString()}
           </span>
