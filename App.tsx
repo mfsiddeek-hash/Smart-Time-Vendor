@@ -7247,7 +7247,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     });
   }, [baseFilteredCashbookEntries, cashbookTypeFilter]);
 
-  // Period totals (KPI cards) computed from baseFilteredCashbookEntries so switching Sales/Expenses tabs keeps total cards accurate
   const cashbookTotals = useMemo(() => {
     let totalSales = 0;
     let totalExpenses = 0;
@@ -7255,6 +7254,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     let cashExpenses = 0;
     let bankSales = 0;
     let bankExpenses = 0;
+    let cardSales = 0;
+    let cardExpenses = 0;
     let chequeSales = 0;
     let chequeExpenses = 0;
 
@@ -7263,11 +7264,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         totalSales += e.amount;
         if (e.paymentMethod === 'Cash') cashSales += e.amount;
         else if (e.paymentMethod === 'Bank Transfer') bankSales += e.amount;
+        else if (e.paymentMethod === 'Card') cardSales += e.amount;
         else if (e.paymentMethod === 'Cheque') chequeSales += e.amount;
       } else {
         totalExpenses += e.amount;
         if (e.paymentMethod === 'Cash') cashExpenses += e.amount;
         else if (e.paymentMethod === 'Bank Transfer') bankExpenses += e.amount;
+        else if (e.paymentMethod === 'Card') cardExpenses += e.amount;
         else if (e.paymentMethod === 'Cheque') chequeExpenses += e.amount;
       }
     });
@@ -7279,7 +7282,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       netBalance,
       cashInHand: cashSales - cashExpenses,
       bankBalance: bankSales - bankExpenses,
-      chequeBalance: chequeSales - chequeExpenses
+      cardBalance: cardSales - cardExpenses,
+      chequeBalance: chequeSales - chequeExpenses,
+      hasBank: bankSales > 0 || bankExpenses > 0,
+      hasCard: cardSales > 0 || cardExpenses > 0,
+      hasCheque: chequeSales > 0 || chequeExpenses > 0
     };
   }, [baseFilteredCashbookEntries]);
 
@@ -7783,10 +7790,26 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <h3 className="text-2xl font-black text-white">
                   {cashbookTotals.netBalance >= 0 ? '+' : ''}LKR {cashbookTotals.netBalance.toLocaleString()}
                 </h3>
-                <div className="flex items-center gap-2 text-[10px] text-white/85 font-semibold mt-0.5">
+                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/90 font-semibold mt-1">
                   <span>Cash: LKR {cashbookTotals.cashInHand.toLocaleString()}</span>
-                  <span>•</span>
-                  <span>Bank: LKR {cashbookTotals.bankBalance.toLocaleString()}</span>
+                  {(cashbookTotals.hasBank || cashbookTotals.bankBalance !== 0) && (
+                    <>
+                      <span>•</span>
+                      <span>Bank: LKR {cashbookTotals.bankBalance.toLocaleString()}</span>
+                    </>
+                  )}
+                  {(cashbookTotals.hasCard || cashbookTotals.cardBalance !== 0) && (
+                    <>
+                      <span>•</span>
+                      <span>Card: LKR {cashbookTotals.cardBalance.toLocaleString()}</span>
+                    </>
+                  )}
+                  {(cashbookTotals.hasCheque || cashbookTotals.chequeBalance !== 0) && (
+                    <>
+                      <span>•</span>
+                      <span>Cheque: LKR {cashbookTotals.chequeBalance.toLocaleString()}</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
