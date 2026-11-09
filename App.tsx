@@ -162,8 +162,26 @@ export default function App() {
   // Supabase Auth & User Profile State
   const [authSession, setAuthSession] = useState<any>(null);
   const [authUser, setAuthUser] = useState<any>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('st_cached_user_profile');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [isProfileLoading, setIsProfileLoading] = useState<boolean>(true);
+
+  const updateUserProfileState = (prof: UserProfile | null) => {
+    setUserProfile(prof);
+    try {
+      if (prof) {
+        localStorage.setItem('st_cached_user_profile', JSON.stringify(prof));
+      } else {
+        localStorage.removeItem('st_cached_user_profile');
+      }
+    } catch {}
+  };
   const [isPasswordRecoveryMode, setIsPasswordRecoveryMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
@@ -401,7 +419,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
       setAuthSession(null);
       setAuthUser(null);
-      setUserProfile(null);
+      updateUserProfileState(null);
       setShopName('');
       setShopPhone('');
       setShopAddress('');
@@ -1826,18 +1844,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const safetyTimer = setTimeout(() => {
       if (mounted) {
         setIsAuthLoading(false);
+        setIsProfileLoading(false);
       }
     }, 1500);
 
     const initAuth = async () => {
       try {
+        setIsProfileLoading(true);
         // Race getSession with a 1.2s fallback in case of slow or blocked lock in iframe
         const sessionPromise = supabase.auth.getSession();
         const fallbackPromise = new Promise<{ data: { session: any } }>((resolve) =>
           setTimeout(() => resolve({ data: { session: null } }), 1200)
         );
         const { data: { session } } = await Promise.race([sessionPromise, fallbackPromise]);
-
         if (!mounted) return;
         setAuthSession(session);
         setAuthUser(session?.user || null);
@@ -1850,7 +1869,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
           const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
           if (mounted) {
-            setUserProfile(prof);
+            updateUserProfileState(prof);
             setShopName(prof?.shopName || '');
             setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
             setShopPhone(prof?.phone || '');
@@ -1860,12 +1879,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           }
 
           fetchData(session.user.id).catch(e => console.warn('Fetch data init warning:', e));
+        } else {
+          updateUserProfileState(null);
         }
       } catch (err) {
         console.warn('Auth check error:', err);
       } finally {
         if (mounted) {
           setIsAuthLoading(false);
+          setIsProfileLoading(false);
           clearTimeout(safetyTimer);
         }
       }
@@ -1890,6 +1912,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setAuthUser(session?.user || null);
 
       if (session?.user) {
+        setIsProfileLoading(true);
         if (session.user.email_confirmed_at) {
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
@@ -1897,7 +1920,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
         const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
         if (mounted) {
-          setUserProfile(prof);
+          updateUserProfileState(prof);
           setShopName(prof?.shopName || '');
           setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
           setShopPhone(prof?.phone || '');
@@ -1908,7 +1931,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
         fetchData(session.user.id).catch(e => console.warn('Fetch data on change warning:', e));
       } else {
-        setUserProfile(null);
+        updateUserProfileState(null);
         setShopName('');
         setShopPhone('');
         setShopAddress('');
@@ -1924,6 +1947,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       if (mounted) {
         setIsAuthLoading(false);
+        setIsProfileLoading(false);
         clearTimeout(safetyTimer);
       }
     });
@@ -8021,7 +8045,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   };
 
   // 1. Initial Session Loading from Supabase
-  if (isAuthLoading) {
+  if (isAuthLoading || (authUser && isProfileLoading && !userProfile)) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-4 select-none">
         <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white mb-4 shadow-xl shadow-blue-500/20">
@@ -8032,7 +8056,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         <p className="text-xs font-semibold text-slate-400 mt-1">Checking secure session...</p>
         <button
           type="button"
-          onClick={() => setIsAuthLoading(false)}
+          onClick={() => {
+            setIsAuthLoading(false);
+            setIsProfileLoading(false);
+          }}
           className="mt-6 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-blue-400 hover:text-blue-300 font-semibold border border-slate-700 transition-all active:scale-95"
         >
           Continue to Sign In &rarr;
@@ -8057,7 +8084,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           setIsPasswordRecoveryMode(false);
           setAuthUser(user);
           if (profile) {
-            setUserProfile(profile);
+            updateUserProfileState(profile);
             setShopName(profile.shopName || '');
             setShopPhone(profile.phone || '');
             setShopAddress(profile.address || '');
@@ -8065,6 +8092,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopLogo(profile.logoUrl || null);
             setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
+          setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
           if (typeof window !== 'undefined' && window.history?.replaceState) {
@@ -8085,7 +8113,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           sessionStorage.removeItem('st_password_recovery');
           setAuthUser(user);
           if (profile) {
-            setUserProfile(profile);
+            updateUserProfileState(profile);
             setShopName(profile.shopName || '');
             setShopPhone(profile.phone || '');
             setShopAddress(profile.address || '');
@@ -8093,6 +8121,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopLogo(profile.logoUrl || null);
             setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
+          setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
           await fetchData(user.id);
@@ -8110,7 +8139,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         onAuthSuccess={async (user, profile) => {
           setAuthUser(user);
           if (profile) {
-            setUserProfile(profile);
+            updateUserProfileState(profile);
             setShopName(profile.shopName || '');
             setShopPhone(profile.phone || '');
             setShopAddress(profile.address || '');
@@ -8118,6 +8147,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             setShopLogo(profile.logoUrl || null);
             setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
+          setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
           await fetchData(user.id);
@@ -8127,14 +8157,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   }
 
   // 4. User is verified, but first-time shop setup form is required
-  if (!userProfile || !userProfile.setupCompleted) {
+  if (!isProfileLoading && (!userProfile || !userProfile.setupCompleted)) {
     return (
       <ShopSetupScreen
         userId={authUser.id}
         userEmail={authUser.email || ''}
         initialFullName={authUser.user_metadata?.full_name || ''}
         onSetupComplete={async (newProfile) => {
-          setUserProfile(newProfile);
+          updateUserProfileState(newProfile);
           setShopName(newProfile.shopName || '');
           setShopPhone(newProfile.phone || '');
           setShopAddress(newProfile.address || '');
