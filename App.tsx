@@ -491,6 +491,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterNeedsAttention, setFilterNeedsAttention] = useState(false);
+  const [serviceStatusFilter, setServiceStatusFilter] = useState<'ALL' | 'Pending' | 'In Progress' | 'Ready' | 'Delivered'>('ALL');
 
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
@@ -3406,7 +3407,34 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const tabNounSingular = activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'account' : 'order';
     const tabNounPlural = activeTab === 'VENDOR' ? 'vendors' : activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
 
+    // Status counts for SERVICE orders
+    const serviceCounts = {
+      ALL: 0,
+      Pending: 0,
+      'In Progress': 0,
+      Ready: 0,
+      Delivered: 0
+    };
+    if (activeTab === 'SERVICE') {
+      currentTabContacts.forEach(c => {
+        serviceCounts.ALL++;
+        const st = c.serviceStatus || 'Pending';
+        if (st === 'In Progress') serviceCounts['In Progress']++;
+        else if (st === 'Ready') serviceCounts.Ready++;
+        else if (st === 'Delivered') serviceCounts.Delivered++;
+        else serviceCounts.Pending++;
+      });
+    }
+
     const filtered = currentTabContacts.filter(c => {
+      // Filter by Service Status if in SERVICE tab
+      if (activeTab === 'SERVICE' && serviceStatusFilter !== 'ALL') {
+        const itemStatus = c.serviceStatus || 'Pending';
+        if (itemStatus !== serviceStatusFilter) {
+          return false;
+        }
+      }
+
       const q = searchQuery.toLowerCase().trim();
       if (!q) {
         if (filterNeedsAttention) {
@@ -3728,7 +3756,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </h2>
                 <div className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5 flex items-center gap-2 flex-wrap">
                   <span>
-                    {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'} {filterNeedsAttention ? 'with pending cheques' : '· sorted by amount owed'}
+                    {filtered.length} {activeTab === 'SERVICE' ? (serviceStatusFilter === 'ALL' ? 'services' : `${serviceStatusFilter.toLowerCase()} orders`) : `${activeTab.toLowerCase()}${filtered.length === 1 ? '' : 's'}`} {filterNeedsAttention ? 'with pending cheques' : '· sorted by amount owed'}
                   </span>
                   {filterNeedsAttention && (
                     <button 
@@ -3736,6 +3764,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       className="text-blue-600 dark:text-blue-400 underline font-bold hover:opacity-80 text-[11px]"
                     >
                       Show all {activeTab.toLowerCase()}s
+                    </button>
+                  )}
+                  {activeTab === 'SERVICE' && serviceStatusFilter !== 'ALL' && (
+                    <button 
+                      onClick={() => setServiceStatusFilter('ALL')}
+                      className="text-blue-600 dark:text-blue-400 hover:underline font-bold text-[11px] flex items-center gap-0.5"
+                    >
+                      <X size={11} />
+                      <span>Show all ({serviceCounts.ALL})</span>
                     </button>
                   )}
                 </div>
@@ -3773,19 +3810,180 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </button>
 
                 <button 
-                  className="bg-slate-100 dark:bg-[#1a2332] text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs shrink-0"
-                  title="Filter options"
+                  onClick={() => {
+                    if (activeTab === 'SERVICE') {
+                      const statuses: Array<'ALL' | 'Pending' | 'In Progress' | 'Ready' | 'Delivered'> = ['ALL', 'Pending', 'In Progress', 'Ready', 'Delivered'];
+                      const nextIdx = (statuses.indexOf(serviceStatusFilter) + 1) % statuses.length;
+                      setServiceStatusFilter(statuses[nextIdx]);
+                    }
+                  }}
+                  className={`bg-slate-100 dark:bg-[#1a2332] border hover:bg-slate-200 dark:hover:bg-[#222e42] px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs shrink-0 ${
+                    activeTab === 'SERVICE' && serviceStatusFilter !== 'ALL'
+                      ? 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-950/40'
+                      : 'text-slate-700 dark:text-slate-200 border-slate-200 dark:border-[#263448]'
+                  }`}
+                  title={activeTab === 'SERVICE' ? `Filter by status: ${serviceStatusFilter}` : "Filter options"}
                 >
                   <Filter size={14} />
-                  <span>Filter</span>
+                  <span>Filter{activeTab === 'SERVICE' && serviceStatusFilter !== 'ALL' ? `: ${serviceStatusFilter}` : ''}</span>
                 </button>
               </div>
             </div>
 
+            {/* Quick Status Filter Buttons for Service Orders */}
+            {activeTab === 'SERVICE' && (
+              <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1 pt-1 border-t border-slate-100 dark:border-[#1e2a3c] scrollbar-none">
+                {/* All */}
+                <button
+                  type="button"
+                  onClick={() => setServiceStatusFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 ${
+                    serviceStatusFilter === 'ALL'
+                      ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-sm border border-slate-900 dark:border-white'
+                      : 'bg-slate-100 dark:bg-[#1a2332] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#222e42] border border-slate-200 dark:border-[#263448]'
+                  }`}
+                >
+                  <span>All</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    serviceStatusFilter === 'ALL'
+                      ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}>
+                    {serviceCounts.ALL}
+                  </span>
+                </button>
+
+                {/* Pending */}
+                <button
+                  type="button"
+                  onClick={() => setServiceStatusFilter(serviceStatusFilter === 'Pending' ? 'ALL' : 'Pending')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 ${
+                    serviceStatusFilter === 'Pending'
+                      ? 'bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900 shadow-sm border border-slate-700 dark:border-slate-200'
+                      : 'bg-slate-100/90 dark:bg-[#172030] text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-[#1f2b40] border border-slate-200 dark:border-[#263448]'
+                  }`}
+                >
+                  <Clock size={12} className={serviceStatusFilter === 'Pending' ? 'text-white dark:text-slate-900' : 'text-slate-500'} />
+                  <span>Pending</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    serviceStatusFilter === 'Pending'
+                      ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
+                  }`}>
+                    {serviceCounts.Pending}
+                  </span>
+                </button>
+
+                {/* In Progress */}
+                <button
+                  type="button"
+                  onClick={() => setServiceStatusFilter(serviceStatusFilter === 'In Progress' ? 'ALL' : 'In Progress')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 ${
+                    serviceStatusFilter === 'In Progress'
+                      ? 'bg-amber-500 text-white shadow-sm border border-amber-500'
+                      : 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 border border-amber-200 dark:border-amber-900/50'
+                  }`}
+                >
+                  <Wrench size={12} className={serviceStatusFilter === 'In Progress' ? 'text-white' : 'text-amber-600 dark:text-amber-400'} />
+                  <span>In Progress</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    serviceStatusFilter === 'In Progress'
+                      ? 'bg-amber-700 text-white'
+                      : 'bg-amber-200/80 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200'
+                  }`}>
+                    {serviceCounts['In Progress']}
+                  </span>
+                </button>
+
+                {/* Ready */}
+                <button
+                  type="button"
+                  onClick={() => setServiceStatusFilter(serviceStatusFilter === 'Ready' ? 'ALL' : 'Ready')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 ${
+                    serviceStatusFilter === 'Ready'
+                      ? 'bg-blue-600 text-white shadow-sm border border-blue-600'
+                      : 'bg-blue-50 dark:bg-blue-950/30 text-blue-900 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-950/60 border border-blue-200 dark:border-blue-900/50'
+                  }`}
+                >
+                  <CheckSquare size={12} className={serviceStatusFilter === 'Ready' ? 'text-white' : 'text-blue-600 dark:text-blue-400'} />
+                  <span>Ready</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    serviceStatusFilter === 'Ready'
+                      ? 'bg-blue-800 text-white'
+                      : 'bg-blue-200/80 dark:bg-blue-900/60 text-blue-900 dark:text-blue-200'
+                  }`}>
+                    {serviceCounts.Ready}
+                  </span>
+                </button>
+
+                {/* Delivered */}
+                <button
+                  type="button"
+                  onClick={() => setServiceStatusFilter(serviceStatusFilter === 'Delivered' ? 'ALL' : 'Delivered')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 ${
+                    serviceStatusFilter === 'Delivered'
+                      ? 'bg-emerald-600 text-white shadow-sm border border-emerald-600'
+                      : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-900/50'
+                  }`}
+                >
+                  <CheckCircle2 size={12} className={serviceStatusFilter === 'Delivered' ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'} />
+                  <span>Delivered</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+                    serviceStatusFilter === 'Delivered'
+                      ? 'bg-emerald-800 text-white'
+                      : 'bg-emerald-200/80 dark:bg-emerald-900/60 text-emerald-900 dark:text-emerald-200'
+                  }`}>
+                    {serviceCounts.Delivered}
+                  </span>
+                </button>
+
+                {/* Reset button if filter is active */}
+                {serviceStatusFilter !== 'ALL' && (
+                  <button
+                    type="button"
+                    onClick={() => setServiceStatusFilter('ALL')}
+                    className="text-[11px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 ml-auto flex items-center gap-1 px-2 py-1 shrink-0 transition-colors"
+                    title="Show all statuses"
+                  >
+                    <X size={12} />
+                    <span className="hidden sm:inline">Reset</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Content Table / Cards */}
             {activeTab === 'SERVICE' ? (
               <div className="flex flex-col gap-3">
-                {filtered.map(c => {
+                {filtered.length === 0 ? (
+                  <div className="py-12 px-4 text-center flex flex-col items-center justify-center bg-slate-50/50 dark:bg-[#111724]/50 rounded-2xl border border-dashed border-slate-200 dark:border-[#223046]">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-[#1a2332] text-slate-400 dark:text-slate-500 flex items-center justify-center mb-3">
+                      <Wrench size={22} />
+                    </div>
+                    <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">
+                      {serviceStatusFilter !== 'ALL' 
+                        ? `No "${serviceStatusFilter}" service orders found` 
+                        : 'No service orders found'}
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mb-4">
+                      {serviceStatusFilter !== 'ALL' 
+                        ? `There are currently no repair orders marked as "${serviceStatusFilter}".` 
+                        : searchQuery 
+                          ? `No orders matching "${searchQuery}". Try a different keyword.` 
+                          : 'Create a new service order to track repairs, status, and payments.'}
+                    </p>
+                    {serviceStatusFilter !== 'ALL' && (
+                      <button
+                        type="button"
+                        onClick={() => setServiceStatusFilter('ALL')}
+                        className="px-4 py-2 bg-slate-900 text-white dark:bg-white dark:text-slate-900 rounded-xl text-xs font-bold hover:opacity-90 transition-all shadow-xs"
+                      >
+                        Show All Service Orders ({serviceCounts.ALL})
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  filtered.map(c => {
                   const stats = contactStats[c.id];
                   const totalCost = stats?.totalCredit || c.totalCost || c.targetAmount || 0;
                   const advancePaid = stats?.totalPayment || c.advancePayment || 0;
@@ -3810,14 +4008,23 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                                 #{`SO-${c.id.slice(0, 6).toUpperCase()}`}
                               </span>
                               {c.serviceStatus && (
-                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                                  c.serviceStatus === 'Delivered' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-400' :
-                                  c.serviceStatus === 'Ready' ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-400' :
-                                  c.serviceStatus === 'In Progress' ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400' :
-                                  'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                                }`}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const st = c.serviceStatus as any || 'Pending';
+                                    setServiceStatusFilter(serviceStatusFilter === st ? 'ALL' : st);
+                                  }}
+                                  title={`Filter by status: ${c.serviceStatus} (Click to toggle)`}
+                                  className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider transition-all hover:scale-105 active:scale-95 ${
+                                    c.serviceStatus === 'Delivered' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-400' :
+                                    c.serviceStatus === 'Ready' ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-400' :
+                                    c.serviceStatus === 'In Progress' ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400' :
+                                    'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                                  }`}
+                                >
                                   {c.serviceStatus}
-                                </span>
+                                </button>
                               )}
                             </div>
                             <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -3940,7 +4147,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       </div>
                     </div>
                   );
-                })}
+                }))}
               </div>
             ) : (
               /* High quality Table & Cards for Vendor / Customer / Rent matching image_f55cac7e.png */
