@@ -257,6 +257,26 @@ export default function App() {
     setInvoiceFormat('POS');
   };
 
+  // Instant Invoice Creator state
+  const [isInstantInvoiceModalOpen, setIsInstantInvoiceModalOpen] = useState(false);
+  const [instInvCustomerName, setInstInvCustomerName] = useState('');
+  const [instInvCustomerPhone, setInstInvCustomerPhone] = useState('');
+  const [instInvSelectedContactId, setInstInvSelectedContactId] = useState('');
+  const [instInvCategory, setInstInvCategory] = useState<string>('Mobile Accessories');
+  const [instInvCustomCategory, setInstInvCustomCategory] = useState('');
+  const [instInvDescription, setInstInvDescription] = useState('');
+  const [instInvAmount, setInstInvAmount] = useState('');
+  const [instInvPaymentMethod, setInstInvPaymentMethod] = useState<PaymentMethod>('Cash');
+  const [instInvChequeNumber, setInstInvChequeNumber] = useState('');
+  const [instInvChequeDueDate, setInstInvChequeDueDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [instInvDate, setInstInvDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [instInvInvoiceNo, setInstInvInvoiceNo] = useState(() => `INV-${Math.floor(1000 + Math.random() * 9000)}`);
+  const [instInvLinkToLedger, setInstInvLinkToLedger] = useState(true);
+  const [invSearchQuery, setInvSearchQuery] = useState('');
+  const [invDateFilter, setInvDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL'>('THIS_MONTH');
+  const instInvDateInputRef = useRef<HTMLInputElement>(null);
+  const instInvInlineDateRef = useRef<HTMLInputElement>(null);
+
   // Cashbook filter states
   const [cashbookDateFilter, setCashbookDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL' | 'CUSTOM'>('THIS_MONTH');
   const [cashbookCustomStart, setCashbookCustomStart] = useState(() => {
@@ -7437,6 +7457,176 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     }
   };
 
+  const handleCreateInstantInvoice = async (targetFormat: 'POS' | 'A4' | 'WHATSAPP' | 'SAVE_ONLY' = 'POS') => {
+    const amountVal = parseFloat(instInvAmount);
+    if (!amountVal || isNaN(amountVal) || amountVal <= 0) {
+      alert("Please enter a valid invoice amount greater than 0");
+      return;
+    }
+    const customer = instInvCustomerName.trim() || 'Walk-in Customer';
+    const finalCategory = (instInvCategory === 'Other' && instInvCustomCategory.trim())
+      ? instInvCustomCategory.trim()
+      : (instInvCategory || 'Store Sale').trim();
+    const invNo = instInvInvoiceNo.trim() || `INV-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    let finalDesc = instInvDescription.trim() || finalCategory;
+    if (instInvPaymentMethod === 'Cheque') {
+      const chqNumStr = instInvChequeNumber ? ` • #${instInvChequeNumber.trim()}` : '';
+      const chqDueStr = instInvChequeDueDate ? ` • Due: ${instInvChequeDueDate}` : '';
+      finalDesc = `${finalDesc} (Cheque [PENDING]${chqNumStr}${chqDueStr})`;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const newEntryId = generateUUID();
+      const dateVal = instInvDate || new Date().toISOString().slice(0, 10);
+
+      // 1. Link & Save to Daybook Sales (cashbookEntries & Supabase)
+      const daybookPayload = {
+        user_id: authUser?.id,
+        type: 'SALE' as CashbookEntryType,
+        amount: amountVal,
+        date: dateVal,
+        category: finalCategory,
+        description: `${finalDesc} [${invNo}]`,
+        payment_method: instInvPaymentMethod,
+        reference_no: invNo,
+        contact_name: customer
+      };
+
+      const newCashbookEntry: CashbookEntry = {
+        id: newEntryId,
+        userId: authUser?.id,
+        type: 'SALE',
+        amount: amountVal,
+        date: dateVal,
+        category: finalCategory,
+        description: daybookPayload.description,
+        paymentMethod: instInvPaymentMethod,
+        referenceNo: invNo,
+        contactName: customer,
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        await supabase.from('cashbook_entries').insert([{ id: newEntryId, ...daybookPayload }]);
+      } catch (e) {
+        console.warn('Supabase cashbook insert error:', e);
+      }
+
+      const updatedCashbook = [newCashbookEntry, ...cashbookEntries];
+      setCashbookEntries(updatedCashbook);
+      try {
+        const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+        localStorage.setItem(cacheKey, JSON.stringify(updatedCashbook));
+        localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedCashbook));
+      } catch {}
+
+      // 2. Link to Customer Credit Book if customer matched or selected
+      let matchedContact = instInvSelectedContactId
+        ? contacts.find(c => c.id === instInvSelectedContactId)
+        : contacts.find(c => c.name.toLowerCase() === customer.toLowerCase());
+
+      if (matchedContact && instInvLinkToLedger) {
+        const txId = generateUUID();
+        const txPayload = {
+          user_id: authUser?.id,
+          contact_id: matchedContact.id,
+          type: 'PAYMENT' as TransactionType,
+          amount: amountVal,
+          date: dateVal,
+          description: `${finalDesc} [${invNo}]`,
+          payment_method: instInvPaymentMethod,
+          cheque_status: instInvPaymentMethod === 'Cheque' ? 'PENDING' : null,
+          cheque_number: instInvPaymentMethod === 'Cheque' ? instInvChequeNumber : null,
+          cheque_date: instInvPaymentMethod === 'Cheque' ? instInvChequeDueDate : null
+        };
+
+        try {
+          await supabase.from('transactions').insert([{ id: txId, ...txPayload }]);
+        } catch (txErr) {
+          console.warn('Supabase transaction insert error:', txErr);
+        }
+
+        const newTx: Transaction = {
+          id: txId,
+          contactId: matchedContact.id,
+          type: 'PAYMENT',
+          amount: amountVal,
+          date: dateVal,
+          description: txPayload.description,
+          paymentMethod: instInvPaymentMethod,
+          chequeStatus: instInvPaymentMethod === 'Cheque' ? 'PENDING' : undefined,
+          chequeNumber: instInvPaymentMethod === 'Cheque' ? instInvChequeNumber : undefined,
+          chequeDate: instInvPaymentMethod === 'Cheque' ? instInvChequeDueDate : undefined,
+          balanceAfter: (contactStats[matchedContact.id]?.balance || 0) - amountVal
+        };
+
+        const updatedTxList = [newTx, ...transactions];
+        setTransactions(updatedTxList);
+        try {
+          const txKey = authUser?.id ? `st_transactions_${authUser.id}` : 'st_cached_transactions';
+          localStorage.setItem(txKey, JSON.stringify(updatedTxList));
+          localStorage.setItem('st_cached_transactions', JSON.stringify(updatedTxList));
+        } catch {}
+      }
+
+      showProfileToast(`Invoice #${invNo} created & linked to Daybook Sales (+ LKR ${amountVal.toLocaleString()})!`);
+
+      // Prepare invoice item before resetting form fields
+      const invoiceData = {
+        type: 'CASHBOOK' as const,
+        item: {
+          ...newCashbookEntry,
+          contactPhone: instInvCustomerPhone || matchedContact?.phone || ''
+        },
+        contact: matchedContact || ({
+          id: 'walk-in',
+          name: customer,
+          phone: instInvCustomerPhone,
+          type: 'CUSTOMER' as ContactType,
+          balance: 0,
+          lastUpdated: new Date().toISOString()
+        } as Contact)
+      };
+
+      // Reset form
+      setInstInvAmount('');
+      setInstInvDescription('');
+      setInstInvCustomerName('');
+      setInstInvCustomerPhone('');
+      setInstInvSelectedContactId('');
+      setInstInvInvoiceNo(`INV-${Math.floor(1000 + Math.random() * 9000)}`);
+      setIsInstantInvoiceModalOpen(false);
+
+      if (targetFormat === 'WHATSAPP') {
+        const dateStr = formatDisplayDate(dateVal);
+        const shareText = `🧾 *${shopName.toUpperCase()} - INVOICE / RECEIPT*\n` +
+          `Ref #: #${invNo}\n` +
+          `Date: ${dateStr}\n` +
+          `Customer: ${customer}\n` +
+          `Category: ${finalCategory}\n` +
+          `Details: ${finalDesc}\n` +
+          `Payment Method: ${instInvPaymentMethod}\n` +
+          `Total Amount: LKR ${amountVal.toLocaleString()}\n\n` +
+          `Thank you for your business!`;
+
+        const cleanPhone = (instInvCustomerPhone || matchedContact?.phone || '').replace(/[^0-9]/g, '');
+        const url = cleanPhone.length >= 7
+          ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(shareText)}`
+          : `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+        window.open(url, '_blank');
+      } else if (targetFormat !== 'SAVE_ONLY') {
+        setInvoiceModalItem(invoiceData);
+        setInvoiceFormat(targetFormat);
+      }
+    } catch (err: any) {
+      alert("Error creating invoice: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleDeleteCashbookEntry = async (id: string) => {
     if (!userCanDelete) {
       alert("Access Denied: You do not have permission to delete data. Only authorized users can delete records.");
@@ -8589,6 +8779,811 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     );
   };
 
+  const renderInstantInvoiceModal = () => {
+    if (!isInstantInvoiceModalOpen) return null;
+
+    const customerContacts = contacts.filter(c => c.type === 'CUSTOMER' || c.type === 'SERVICE');
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[125] flex items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+        <div className="bg-white dark:bg-[#0e1626] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh] border border-slate-200 dark:border-[#1e2a3c]">
+          {/* Modal Header */}
+          <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 px-5 py-4 text-white flex items-center justify-between shrink-0 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center text-white shadow-inner">
+                <Receipt size={20} />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base leading-tight">Create Instant Invoice</h3>
+                <p className="text-[11px] text-white/80 font-medium">Auto-records into Daybook Sales & Customer Ledger</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsInstantInvoiceModalOpen(false)}
+              className="p-1.5 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Modal Body */}
+          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-slate-800 dark:text-slate-100">
+            {/* Amount Input */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Total Invoice Amount (LKR) *
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-base">
+                  LKR
+                </span>
+                <input
+                  type="number"
+                  step="any"
+                  autoFocus
+                  value={instInvAmount}
+                  onChange={e => setInstInvAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full pl-14 pr-4 py-3 bg-emerald-50/40 dark:bg-emerald-950/20 border-2 border-emerald-300 dark:border-emerald-700/60 rounded-2xl text-2xl font-black text-emerald-700 dark:text-emerald-400 outline-none focus:border-emerald-500 transition-all"
+                />
+              </div>
+            </div>
+
+            {/* Customer Details */}
+            <div className="space-y-2 bg-slate-50 dark:bg-[#131b2a] p-3.5 rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c]">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Customer Information
+                </label>
+                {customerContacts.length > 0 && (
+                  <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">Pick existing or enter new</span>
+                )}
+              </div>
+
+              {customerContacts.length > 0 && (
+                <div className="space-y-1">
+                  <select
+                    value={instInvSelectedContactId}
+                    onChange={e => {
+                      const cid = e.target.value;
+                      setInstInvSelectedContactId(cid);
+                      if (cid) {
+                        const found = customerContacts.find(c => c.id === cid);
+                        if (found) {
+                          setInstInvCustomerName(found.name);
+                          setInstInvCustomerPhone(found.phone || '');
+                        }
+                      }
+                    }}
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                  >
+                    <option value="">-- Choose From Existing Customers (Optional) --</option>
+                    {customerContacts.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} {c.phone ? `(${c.phone})` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <input
+                    type="text"
+                    value={instInvCustomerName}
+                    onChange={e => {
+                      setInstInvCustomerName(e.target.value);
+                      if (instInvSelectedContactId) setInstInvSelectedContactId('');
+                    }}
+                    placeholder="Customer Name (e.g. Nimal Perera)"
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <input
+                    type="text"
+                    value={instInvCustomerPhone}
+                    onChange={e => setInstInvCustomerPhone(e.target.value)}
+                    placeholder="Phone (e.g. 0771234567)"
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Category Presets */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Category
+              </label>
+              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 dark:bg-[#131b2a] rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c]">
+                {SALE_CATEGORIES.map(cat => {
+                  const isSelected = instInvCategory === cat;
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setInstInvCategory(cat)}
+                      className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-100 dark:hover:bg-[#202e46]'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setInstInvCategory('Other')}
+                  className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                    instInvCategory === 'Other'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
+                  }`}
+                >
+                  + Custom
+                </button>
+              </div>
+
+              {instInvCategory === 'Other' && (
+                <div className="mt-1.5 animate-in fade-in duration-150">
+                  <input
+                    type="text"
+                    value={instInvCustomCategory}
+                    onChange={e => setInstInvCustomCategory(e.target.value)}
+                    placeholder="Type custom category name..."
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-300 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Description / Item Details */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Item Details / Service Notes (Optional)
+              </label>
+              <input
+                type="text"
+                value={instInvDescription}
+                onChange={e => setInstInvDescription(e.target.value)}
+                placeholder="e.g. 20W Fast Charger + iPhone 11 Tempered Glass"
+                className="w-full bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-xl px-3 py-2.5 text-xs font-medium text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-[#1a2538]"
+              />
+            </div>
+
+            {/* Payment Method Selector */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Payment Method
+              </label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: 'Cash', icon: Banknote },
+                  { id: 'Card', icon: CreditCard },
+                  { id: 'Bank Transfer', icon: Building2 },
+                  { id: 'Cheque', icon: Landmark },
+                ].map(({ id, icon: Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setInstInvPaymentMethod(id as PaymentMethod)}
+                    className={`py-2 px-1 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 active:scale-95 ${
+                      instInvPaymentMethod === id
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white dark:bg-[#131b2a] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#1e2a3c] hover:bg-slate-50 dark:hover:bg-[#1a2538]'
+                    }`}
+                  >
+                    <Icon size={14} />
+                    <span className="text-[10px] font-bold leading-none truncate w-full">{id}</span>
+                  </button>
+                ))}
+              </div>
+
+              {instInvPaymentMethod === 'Cheque' && (
+                <div className="grid grid-cols-2 gap-2 pt-2 animate-in fade-in duration-150">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">Cheque Number</label>
+                    <input
+                      type="text"
+                      value={instInvChequeNumber}
+                      onChange={e => setInstInvChequeNumber(e.target.value)}
+                      placeholder="#123456"
+                      className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-2.5 py-1.5 text-xs font-mono font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">Cheque Due Date</label>
+                    <input
+                      type="date"
+                      value={instInvChequeDueDate}
+                      onChange={e => setInstInvChequeDueDate(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-2.5 py-1.5 text-xs font-bold"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Invoice Ref # & Date */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Invoice Number
+                </label>
+                <input
+                  type="text"
+                  value={instInvInvoiceNo}
+                  onChange={e => setInstInvInvoiceNo(e.target.value)}
+                  placeholder="e.g. INV-1025"
+                  className="w-full bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between items-center text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <span>Date</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-bold">{formatDisplayDate(instInvDate)}</span>
+                </div>
+                <input
+                  ref={instInvDateInputRef}
+                  type="date"
+                  value={instInvDate}
+                  onChange={e => setInstInvDate(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Auto-Sync Banner */}
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 rounded-2xl flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold shrink-0">
+                  <Check size={14} />
+                </div>
+                <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
+                  Auto-links into Daybook Sales (Income) & Cash Flow
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Modal Footer Actions */}
+          <div className="p-4 bg-slate-50 dark:bg-[#131b2a] border-t border-slate-200 dark:border-[#1e2a3c] flex flex-wrap gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+              onClick={() => handleCreateInstantInvoice('POS')}
+              className="flex-1 py-2.5 px-3 bg-slate-900 hover:bg-black text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              <Printer size={15} />
+              <span>Print POS (80mm)</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+              onClick={() => handleCreateInstantInvoice('A4')}
+              className="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              <FileText size={15} />
+              <span>A4 PDF</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+              onClick={() => handleCreateInstantInvoice('WHATSAPP')}
+              className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+              title="Save & Share on WhatsApp"
+            >
+              <Share2 size={15} />
+              <span>WhatsApp</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+              onClick={() => handleCreateInstantInvoice('SAVE_ONLY')}
+              className="py-2.5 px-3 bg-white dark:bg-[#1a2538] border border-slate-300 dark:border-[#26354d] text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl hover:bg-slate-100 dark:hover:bg-[#202e46] active:scale-95 transition-all disabled:opacity-50"
+            >
+              Save Only
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderInvoiceView = () => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayStr = yesterdayDate.toISOString().slice(0, 10);
+
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    const startOfWeekStr = startOfWeek.toISOString().slice(0, 10);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfMonthStr = startOfMonth.toISOString().slice(0, 10);
+
+    // Filter all Daybook Sales entries as invoices
+    const salesInvoices = cashbookEntries.filter(e => e.type === 'SALE');
+
+    const filteredInvoices = salesInvoices.filter(inv => {
+      // Date filter
+      if (invDateFilter === 'TODAY' && inv.date !== todayStr) return false;
+      if (invDateFilter === 'YESTERDAY' && inv.date !== yesterdayStr) return false;
+      if (invDateFilter === 'THIS_WEEK' && inv.date < startOfWeekStr) return false;
+      if (invDateFilter === 'THIS_MONTH' && inv.date < startOfMonthStr) return false;
+
+      // Search query
+      if (invSearchQuery.trim()) {
+        const q = invSearchQuery.toLowerCase();
+        const refMatch = (inv.referenceNo || '').toLowerCase().includes(q);
+        const nameMatch = (inv.contactName || '').toLowerCase().includes(q);
+        const descMatch = (inv.description || '').toLowerCase().includes(q);
+        const catMatch = (inv.category || '').toLowerCase().includes(q);
+        if (!refMatch && !nameMatch && !descMatch && !catMatch) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const timeA = new Date(a.date).getTime();
+      const timeB = new Date(b.date).getTime();
+      if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeB - timeA;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
+
+    // Compute Metrics
+    const todaySales = salesInvoices.filter(e => e.date === todayStr);
+    const todayTotal = todaySales.reduce((sum, e) => sum + e.amount, 0);
+
+    const monthSales = salesInvoices.filter(e => e.date >= startOfMonthStr);
+    const monthTotal = monthSales.reduce((sum, e) => sum + e.amount, 0);
+
+    const totalInvoicesSum = filteredInvoices.reduce((sum, e) => sum + e.amount, 0);
+
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-28 no-scrollbar transition-colors">
+        {/* Header */}
+        <header className="bg-white dark:bg-[#0b101d] px-4 py-3 shadow-xs dark:shadow-none border-b border-slate-200 dark:border-[#1e2a3c] sticky top-0 z-20 transition-colors">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigateTo('DASHBOARD')}
+                className="p-1.5 -ml-1 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-[#1a2332] transition-colors"
+                title="Back to Dashboard"
+              >
+                <ChevronLeft size={22} />
+              </button>
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold shadow-sm">
+                  <Receipt size={18} />
+                </div>
+                <div>
+                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Instant Invoice</h1>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName || 'Ledger Book'} • Daybook Linked Billing</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className="p-2 rounded-xl bg-slate-100 dark:bg-[#1a2332] text-slate-600 dark:text-amber-400 border border-slate-200 dark:border-[#263448] hover:bg-slate-200 dark:hover:bg-[#222e42] transition-all shadow-xs active:scale-95 flex items-center justify-center"
+                title={isDarkMode ? "Switch to Normal (Light) Mode" : "Switch to Dark Mode"}
+              >
+                {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+
+              <button
+                onClick={() => setIsInstantInvoiceModalOpen(true)}
+                className="px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1.5 text-xs font-bold"
+              >
+                <Plus size={16} />
+                <span>+ Create Invoice</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Content Body */}
+        <div className="p-4 max-w-4xl mx-auto w-full space-y-4">
+          {/* Top Metrics Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-emerald-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Today's Invoices</span>
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                  <TrendingUp size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                  + LKR {todayTotal.toLocaleString()}
+                </h3>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+                  {todaySales.length} invoices generated today
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-blue-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">This Month Sales</span>
+                <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <Calendar size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-blue-600 dark:text-blue-400">
+                  + LKR {monthTotal.toLocaleString()}
+                </h3>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+                  {monthSales.length} total monthly sales
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white rounded-2xl p-4 border border-indigo-500 shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-white/80 uppercase tracking-wider">Daybook Linked Invoices</span>
+                <div className="w-8 h-8 rounded-xl bg-white/20 text-white flex items-center justify-center">
+                  <Wallet size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-white">
+                  + LKR {totalInvoicesSum.toLocaleString()}
+                </h3>
+                <p className="text-[10px] text-white/80 font-semibold mt-0.5">
+                  {filteredInvoices.length} invoices in selected view
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Instant Bill Creation Card */}
+          <div className="bg-white dark:bg-[#131b2a] p-4 sm:p-5 rounded-3xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-[#1e2a3c] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <Receipt size={17} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">⚡ Quick Instant Bill to Customer</h3>
+                  <p className="text-[10px] text-slate-400 font-medium">Issue receipt & instantly record into Daybook Sales</p>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-md">
+                #{instInvInvoiceNo}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Amount */}
+              <div className="sm:col-span-1 space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Amount (LKR) *
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black text-slate-400 text-sm">
+                    LKR
+                  </span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={instInvAmount}
+                    onChange={e => setInstInvAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full pl-12 pr-3 py-2.5 bg-emerald-50/40 dark:bg-emerald-950/20 border border-emerald-300 dark:border-emerald-700/60 rounded-xl text-lg font-black text-emerald-700 dark:text-emerald-400 outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Customer Name */}
+              <div className="sm:col-span-1 space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Customer Name
+                </label>
+                <input
+                  type="text"
+                  value={instInvCustomerName}
+                  onChange={e => setInstInvCustomerName(e.target.value)}
+                  placeholder="e.g. Kasun / Walk-in"
+                  className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* Customer Phone */}
+              <div className="sm:col-span-1 space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Phone (for WhatsApp)
+                </label>
+                <input
+                  type="text"
+                  value={instInvCustomerPhone}
+                  onChange={e => setInstInvCustomerPhone(e.target.value)}
+                  placeholder="e.g. 0771234567"
+                  className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Category */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Category
+                </label>
+                <select
+                  value={instInvCategory}
+                  onChange={e => setInstInvCategory(e.target.value)}
+                  className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none"
+                >
+                  {SALE_CATEGORIES.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Description */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Items / Description
+                </label>
+                <input
+                  type="text"
+                  value={instInvDescription}
+                  onChange={e => setInstInvDescription(e.target.value)}
+                  placeholder="e.g. iPhone Display + Charger"
+                  className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Payment Method Selector Chips */}
+            <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mr-1">Paid With:</span>
+                {[
+                  { id: 'Cash', icon: Banknote },
+                  { id: 'Card', icon: CreditCard },
+                  { id: 'Bank Transfer', icon: Building2 },
+                  { id: 'Cheque', icon: Landmark }
+                ].map(({ id, icon: Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setInstInvPaymentMethod(id as PaymentMethod)}
+                    className={`py-1 px-2.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1 ${
+                      instInvPaymentMethod === id
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                        : 'bg-white dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon size={12} />
+                    <span>{id}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+                  onClick={() => handleCreateInstantInvoice('POS')}
+                  className="px-3 py-2 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  title="Generate, Save to Daybook & Print POS 80mm Receipt"
+                >
+                  <Printer size={14} />
+                  <span>Print POS (80mm)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+                  onClick={() => handleCreateInstantInvoice('A4')}
+                  className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  title="Generate, Save to Daybook & Open A4 PDF"
+                >
+                  <FileText size={14} />
+                  <span>A4 PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSubmitting || !instInvAmount || parseFloat(instInvAmount) <= 0}
+                  onClick={() => handleCreateInstantInvoice('WHATSAPP')}
+                  className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  title="Save & Share directly via WhatsApp"
+                >
+                  <Share2 size={14} />
+                  <span className="hidden sm:inline">WhatsApp</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Period Filter Bar */}
+          <div className="bg-white dark:bg-[#131b2a] p-3 rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="bg-slate-100 dark:bg-[#1a2538] rounded-xl px-3 py-2 flex items-center flex-1 border border-transparent focus-within:border-blue-400 focus-within:bg-white dark:focus-within:bg-[#131b2a] transition-all">
+                <Search size={16} className="text-slate-400 mr-2 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Search by invoice #, customer name, phone, or items..."
+                  value={invSearchQuery}
+                  onChange={e => setInvSearchQuery(e.target.value)}
+                  className="bg-transparent outline-none text-xs w-full text-slate-800 dark:text-slate-100 placeholder:text-slate-400 font-medium"
+                />
+                {invSearchQuery && (
+                  <button onClick={() => setInvSearchQuery('')} className="text-slate-400 hover:text-slate-600 p-0.5">
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Date Filter Buttons */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+              {[
+                { id: 'TODAY', label: 'Today' },
+                { id: 'YESTERDAY', label: 'Yesterday' },
+                { id: 'THIS_WEEK', label: 'This Week' },
+                { id: 'THIS_MONTH', label: 'This Month' },
+                { id: 'ALL', label: 'All Invoices' },
+              ].map(f => (
+                <button
+                  key={f.id}
+                  onClick={() => setInvDateFilter(f.id as any)}
+                  className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all shrink-0 border ${
+                    invDateFilter === f.id
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : 'bg-white dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-50'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Invoices List */}
+          {filteredInvoices.length === 0 ? (
+            <div className="bg-white dark:bg-[#131b2a] rounded-3xl p-8 border border-slate-200/90 dark:border-[#1e2a3c] text-center space-y-4 shadow-xs">
+              <div className="w-16 h-16 rounded-3xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 mx-auto flex items-center justify-center">
+                <Receipt size={32} />
+              </div>
+              <div className="max-w-sm mx-auto">
+                <h3 className="text-base font-extrabold text-slate-800 dark:text-slate-100">No Invoices Found</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Use the quick instant bill creator above or tap &ldquo;+ Create Invoice&rdquo; to issue an instant receipt linked to Daybook Sales.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsInstantInvoiceModalOpen(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all active:scale-95 inline-flex items-center gap-1.5"
+              >
+                <Plus size={15} />
+                <span>Create Instant Invoice</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {filteredInvoices.map(inv => {
+                const isCheque = inv.paymentMethod === 'Cheque';
+                const refDisplay = inv.referenceNo || `INV-${inv.id.slice(0, 6).toUpperCase()}`;
+
+                return (
+                  <div
+                    key={inv.id}
+                    className="bg-white dark:bg-[#131b2a] p-3.5 rounded-2xl border border-slate-200/90 dark:border-[#1e2a3c] flex items-center justify-between gap-3 shadow-xs hover:border-blue-300 dark:hover:border-blue-700 transition-all"
+                  >
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-500 to-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <Receipt size={20} />
+                      </div>
+
+                      <div className="overflow-hidden">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono text-[10px] font-extrabold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 px-2 py-0.5 rounded-md">
+                            #{refDisplay}
+                          </span>
+
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            {inv.category}
+                          </span>
+
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
+                            inv.paymentMethod === 'Bank Transfer'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : inv.paymentMethod === 'Card'
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
+                              : inv.paymentMethod === 'Cheque'
+                              ? 'bg-amber-50 text-amber-800 border-amber-300'
+                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}>
+                            {inv.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
+                             inv.paymentMethod === 'Card' ? <CreditCard size={10} /> :
+                             inv.paymentMethod === 'Cheque' ? <Landmark size={10} /> :
+                             <Banknote size={10} />}
+                            {inv.paymentMethod}
+                          </span>
+
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                            {formatDisplayDate(inv.date)}
+                          </span>
+                        </div>
+
+                        <p className="font-bold text-xs text-slate-900 dark:text-slate-100 mt-1 truncate">
+                          {inv.contactName ? `${inv.contactName} • ` : ''}{inv.description || inv.category}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400">
+                        + LKR {inv.amount.toLocaleString()}
+                      </span>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openInvoiceModalForCashbook(inv);
+                            setInvoiceFormat('POS');
+                          }}
+                          className="px-2 py-1 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95 flex items-center gap-1"
+                          title="Print POS (80mm) Thermal Receipt"
+                        >
+                          <Printer size={12} />
+                          <span className="hidden sm:inline">POS</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openInvoiceModalForCashbook(inv);
+                            setInvoiceFormat('A4');
+                          }}
+                          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95 flex items-center gap-1"
+                          title="View / Download A4 PDF Invoice"
+                        >
+                          <FileText size={12} />
+                          <span className="hidden sm:inline">A4</span>
+                        </button>
+
+                        {userCanDelete && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCashbookEntry(inv.id)}
+                            className="p-1 text-slate-400 hover:text-red-600 rounded-lg transition-colors"
+                            title="Delete Invoice"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Bottom Navigation */}
+        <BottomNav currentView={currentView} onNavigate={(v) => navigateTo(v)} activeTheme="blue" />
+      </div>
+    );
+  };
+
   // 1. Initial Session Loading from Supabase
   if (isAuthLoading || (authUser && isProfileLoading && !userProfile)) {
     return (
@@ -8731,6 +9726,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   else if (currentView === 'CONTACT_FORM') content = renderContactForm();
   else if (currentView === 'PROFILE') content = renderProfile();
   else if (currentView === 'CASH_BOOK') content = renderCashBook();
+  else if (currentView === 'INVOICE') content = renderInvoiceView();
   else content = <div className="min-h-screen flex items-center justify-center bg-white"><Loader2 className="animate-spin text-slate-200" size={40} /></div>;
 
   return (
@@ -8739,6 +9735,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderReportModal()}
       {renderPreviewModal()}
       {renderInvoiceModal()}
+      {renderInstantInvoiceModal()}
       {renderUserModal()}
       {renderPasswordModal()}
       {renderWipeModal()}
