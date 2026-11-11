@@ -299,11 +299,11 @@ export default function App() {
   
 const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***`;
 
-  const [shopName, setShopName] = useState<string>('');
-  const [shopTagline, setShopTagline] = useState<string>('Mobile Phone Repair & Service');
-  const [shopPhone, setShopPhone] = useState<string>('');
-  const [shopAddress, setShopAddress] = useState<string>('');
-  const [shopLogo, setShopLogo] = useState<string | null>(null);
+  const [shopName, setShopName] = useState<string>(() => localStorage.getItem('st_shop_name') || '');
+  const [shopTagline, setShopTagline] = useState<string>(() => localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
+  const [shopPhone, setShopPhone] = useState<string>(() => localStorage.getItem('st_shop_phone') || '');
+  const [shopAddress, setShopAddress] = useState<string>(() => localStorage.getItem('st_shop_address') || '');
+  const [shopLogo, setShopLogo] = useState<string | null>(() => localStorage.getItem('st_shop_logo') || null);
   const [shopReceiptTerms, setShopReceiptTerms] = useState<string>(() => {
     return localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS;
   });
@@ -1006,29 +1006,37 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
         // Top Header
         doc.setFillColor(30, 41, 59); // slate-800
-        doc.rect(0, 0, 210, 28, 'F');
+        doc.rect(0, 0, 210, 32, 'F');
 
         let titleX = 14;
         if (shopLogo && shopLogo.startsWith('data:image/')) {
           try {
-            doc.addImage(shopLogo, 'PNG', 12, 5, 18, 18);
-            titleX = 35;
+            doc.addImage(shopLogo, 'PNG', 12, 5, 22, 22);
+            titleX = 38;
           } catch (e) {
             console.error('Logo render error', e);
           }
         }
 
         doc.setTextColor(255, 255, 255);
-        doc.setFontSize(18);
+        doc.setFontSize(16);
         doc.setFont('helvetica', 'bold');
-        doc.text(shopName.toUpperCase(), titleX, 14);
+        doc.text((shopName || 'SMART TIME').toUpperCase(), titleX, 13);
 
-        doc.setFontSize(9);
+        doc.setFontSize(8.5);
         doc.setFont('helvetica', 'normal');
-        doc.text(shopTagline.toUpperCase(), titleX, 21);
+        doc.text(shopTagline.toUpperCase(), titleX, 19);
+
+        if (shopAddress || shopPhone) {
+          doc.setFontSize(8);
+          doc.setTextColor(203, 213, 225);
+          const headerInfo = [shopAddress, shopPhone ? `Tel: ${shopPhone}` : ''].filter(Boolean).join(' • ');
+          doc.text(headerInfo.slice(0, 65), titleX, 25);
+        }
 
         doc.setFontSize(11);
         doc.setFont('helvetica', 'bold');
+        doc.setTextColor(255, 255, 255);
         doc.text(`JOB NO: #${orderNo}`, 196, 15, { align: 'right' });
         doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
@@ -1038,25 +1046,25 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         doc.setTextColor(30, 41, 59);
         doc.setFontSize(11);
         doc.setFont('helvetica', 'bold');
-        doc.text('Customer Information', 14, 38);
-        doc.text('Device & Service Details', 115, 38);
+        doc.text('Customer Information', 14, 42);
+        doc.text('Device & Service Details', 115, 42);
 
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.text(`Customer Name : ${contact.name}`, 14, 46);
-        doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 52);
-        doc.text(`Device Issue  : ${contact.deviceIssue || 'General Service & Repair'}`, 14, 58);
-        doc.text(`Service Type  : Walk-in Repair Order`, 14, 64);
+        doc.setFontSize(9.5);
+        doc.text(`Customer Name : ${contact.name}`, 14, 50);
+        doc.text(`Contact Phone : ${contact.phone || 'N/A'}`, 14, 56);
+        doc.text(`Device Issue  : ${contact.deviceIssue || 'General Service & Repair'}`, 14, 62);
+        doc.text(`Service Type  : Walk-in Repair Order`, 14, 68);
 
         const itemsArr = contact.collectedItems || [];
         const itemsStr = itemsArr.length > 0 
           ? (itemsArr.join(', ') + (contact.otherCollectedItems ? `, ${contact.otherCollectedItems}` : ''))
           : (contact.otherCollectedItems || 'Device Only');
 
-        doc.text(`Phone Model   : ${contact.phoneModel || 'N/A'}`, 115, 46);
-        doc.text(`Items Taken   : ${itemsStr.length > 38 ? itemsStr.slice(0, 35) + '...' : itemsStr}`, 115, 52);
-        doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 58);
-        doc.text(`Receipt Time  : ${timeStr}`, 115, 64);
+        doc.text(`Phone Model   : ${contact.phoneModel || 'N/A'}`, 115, 50);
+        doc.text(`Items Taken   : ${itemsStr.length > 38 ? itemsStr.slice(0, 35) + '...' : itemsStr}`, 115, 56);
+        doc.text(`Repair Status : ${(contact.serviceStatus || 'Pending').toUpperCase()}`, 115, 62);
+        doc.text(`Receipt Time  : ${timeStr}`, 115, 68);
 
         // Table 1: Service Charges Breakdown
         const chargeRows = chargesToRender.length > 0
@@ -1070,7 +1078,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           : [['1', formatDisplayDate(contact.orderDate || new Date().toISOString().slice(0, 10)), 'Device Service & Repair Charge', contact.phoneModel || '-', `LKR ${totalCalculatedCost.toLocaleString()}`]];
 
         autoTable(doc, {
-          startY: 72,
+          startY: 76,
           head: [['#', 'Date', 'Charge / Item Description', 'Device / Model', 'Charge Amount (LKR)']],
           body: chargeRows,
           theme: 'striped',
@@ -1229,11 +1237,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const isCashbook = type === 'CASHBOOK';
     const isTx = type === 'TRANSACTION';
 
-    const invoiceNo = isCashbook
-      ? `INV-${item.referenceNo || item.id.slice(0, 6).toUpperCase()}`
-      : isTx
-      ? `INV-${item.id.slice(0, 6).toUpperCase()}`
-      : `SO-${item.id.slice(0, 6).toUpperCase()}`;
+    const rawRef = String(isCashbook ? (item.referenceNo || item.id) : item.id || '').replace(/^#+/, '').trim();
+    const invoiceNo = rawRef.toUpperCase().startsWith('INV-') || rawRef.toUpperCase().startsWith('SO-')
+      ? rawRef.toUpperCase()
+      : isCashbook || isTx
+      ? `INV-${rawRef.slice(0, 6).toUpperCase()}`
+      : `SO-${rawRef.slice(0, 6).toUpperCase()}`;
 
     const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
     const dateStr = formatDisplayDate(rawDate);
@@ -1263,7 +1272,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
       doc.setFont('courier', 'bold');
       doc.setFontSize(13);
-      doc.text(shopName.toUpperCase(), 40, y, { align: 'center' });
+      doc.text((shopName || 'SMART TIME').toUpperCase(), 40, y, { align: 'center' });
 
       y += 5;
       doc.setFont('courier', 'normal');
@@ -1345,53 +1354,61 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       });
 
       doc.setFillColor(30, 41, 59);
-      doc.rect(0, 0, 210, 28, 'F');
+      doc.rect(0, 0, 210, 32, 'F');
 
       let titleX = 14;
       if (shopLogo && shopLogo.startsWith('data:image/')) {
         try {
-          doc.addImage(shopLogo, 'PNG', 12, 5, 18, 18);
-          titleX = 35;
+          doc.addImage(shopLogo, 'PNG', 12, 5, 22, 22);
+          titleX = 38;
         } catch (e) {
           console.error('Logo render error', e);
         }
       }
 
       doc.setTextColor(255, 255, 255);
-      doc.setFontSize(18);
+      doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
-      doc.text(shopName.toUpperCase(), titleX, 14);
+      doc.text((shopName || 'SMART TIME').toUpperCase(), titleX, 13);
 
-      doc.setFontSize(9);
+      doc.setFontSize(8.5);
       doc.setFont('helvetica', 'normal');
-      doc.text(shopTagline.toUpperCase(), titleX, 21);
+      doc.text(shopTagline.toUpperCase(), titleX, 19);
+
+      if (shopAddress || shopPhone) {
+        doc.setFontSize(8);
+        doc.setTextColor(203, 213, 225);
+        const headerInfo = [shopAddress, shopPhone ? `Tel: ${shopPhone}` : ''].filter(Boolean).join(' • ');
+        doc.text(headerInfo.slice(0, 65), titleX, 25);
+      }
 
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
+      doc.setTextColor(255, 255, 255);
       doc.text(`INVOICE: #${invoiceNo}`, 196, 15, { align: 'right' });
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.text(`Date: ${dateStr}`, 196, 22, { align: 'right' });
 
-      // Customer Details Box
+      // Customer Details Box & Shop Information
       doc.setTextColor(30, 41, 59);
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
-      doc.text('Billed To (Customer Information)', 14, 38);
-      doc.text('Shop Information', 115, 38);
+      doc.text('Billed To (Customer Information)', 14, 42);
+      doc.text('Shop Information', 115, 42);
 
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.text(`Customer Name : ${customerName}`, 14, 46);
-      doc.text(`Phone Number  : ${customerPhone}`, 14, 52);
-      doc.text(`Payment Method: ${paymentMethod}`, 14, 58);
+      doc.setFontSize(9.5);
+      doc.text(`Customer Name : ${customerName}`, 14, 50);
+      doc.text(`Phone Number  : ${customerPhone}`, 14, 56);
+      doc.text(`Payment Method: ${paymentMethod}`, 14, 62);
 
-      doc.text(`Store Name : ${shopName}`, 115, 46);
-      doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 52);
-      doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 58);
+      doc.text(`Store Name : ${shopName || 'SMART TIME'}`, 115, 50);
+      doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 56);
+      doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 62);
 
       autoTable(doc, {
-        startY: 68,
+        startY: 72,
         head: [['#', 'Item / Category', 'Description', 'Payment Method', 'Total Amount (LKR)']],
         body: [
           ['1', categoryName, description, paymentMethod, `LKR ${amount.toLocaleString()}`]
@@ -1401,7 +1418,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         styles: { fontSize: 10, cellPadding: 4 }
       });
 
-      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : 90;
+      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : 94;
 
       // Summary Box
       doc.setFillColor(248, 250, 252);
@@ -1438,11 +1455,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     if (!invoiceModalItem) return null;
     const { item, contact, type } = invoiceModalItem;
 
-    const invoiceNo = type === 'CASHBOOK'
-      ? `INV-${item.referenceNo || item.id.slice(0, 6).toUpperCase()}`
-      : type === 'TRANSACTION'
-      ? `INV-${item.id.slice(0, 6).toUpperCase()}`
-      : `SO-${item.id.slice(0, 6).toUpperCase()}`;
+    const rawRef = String(type === 'CASHBOOK' ? (item.referenceNo || item.id) : item.id || '').replace(/^#+/, '').trim();
+    const invoiceNo = rawRef.toUpperCase().startsWith('INV-') || rawRef.toUpperCase().startsWith('SO-')
+      ? rawRef.toUpperCase()
+      : type === 'CASHBOOK' || type === 'TRANSACTION'
+      ? `INV-${rawRef.slice(0, 6).toUpperCase()}`
+      : `SO-${rawRef.slice(0, 6).toUpperCase()}`;
 
     const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
     const dateStr = formatDisplayDate(rawDate);
@@ -1455,7 +1473,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
     const shareToWhatsApp = () => {
-      const shareText = `🧾 *${shopName.toUpperCase()} - INVOICE / RECEIPT*\n` +
+      const shareText = `🧾 *${(shopName || 'SMART TIME').toUpperCase()} - INVOICE / RECEIPT*\n` +
+        (shopAddress ? `📍 ${shopAddress}\n` : '') +
+        (shopPhone ? `📞 ${shopPhone}\n` : '') +
         `Ref #: #${invoiceNo}\n` +
         `Date: ${dateStr}\n` +
         `Customer: ${customerName}\n` +
@@ -1473,7 +1493,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     };
 
     const copyInvoiceText = () => {
-      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}\nMethod: ${paymentMethod}\nStore: ${shopName}`;
+      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}\nMethod: ${paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
       navigator.clipboard.writeText(text);
       showProfileToast('Invoice details copied to clipboard!');
     };
@@ -1535,7 +1555,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   </div>
                 )}
                 <div className="text-center border-b border-dashed border-slate-300 pb-3">
-                  <h4 className="font-extrabold text-sm uppercase tracking-wide">{shopName}</h4>
+                  <h4 className="font-extrabold text-sm uppercase tracking-wide">{shopName || 'SMART TIME'}</h4>
                   <p className="text-[10px] text-slate-600 mt-0.5">{shopTagline}</p>
                   {(shopPhone || shopAddress) && (
                     <p className="text-[10px] text-slate-500 mt-0.5">{shopPhone} • {shopAddress}</p>
@@ -1585,14 +1605,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 <div className="bg-slate-900 text-white p-4 rounded-xl flex justify-between items-center">
                   <div className="flex items-center gap-3">
                     {shopLogo && shopLogo.startsWith('data:image/') && (
-                      <img src={shopLogo} alt="Logo" className="w-9 h-9 object-contain bg-white rounded-lg p-0.5" />
+                      <img src={shopLogo} alt="Logo" className="w-10 h-10 object-contain bg-white rounded-lg p-0.5 shrink-0" />
                     )}
                     <div>
-                      <h4 className="font-extrabold text-sm tracking-wide">{shopName.toUpperCase()}</h4>
+                      <h4 className="font-extrabold text-sm tracking-wide">{(shopName || 'SMART TIME').toUpperCase()}</h4>
                       <p className="text-[10px] text-slate-300">{shopTagline}</p>
+                      {(shopAddress || shopPhone) && (
+                        <p className="text-[10px] text-slate-400 mt-0.5 leading-snug">
+                          {[shopAddress, shopPhone ? `Tel: ${shopPhone}` : ''].filter(Boolean).join(' • ')}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <span className="text-[10px] uppercase tracking-wider font-bold text-blue-300">Invoice</span>
                     <p className="font-mono font-bold text-sm">#{invoiceNo}</p>
                   </div>
@@ -1606,8 +1631,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   </div>
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Store & Payment</span>
-                    <p className="font-semibold text-slate-800 text-xs mt-0.5">{shopPhone || 'N/A'}</p>
-                    <p className="text-[11px] font-bold text-emerald-700 mt-0.5">{paymentMethod} Payment</p>
+                    <p className="font-bold text-slate-800 text-xs mt-0.5">{shopName || 'Store'}</p>
+                    {shopAddress && <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">{shopAddress}</p>}
+                    <p className="text-[11px] text-slate-500 mt-0.5">{shopPhone || 'N/A'}</p>
+                    <p className="text-[11px] font-bold text-emerald-700 mt-1">{paymentMethod} Payment</p>
                   </div>
                 </div>
 
@@ -2386,11 +2413,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
           if (mounted) {
             updateUserProfileState(prof);
-            setShopName(prof?.shopName || '');
-            setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
-            setShopPhone(prof?.phone || '');
-            setShopAddress(prof?.address || '');
-            setShopLogo(prof?.logoUrl || null);
+            setShopName(prof?.shopName || localStorage.getItem('st_shop_name') || '');
+            setShopTagline(prof?.tagline || localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
+            setShopPhone(prof?.phone || localStorage.getItem('st_shop_phone') || '');
+            setShopAddress(prof?.address || localStorage.getItem('st_shop_address') || '');
+            setShopLogo(prof?.logoUrl || localStorage.getItem('st_shop_logo') || null);
             setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
 
@@ -2437,11 +2464,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
         if (mounted) {
           updateUserProfileState(prof);
-          setShopName(prof?.shopName || '');
-          setShopTagline(prof?.tagline || 'Mobile Phone Repair & Service');
-          setShopPhone(prof?.phone || '');
-          setShopAddress(prof?.address || '');
-          setShopLogo(prof?.logoUrl || null);
+          setShopName(prof?.shopName || localStorage.getItem('st_shop_name') || '');
+          setShopTagline(prof?.tagline || localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
+          setShopPhone(prof?.phone || localStorage.getItem('st_shop_phone') || '');
+          setShopAddress(prof?.address || localStorage.getItem('st_shop_address') || '');
+          setShopLogo(prof?.logoUrl || localStorage.getItem('st_shop_logo') || null);
           setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
         }
 
