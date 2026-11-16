@@ -492,6 +492,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const [searchQuery, setSearchQuery] = useState('');
   const [filterNeedsAttention, setFilterNeedsAttention] = useState(false);
   const [serviceStatusFilter, setServiceStatusFilter] = useState<'ALL' | 'Pending' | 'In Progress' | 'Ready' | 'Delivered'>('ALL');
+  const [serviceDateFilter, setServiceDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL' | 'CUSTOM'>('ALL');
+  const [serviceCustomStart, setServiceCustomStart] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    return d.toISOString().slice(0, 10);
+  });
+  const [serviceCustomEnd, setServiceCustomEnd] = useState(() => new Date().toISOString().slice(0, 10));
 
   const [addName, setAddName] = useState('');
   const [addPhone, setAddPhone] = useState('');
@@ -3434,7 +3441,52 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const tabNounSingular = activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'account' : 'order';
     const tabNounPlural = activeTab === 'VENDOR' ? 'vendors' : activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
 
-    // Status counts for SERVICE orders
+    // Date range helpers for SERVICE orders
+    const isServiceDateInRange = (dateStr: string | null | undefined) => {
+      if (serviceDateFilter === 'ALL') return true;
+      if (!dateStr) return false;
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10);
+      const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const cleanDate = dateStr.slice(0, 10);
+
+      if (serviceDateFilter === 'TODAY') return cleanDate === todayStr;
+      if (serviceDateFilter === 'YESTERDAY') return cleanDate === yesterdayStr;
+
+      const entryD = normalizeToLocalMidnight(dateStr);
+      if (serviceDateFilter === 'THIS_WEEK') {
+        const dayOfWeek = now.getDay();
+        const diffToMonday = (dayOfWeek + 6) % 7;
+        const weekStart = new Date(now);
+        weekStart.setDate(now.getDate() - diffToMonday);
+        weekStart.setHours(0, 0, 0, 0);
+        return entryD >= weekStart;
+      }
+      if (serviceDateFilter === 'THIS_MONTH') {
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        monthStart.setHours(0, 0, 0, 0);
+        return entryD >= monthStart;
+      }
+      if (serviceDateFilter === 'CUSTOM') {
+        const start = normalizeToLocalMidnight(serviceCustomStart);
+        const end = normalizeToLocalMidnight(serviceCustomEnd);
+        end.setHours(23, 59, 59, 999);
+        return entryD >= start && entryD <= end;
+      }
+      return true;
+    };
+
+    const dateFilteredTabContacts = activeTab === 'SERVICE'
+      ? currentTabContacts.filter(c => {
+          if (serviceDateFilter === 'ALL') return true;
+          const orderD = c.orderDate || (c.lastUpdated ? c.lastUpdated.slice(0, 10) : '');
+          if (isServiceDateInRange(orderD)) return true;
+          const hasTxInRange = transactions.some(t => t.contactId === c.id && isServiceDateInRange(t.date));
+          return hasTxInRange;
+        })
+      : currentTabContacts;
+
+    // Status counts for SERVICE orders (reflecting active date range)
     const serviceCounts = {
       ALL: 0,
       Pending: 0,
@@ -3443,7 +3495,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       Delivered: 0
     };
     if (activeTab === 'SERVICE') {
-      currentTabContacts.forEach(c => {
+      dateFilteredTabContacts.forEach(c => {
         serviceCounts.ALL++;
         const st = c.serviceStatus || 'Pending';
         if (st === 'In Progress') serviceCounts['In Progress']++;
@@ -3453,7 +3505,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       });
     }
 
-    const filtered = currentTabContacts.filter(c => {
+    const filtered = dateFilteredTabContacts.filter(c => {
       // Filter by Service Status if in SERVICE tab
       if (activeTab === 'SERVICE' && serviceStatusFilter !== 'ALL') {
         const itemStatus = c.serviceStatus || 'Pending';
@@ -3672,26 +3724,138 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             </div>
           </div>
 
+          {/* Date Range Filter Chips for Service Orders */}
+          {activeTab === 'SERVICE' && (
+            <div className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                {[
+                  { id: 'TODAY', label: 'Today' },
+                  { id: 'YESTERDAY', label: 'Yesterday' },
+                  { id: 'THIS_WEEK', label: 'This Week' },
+                  { id: 'THIS_MONTH', label: 'This Month' },
+                  { id: 'ALL', label: 'All Time' },
+                  { id: 'CUSTOM', label: 'Custom Range' },
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setServiceDateFilter(f.id as any)}
+                    className={`py-1.5 px-3.5 rounded-full text-xs font-bold transition-all shrink-0 border ${
+                      serviceDateFilter === f.id
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                        : 'bg-white dark:bg-[#131b2a] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#1e2a3c] hover:bg-slate-100 dark:hover:bg-[#1a2332]'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {serviceDateFilter === 'CUSTOM' && (
+                <div className="p-3 bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/90 dark:border-blue-800/50 rounded-2xl flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
+                  <div className="flex items-center gap-2 flex-1 min-w-[140px]">
+                    <span className="font-bold text-blue-900 dark:text-blue-300 uppercase text-[10px]">From:</span>
+                    <input
+                      type="date"
+                      value={serviceCustomStart}
+                      onChange={e => setServiceCustomStart(e.target.value)}
+                      className="bg-white dark:bg-[#0d131f] border border-blue-200 dark:border-blue-800/50 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 outline-none w-full"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 flex-1 min-w-[140px]">
+                    <span className="font-bold text-blue-900 dark:text-blue-300 uppercase text-[10px]">To:</span>
+                    <input
+                      type="date"
+                      value={serviceCustomEnd}
+                      onChange={e => setServiceCustomEnd(e.target.value)}
+                      className="bg-white dark:bg-[#0d131f] border border-blue-200 dark:border-blue-800/50 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 outline-none w-full"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 3 KPI Summary Cards (matching image attachment) */}
+          {(() => {
+            let serviceOutstanding = 0;
+            let serviceOrderValue = 0;
+            let servicePaidValue = 0;
+            let servicePaidCount = 0;
+
+            if (activeTab === 'SERVICE') {
+              const serviceContactIds = new Set(currentTabContacts.map(c => c.id));
+              const filteredIds = new Set(filtered.map(c => c.id));
+
+              filtered.forEach(c => {
+                const stats = contactStats[c.id];
+                const totalCost = stats?.totalCredit || c.totalCost || c.targetAmount || 0;
+                const totalPaid = stats?.totalPayment || c.advancePayment || 0;
+                const bal = totalCost - totalPaid;
+                if (bal > 0) serviceOutstanding += bal;
+                serviceOrderValue += totalCost;
+              });
+
+              const ordersWithPaymentTx = new Set<string>();
+              transactions.forEach(t => {
+                if (!serviceContactIds.has(t.contactId)) return;
+                if (t.type !== 'PAYMENT' || isPendingCheque(t)) return;
+                ordersWithPaymentTx.add(t.contactId);
+                // If user has filtered by status/search, scope to matching orders when non-empty; otherwise all matching period
+                if ((serviceStatusFilter !== 'ALL' || searchQuery.trim()) && !filteredIds.has(t.contactId)) return;
+                if (isServiceDateInRange(t.date)) {
+                  servicePaidValue += t.amount;
+                  servicePaidCount += 1;
+                }
+              });
+
+              // Fallback for local/offline service orders created without transaction records
+              filtered.forEach(c => {
+                if (!ordersWithPaymentTx.has(c.id) && (c.advancePayment || 0) > 0) {
+                  const advDate = c.advanceDate || c.orderDate || (c.lastUpdated ? c.lastUpdated.slice(0, 10) : '');
+                  if (isServiceDateInRange(advDate)) {
+                    servicePaidValue += c.advancePayment || 0;
+                    servicePaidCount += 1;
+                  }
+                }
+              });
+            }
+
+            const paidLabel = activeTab === 'SERVICE'
+              ? serviceDateFilter === 'TODAY' ? 'Paid today'
+                : serviceDateFilter === 'YESTERDAY' ? 'Paid yesterday'
+                : serviceDateFilter === 'THIS_WEEK' ? 'Paid this week'
+                : serviceDateFilter === 'THIS_MONTH' ? 'Paid this month'
+                : serviceDateFilter === 'CUSTOM' ? 'Paid (custom range)'
+                : 'Paid (all time)'
+              : 'Paid this month';
+
+            return (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Card 1: Total Outstanding */}
             <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
               <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Total outstanding</p>
               <div>
-                <p className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-1">LKR {activeTotals.netBalance.toLocaleString()}</p>
+                <p className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-1">
+                  LKR {(activeTab === 'SERVICE' ? serviceOutstanding : activeTotals.netBalance).toLocaleString()}
+                </p>
                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">
-                  Across {filtered.length} {activeTab.toLowerCase()}{filtered.length === 1 ? '' : 's'}
+                  Across {filtered.length} {activeTab === 'SERVICE' ? `service${filtered.length === 1 ? '' : 's'} · Value: LKR ${serviceOrderValue.toLocaleString()}` : `${activeTab.toLowerCase()}${filtered.length === 1 ? '' : 's'}`}
                 </p>
               </div>
             </div>
 
-            {/* Card 2: Paid This Month */}
+            {/* Card 2: Paid Value */}
             <div className="bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#1e2a3c] rounded-2xl p-4 shadow-xs flex flex-col justify-between min-h-[90px] transition-colors">
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Paid this month</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">{paidLabel}</p>
               <div>
-                <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">LKR {activeTotals.totalPayments.toLocaleString()}</p>
+                <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                  LKR {(activeTab === 'SERVICE' ? servicePaidValue : activeTotals.totalPayments).toLocaleString()}
+                </p>
                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">
-                  Across settled transactions
+                  {activeTab === 'SERVICE'
+                    ? `${servicePaidCount} settled transaction${servicePaidCount === 1 ? '' : 's'}${serviceDateFilter === 'CUSTOM' ? ` · ${formatDisplayDate(serviceCustomStart)} – ${formatDisplayDate(serviceCustomEnd)}` : ''}`
+                    : 'Across settled transactions'}
                 </p>
               </div>
             </div>
@@ -3734,6 +3898,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               </div>
             </div>
           </div>
+            );
+          })()}
 
           {/* Today's Sales & Expenses Widget (matching image attachment) */}
           <div 
@@ -3990,24 +4156,39 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">
                       {serviceStatusFilter !== 'ALL' 
                         ? `No "${serviceStatusFilter}" service orders found` 
-                        : 'No service orders found'}
+                        : serviceDateFilter !== 'ALL'
+                          ? 'No service orders found in selected period'
+                          : 'No service orders found'}
                     </h3>
                     <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mb-4">
                       {serviceStatusFilter !== 'ALL' 
                         ? `There are currently no repair orders marked as "${serviceStatusFilter}".` 
-                        : searchQuery 
-                          ? `No orders matching "${searchQuery}". Try a different keyword.` 
-                          : 'Create a new service order to track repairs, status, and payments.'}
+                        : serviceDateFilter !== 'ALL'
+                          ? 'No service orders or payments were recorded in this date range.'
+                          : searchQuery 
+                            ? `No orders matching "${searchQuery}". Try a different keyword.` 
+                            : 'Create a new service order to track repairs, status, and payments.'}
                     </p>
-                    {serviceStatusFilter !== 'ALL' && (
-                      <button
-                        type="button"
-                        onClick={() => setServiceStatusFilter('ALL')}
-                        className="px-4 py-2 bg-slate-900 text-white dark:bg-white dark:text-slate-900 rounded-xl text-xs font-bold hover:opacity-90 transition-all shadow-xs"
-                      >
-                        Show All Service Orders ({serviceCounts.ALL})
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2 flex-wrap justify-center">
+                      {serviceStatusFilter !== 'ALL' && (
+                        <button
+                          type="button"
+                          onClick={() => setServiceStatusFilter('ALL')}
+                          className="px-4 py-2 bg-slate-900 text-white dark:bg-white dark:text-slate-900 rounded-xl text-xs font-bold hover:opacity-90 transition-all shadow-xs"
+                        >
+                          Show All Statuses ({serviceCounts.ALL})
+                        </button>
+                      )}
+                      {serviceDateFilter !== 'ALL' && (
+                        <button
+                          type="button"
+                          onClick={() => setServiceDateFilter('ALL')}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-xs"
+                        >
+                          Show All Time
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   filtered.map(c => {
