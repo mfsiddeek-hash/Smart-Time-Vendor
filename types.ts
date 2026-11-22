@@ -41,6 +41,7 @@ export interface Transaction {
   balanceAfter: number;
   hasAttachment?: boolean;
   attachmentUrl?: string | null;
+  attachmentDocType?: 'Cheque' | 'Invoice';
 }
 
 export interface SummaryStats {

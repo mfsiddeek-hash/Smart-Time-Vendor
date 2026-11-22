@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt } from 'lucide-react';
+import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye } from 'lucide-react';
 import { Transaction, PaymentMethod, ChequeStatus, ContactType } from '../types';
 
 export interface ParsedTransactionMetadata {
@@ -122,9 +122,10 @@ interface TransactionRowProps {
   onClick?: (transaction: Transaction) => void;
   onPassCheque?: (transaction: Transaction) => void;
   onViewInvoice?: (transaction: Transaction) => void;
+  onViewAttachment?: (url: string, docType?: 'Cheque' | 'Invoice') => void;
 }
 
-export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque, onViewInvoice }) => {
+export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque, onViewInvoice, onViewAttachment }) => {
   const isPayment = transaction.type === 'PAYMENT';
   const parsed = parsePaymentMethod(
     transaction.description, 
@@ -232,10 +233,38 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             ) : null)}
           </div>
 
-          {transaction.hasAttachment && (
-            <div className="w-8 h-10 border border-slate-200 dark:border-slate-700 rounded flex items-center justify-center bg-slate-50 dark:bg-slate-800 mt-1">
-              <FileText size={14} className="text-slate-400" />
-            </div>
+          {(transaction.attachmentUrl || transaction.hasAttachment) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (transaction.attachmentUrl && onViewAttachment) {
+                  onViewAttachment(transaction.attachmentUrl, transaction.attachmentDocType || 'Cheque');
+                }
+              }}
+              className="mt-1 inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/30 hover:bg-amber-100/80 dark:hover:bg-amber-950/50 transition-all w-fit active:scale-95"
+              title="View Attached Cheque / Invoice"
+            >
+              {transaction.attachmentUrl && transaction.attachmentUrl.startsWith('data:image/') ? (
+                <img
+                  src={transaction.attachmentUrl}
+                  alt={transaction.attachmentDocType || 'Cheque / Invoice'}
+                  className="w-8 h-6 object-cover rounded border border-amber-300 dark:border-amber-700 shrink-0"
+                />
+              ) : (
+                <div className="w-7 h-6 rounded bg-white dark:bg-[#1a2538] border border-amber-200 dark:border-amber-800 flex items-center justify-center shrink-0">
+                  {transaction.attachmentUrl?.startsWith('data:application/pdf') ? (
+                    <FileText size={13} className="text-rose-600" />
+                  ) : (
+                    <ImageIcon size={13} className="text-amber-600" />
+                  )}
+                </div>
+              )}
+              <span className="text-[11px] font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1">
+                <span>{transaction.attachmentDocType || 'Cheque / Invoice'}</span>
+                {transaction.attachmentUrl && <Eye size={11} className="opacity-75" />}
+              </span>
+            </button>
           )}
         </div>
 

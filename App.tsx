@@ -523,6 +523,176 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const [transChequeNumber, setTransChequeNumber] = useState('');
   const [transChequeDate, setTransChequeDate] = useState(new Date().toISOString().slice(0, 10));
   const [transChequeStatus, setTransChequeStatus] = useState<ChequeStatus>('PENDING');
+  const [transAttachmentUrl, setTransAttachmentUrl] = useState<string | null>(null);
+  const [transAttachmentDocType, setTransAttachmentDocType] = useState<'Cheque' | 'Invoice'>('Cheque');
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment');
+  const [viewingAttachment, setViewingAttachment] = useState<{ url: string; title: string } | null>(null);
+
+  const transUploadInputRef = useRef<HTMLInputElement>(null);
+  const transCameraInputRef = useRef<HTMLInputElement>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+
+  const getTxAttachmentsMap = (uid?: string): Record<string, { url: string; docType?: 'Cheque' | 'Invoice' }> => {
+    try {
+      const key = uid ? `st_tx_attachments_${uid}` : 'st_tx_attachments';
+      const raw = localStorage.getItem(key) || localStorage.getItem('st_tx_attachments');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const saveTxAttachment = (txId: string, url: string | null, docType: 'Cheque' | 'Invoice' = 'Cheque', uid?: string) => {
+    try {
+      const targetUid = uid || authUser?.id;
+      const key = targetUid ? `st_tx_attachments_${targetUid}` : 'st_tx_attachments';
+      const map = getTxAttachmentsMap(targetUid);
+      if (url) {
+        map[txId] = { url, docType };
+      } else {
+        delete map[txId];
+      }
+      localStorage.setItem(key, JSON.stringify(map));
+      localStorage.setItem('st_tx_attachments', JSON.stringify(map));
+    } catch (e) {
+      console.warn('Could not persist attachment in localStorage:', e);
+    }
+  };
+
+  const stopCameraStream = () => {
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach(track => track.stop());
+      cameraStreamRef.current = null;
+    }
+  };
+
+  const startCameraStream = async (facing: 'environment' | 'user' = cameraFacingMode) => {
+    stopCameraStream();
+    setCameraError(null);
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Live browser camera is not supported here. Use the device camera button below.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      cameraStreamRef.current = stream;
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        await cameraVideoRef.current.play().catch(() => {});
+      }
+    } catch (err: any) {
+      console.warn('Camera access warning:', err);
+      setCameraError('Camera permission denied or no camera detected. You can still take a photo or select an image using the button below.');
+    }
+  };
+
+  const handleOpenCamera = () => {
+    setIsCameraModalOpen(true);
+    setTimeout(() => {
+      startCameraStream(cameraFacingMode);
+    }, 60);
+  };
+
+  const handleCloseCamera = () => {
+    stopCameraStream();
+    setIsCameraModalOpen(false);
+    setCameraError(null);
+  };
+
+  const handleCaptureCameraPhoto = () => {
+    const video = cameraVideoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    const MAX = 1200;
+    let w = video.videoWidth;
+    let h = video.videoHeight;
+    if (w > h) {
+      if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
+    } else {
+      if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
+    }
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      setTransAttachmentUrl(dataUrl);
+      showProfileToast(`${transAttachmentDocType} photo captured!`);
+    }
+    handleCloseCamera();
+  };
+
+  const handleTransAttachmentFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type === 'application/pdf') {
+      if (file.size > 1.8 * 1024 * 1024) {
+        showProfileToast('PDF file must be under 1.8 MB', 'error');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = ev.target?.result as string;
+        if (result) {
+          setTransAttachmentUrl(result);
+          showProfileToast(`${transAttachmentDocType} PDF uploaded!`);
+          if (isCameraModalOpen) {
+            handleCloseCamera();
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      showProfileToast('Please upload an image (JPG, PNG) or PDF file', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX = 1200;
+        let w = img.width;
+        let h = img.height;
+        if (w > h) {
+          if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
+        } else {
+          if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          setTransAttachmentUrl(dataUrl);
+          showProfileToast(`${transAttachmentDocType} photo uploaded!`);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+    if (isCameraModalOpen) {
+      handleCloseCamera();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+    };
+  }, []);
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [reportRange, setReportRange] = useState({
@@ -2244,16 +2414,23 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
 
       if (transRes.data) {
-        mappedTx = transRes.data.map((t: any) => ({
-          id: t.id, 
-          userId: t.user_id,
-          contactId: t.contact_id, 
-          date: t.date, 
-          description: t.description,
-          amount: t.amount, 
-          type: t.type, 
-          balanceAfter: t.balance_after
-        }));
+        const attachMap = getTxAttachmentsMap(activeUid);
+        mappedTx = transRes.data.map((t: any) => {
+          const att = attachMap[t.id];
+          return {
+            id: t.id, 
+            userId: t.user_id,
+            contactId: t.contact_id, 
+            date: t.date, 
+            description: t.description,
+            amount: t.amount, 
+            type: t.type, 
+            balanceAfter: t.balance_after,
+            hasAttachment: Boolean(att?.url),
+            attachmentUrl: att?.url || null,
+            attachmentDocType: att?.docType
+          };
+        });
         setTransactions(mappedTx);
         try { 
           localStorage.setItem(`st_cached_transactions_${activeUid}`, JSON.stringify(mappedTx));
@@ -3059,10 +3236,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       // Also remove linked cashbook sale or expense entry
       await removeLinkedCashbookEntry(editingTransaction.id);
+      saveTxAttachment(editingTransaction.id, null);
 
       const newTransactions = transactions.filter(t => t.id !== editingTransaction.id);
       setTransactions(newTransactions);
+      try {
+        const txKey = authUser?.id ? `st_cached_transactions_${authUser.id}` : 'st_cached_transactions';
+        localStorage.setItem(txKey, JSON.stringify(newTransactions));
+        localStorage.setItem('st_cached_transactions', JSON.stringify(newTransactions));
+      } catch {}
       setEditingTransaction(null);
+      setTransAttachmentUrl(null);
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
@@ -3111,8 +3295,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       if (res.error) {
         if (res.error.code === 'PGRST205' || res.error.message?.includes('schema cache') || res.error.message?.includes('not find')) {
           setDbStatus('needs_tables');
+          const txId = editingTransaction ? editingTransaction.id : generateUUID();
+          const activeAttachment = transPaymentMethod === 'Cheque' ? transAttachmentUrl : null;
+          saveTxAttachment(txId, activeAttachment, transAttachmentDocType);
           const fallbackTx: Transaction = {
-            id: editingTransaction ? editingTransaction.id : generateUUID(),
+            id: txId,
             contactId: selectedContact.id,
             date: effectiveTxDate,
             amount: amountVal,
@@ -3122,7 +3309,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
             chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
             description: formattedDesc,
-            balanceAfter: 0
+            balanceAfter: 0,
+            hasAttachment: Boolean(activeAttachment),
+            attachmentUrl: activeAttachment,
+            attachmentDocType: activeAttachment ? transAttachmentDocType : undefined
           };
           if (editingTransaction) {
             setTransactions(prev => prev.map(t => t.id === editingTransaction.id ? fallbackTx : t));
@@ -3177,8 +3367,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         throw res.error;
       }
       if (res.data) {
+        const savedId = res.data[0].id;
+        const activeAttachment = transPaymentMethod === 'Cheque' ? transAttachmentUrl : null;
+        saveTxAttachment(savedId, activeAttachment, transAttachmentDocType);
         const saved: Transaction = { 
-          id: res.data[0].id, 
+          id: savedId, 
           contactId: res.data[0].contact_id, 
           date: res.data[0].date, 
           description: res.data[0].description, 
@@ -3188,13 +3381,20 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           chequeStatus: transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
           chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
           chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
-          balanceAfter: 0 
+          balanceAfter: 0,
+          hasAttachment: Boolean(activeAttachment),
+          attachmentUrl: activeAttachment,
+          attachmentDocType: activeAttachment ? transAttachmentDocType : undefined
         };
-        if (editingTransaction) { 
-          setTransactions(transactions.map(t => t.id === editingTransaction.id ? saved : t)); 
-        } else { 
-          setTransactions([saved, ...transactions]); 
-        }
+        const updatedTxList = editingTransaction
+          ? transactions.map(t => t.id === editingTransaction.id ? saved : t)
+          : [saved, ...transactions];
+        setTransactions(updatedTxList);
+        try {
+          const txKey = authUser?.id ? `st_cached_transactions_${authUser.id}` : 'st_cached_transactions';
+          localStorage.setItem(txKey, JSON.stringify(updatedTxList));
+          localStorage.setItem('st_cached_transactions', JSON.stringify(updatedTxList));
+        } catch {}
 
         // Link to Cashbook:
         // Customer got money -> Sales
@@ -3237,6 +3437,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         }
       }
       setEditingTransaction(null);
+      setTransAttachmentUrl(null);
+      setTransAttachmentDocType('Cheque');
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
@@ -3711,6 +3913,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 onClick={() => {
                   if (filtered.length > 0) {
                     setSelectedContact(filtered[0]);
+                    setEditingTransaction(null);
+                    setTransType('PAYMENT');
+                    setTransAmount('');
+                    setTransDesc('');
+                    setTransDate(new Date().toISOString().slice(0, 10));
+                    setTransPaymentMethod('Cash');
+                    setTransChequeStatus('PENDING');
+                    setTransChequeNumber('');
+                    setTransChequeDate(new Date().toISOString().slice(0, 10));
+                    setTransAttachmentUrl(null);
+                    setTransAttachmentDocType('Cheque');
                     navigateTo('TRANSACTION_FORM');
                   } else {
                     navigateTo('CONTACT_FORM');
@@ -5040,6 +5253,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     setTransDate(new Date().toISOString().slice(0, 10));
                     setTransDesc('Payment');
                     setTransPaymentMethod('Cash');
+                    setTransChequeStatus('PENDING');
+                    setTransChequeNumber('');
+                    setTransChequeDate(new Date().toISOString().slice(0, 10));
+                    setTransAttachmentUrl(null);
+                    setTransAttachmentDocType('Cheque');
                     navigateTo('TRANSACTION_FORM', selectedContact.id);
                   }}
                   className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
@@ -5074,6 +5292,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                           setTransChequeNumber(parsed.chequeNumber || p.chequeNumber || '');
                           setTransChequeDate(parsed.chequeDate || p.chequeDate || p.date);
                           setTransDesc(parsed.cleanNotes);
+                          setTransAttachmentUrl(p.attachmentUrl || null);
+                          setTransAttachmentDocType(p.attachmentDocType || 'Cheque');
                           navigateTo('TRANSACTION_FORM', selectedContact.id);
                         }}
                         className={`py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group ${
@@ -5309,6 +5529,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 contactType={selectedContact.type}
                 onPassCheque={handleQuickPassCheque}
                 onViewInvoice={openInvoiceModalForTransaction}
+                onViewAttachment={(url, docType) => setViewingAttachment({ url, title: `${docType || 'Cheque / Invoice'} Attachment` })}
                 onClick={(tx) => { 
                   const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
                   setEditingTransaction(tx); 
@@ -5320,6 +5541,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   setTransChequeNumber(parsed.chequeNumber || tx.chequeNumber || '');
                   setTransChequeDate(parsed.chequeDate || tx.chequeDate || tx.date);
                   setTransDesc(parsed.cleanNotes || (parsed.method ? '' : (tx.description || ''))); 
+                  setTransAttachmentUrl(tx.attachmentUrl || null);
+                  setTransAttachmentDocType(tx.attachmentDocType || 'Cheque');
                   navigateTo('TRANSACTION_FORM', selectedContact.id); 
                 }} 
               />
@@ -5328,11 +5551,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           </div>
         )}
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
-          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
-          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <div className="flex items-center gap-1.5">
                <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
                <span className="text-[9px] bg-white/25 text-white px-1.5 py-0.2 rounded font-extrabold uppercase">
@@ -5704,6 +5927,105 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       placeholder="e.g. 102948 or CHQ-001"
                       className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-amber-600 transition-colors"
                     />
+                  </div>
+
+                  {/* Cheque or Invoice Photo Upload & Camera Capture */}
+                  <div className="pt-2 border-t border-amber-200/80 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-[10px] font-bold text-amber-950 uppercase tracking-wider flex items-center gap-1.5">
+                        <ImageIcon size={13} className="text-amber-700" />
+                        <span>Attach Cheque or Invoice (Optional)</span>
+                      </label>
+                      <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-amber-200">
+                        {(['Cheque', 'Invoice'] as const).map(docType => (
+                          <button
+                            key={docType}
+                            type="button"
+                            onClick={() => setTransAttachmentDocType(docType)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all ${
+                              transAttachmentDocType === docType
+                                ? 'bg-amber-600 text-white shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            {docType}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Hidden File & Native Camera Inputs */}
+                    <input
+                      ref={transUploadInputRef}
+                      type="file"
+                      accept="image/*,application/pdf"
+                      onChange={handleTransAttachmentFileChange}
+                      className="hidden"
+                    />
+                    <input
+                      ref={transCameraInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleTransAttachmentFileChange}
+                      className="hidden"
+                    />
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => transUploadInputRef.current?.click()}
+                        className="py-2.5 px-3 bg-white hover:bg-amber-100/60 text-amber-950 border border-amber-300 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-2xs active:scale-95 transition-all"
+                      >
+                        <Upload size={15} className="text-amber-700" />
+                        <span>Upload {transAttachmentDocType}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleOpenCamera}
+                        className="py-2.5 px-3 bg-amber-700 hover:bg-amber-800 text-white border border-amber-800 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm active:scale-95 transition-all"
+                      >
+                        <Camera size={15} />
+                        <span>Camera {transAttachmentDocType}</span>
+                      </button>
+                    </div>
+
+                    {/* Attachment Preview Card */}
+                    {transAttachmentUrl && (
+                      <div className="bg-white border border-amber-300 rounded-xl p-2.5 flex items-center justify-between gap-3 shadow-2xs">
+                        <div
+                          onClick={() => setViewingAttachment({ url: transAttachmentUrl, title: `${transAttachmentDocType} Photo` })}
+                          className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1"
+                        >
+                          {transAttachmentUrl.startsWith('data:image/') ? (
+                            <img
+                              src={transAttachmentUrl}
+                              alt={`${transAttachmentDocType} preview`}
+                              className="w-12 h-12 rounded-lg object-cover border border-amber-200 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0">
+                              <FileText size={20} />
+                            </div>
+                          )}
+                          <div className="overflow-hidden">
+                            <p className="text-xs font-bold text-slate-800 truncate">{transAttachmentDocType} Attached</p>
+                            <p className="text-[10px] text-amber-700 font-semibold flex items-center gap-1">
+                              <Eye size={11} /> Tap to view full size
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setTransAttachmentUrl(null)}
+                          className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg active:scale-95 transition-all shrink-0"
+                          title="Remove attachment"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -10156,6 +10478,148 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderWipeModal()}
       {renderSqlModal()}
       {renderCashbookModal()}
+
+      {/* Live Camera Capture Modal for Cheque / Invoice */}
+      {isCameraModalOpen && (
+        <div className="fixed inset-0 bg-black/85 z-[140] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between text-white">
+              <div className="flex items-center gap-2">
+                <Camera size={18} className="text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-sm">Capture {transAttachmentDocType} Photo</h3>
+                  <p className="text-[10px] text-slate-400">Align the {transAttachmentDocType.toLowerCase()} inside the frame</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseCamera}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="relative bg-black aspect-[4/3] w-full flex items-center justify-center overflow-hidden">
+              {cameraError ? (
+                <div className="p-6 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 mx-auto flex items-center justify-center">
+                    <Camera size={24} />
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">{cameraError}</p>
+                  <button
+                    type="button"
+                    onClick={() => transCameraInputRef.current?.click()}
+                    className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-md active:scale-95 transition-all"
+                  >
+                    <Camera size={15} />
+                    <span>Open Device Camera / Select Photo</span>
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <video
+                    ref={cameraVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-4 border-2 border-dashed border-amber-400/60 rounded-2xl pointer-events-none" />
+                </>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = cameraFacingMode === 'environment' ? 'user' : 'environment';
+                  setCameraFacingMode(next);
+                  startCameraStream(next);
+                }}
+                className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                title="Switch Front/Rear Camera"
+              >
+                <RefreshCw size={14} />
+                <span>Flip</span>
+              </button>
+
+              {!cameraError && (
+                <button
+                  type="button"
+                  onClick={handleCaptureCameraPhoto}
+                  className="flex-1 py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
+                >
+                  <Camera size={16} />
+                  <span>Capture Photo</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => transUploadInputRef.current?.click()}
+                className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+              >
+                <Upload size={14} />
+                <span>Upload</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fullscreen Attachment Preview Modal */}
+      {viewingAttachment && (
+        <div
+          onClick={() => setViewingAttachment(null)}
+          className="fixed inset-0 bg-black/85 z-[150] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="bg-white dark:bg-[#131b2a] w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[90vh]"
+          >
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-[#1e2a3c] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ImageIcon size={18} className="text-amber-600" />
+                <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">{viewingAttachment.title}</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={viewingAttachment.url}
+                  download={`${viewingAttachment.title.replace(/\s+/g, '_')}`}
+                  className="px-3 py-1.5 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-blue-100 transition-colors"
+                >
+                  <Download size={14} />
+                  <span>Download</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setViewingAttachment(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-4 bg-slate-100 dark:bg-[#080d16] flex items-center justify-center">
+              {viewingAttachment.url.startsWith('data:image/') ? (
+                <img
+                  src={viewingAttachment.url}
+                  alt={viewingAttachment.title}
+                  className="max-w-full max-h-[72vh] object-contain rounded-xl shadow-md"
+                />
+              ) : (
+                <iframe
+                  src={viewingAttachment.url}
+                  title={viewingAttachment.title}
+                  className="w-full h-[70vh] rounded-xl border border-slate-200 bg-white"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
