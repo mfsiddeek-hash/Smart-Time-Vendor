@@ -15,7 +15,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, CashbookEntryItem, DaybookStockItem, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
@@ -641,6 +641,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const [transDate, setTransDate] = useState(new Date().toISOString().slice(0, 10));
   const [transDesc, setTransDesc] = useState('');
   const [transPaymentMethod, setTransPaymentMethod] = useState<PaymentMethod>('Cash');
+  const [transCashAmount, setTransCashAmount] = useState('');
   const [transChequeNumber, setTransChequeNumber] = useState('');
   const [transChequeDate, setTransChequeDate] = useState(new Date().toISOString().slice(0, 10));
   const [transChequeStatus, setTransChequeStatus] = useState<ChequeStatus>('PENDING');
@@ -1182,24 +1183,37 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const cType = contactTypeMap.get(t.contactId);
 
       if (isPendingCheque(t)) {
+        const isSplit = parsed.method === 'Cash + Cheque' || t.paymentMethod === 'Cash + Cheque';
+        const chqAmt = getTransactionChequeAmount(t, parsed);
+        const cashAmt = getTransactionCashAmount(t, parsed);
+
         stats[t.contactId].pendingChequesCount += 1;
-        stats[t.contactId].pendingChequesAmount += t.amount;
-        // For CREDIT (e.g. Customer GAVE ITEMS with Pending Cheque), items were delivered so balance is owed until cheque passes.
+        stats[t.contactId].pendingChequesAmount += chqAmt;
+
         if (t.type === 'CREDIT') {
+          // Items delivered: customer owes t.amount. If split: cash portion is already paid, so add to totalPayment
           stats[t.contactId].totalCredit += t.amount;
+          if (isSplit && cashAmt > 0) {
+            stats[t.contactId].totalPayment += cashAmt;
+          }
+        } else {
+          // PAYMENT transaction with pending cheque: if split, cash portion is an immediate payment
+          if (isSplit && cashAmt > 0) {
+            stats[t.contactId].totalPayment += cashAmt;
+          }
         }
         return;
       }
 
       if (t.type === 'CREDIT') {
         stats[t.contactId].totalCredit += t.amount;
-        // Customer CREDIT item sale settled via Cash, Bank Transfer, Card, or Cleared Cheque has matching settled payment
+        // Customer CREDIT item sale settled via Cash, Bank Transfer, Card, or Cleared Cheque / Split has matching settled payment
         const isSettledCustomerSale =
           cType === 'CUSTOMER' &&
           (parsed.method === 'Cash' ||
             parsed.method === 'Bank Transfer' ||
             parsed.method === 'Card' ||
-            (parsed.method === 'Cheque' && parsed.chequeStatus !== 'BOUNCED'));
+            ((parsed.method === 'Cheque' || parsed.method === 'Cash + Cheque') && parsed.chequeStatus !== 'BOUNCED'));
         if (isSettledCustomerSale) {
           stats[t.contactId].totalPayment += t.amount;
         }
@@ -1418,7 +1432,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       tableRows.unshift([reportRange.start, 'Opening Balance', '-', '-', `LKR ${openingBalance.toLocaleString()}`]);
 
       const contactPendingChqs = transactions.filter(t => t.contactId === contact.id && isPendingCheque(t));
-      const totalPendingAmount = contactPendingChqs.reduce((s, t) => s + t.amount, 0);
+      const totalPendingAmount = contactPendingChqs.reduce((s, t) => s + getTransactionChequeAmount(t), 0);
       const estBalIfPass = isRent ? runningBal + totalPendingAmount : runningBal - totalPendingAmount;
 
       const footRows = [['', '', 'TOTAL CLOSING BALANCE', '', `LKR ${runningBal.toLocaleString()}`]];
@@ -1908,7 +1922,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const entryItemsList: CashbookEntryItem[] = Array.isArray(item.items) && item.items.length > 0
       ? item.items
       : extractCashbookItems(item.description).items;
-    const parsedTxMeta = isTx ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : null;
+    const parsedTxMeta = isTx ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
     const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Credit Item Sale') : 'Service Order'));
     const cleanRawDesc = isTx && parsedTxMeta
       ? parsedTxMeta.cleanNotes
@@ -1918,11 +1932,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const paymentMethod = parsedTxMeta?.method || item.paymentMethod || 'Cash';
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
+    const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
+    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? 0) : 0;
+    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
+    const isPending = isTx ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
+    const totalDue = isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0);
+
     if (format === 'POS') {
       const doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [80, 160]
+        format: [80, 175]
       });
 
       let y = 10;
@@ -1968,6 +1988,20 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text(`Phone     : ${customerPhone}`, 6, y);
       y += 4.5;
       doc.text(`Method    : ${paymentMethod}`, 6, y);
+      if (isSplit) {
+        y += 4;
+        doc.text(`Cash Paid : LKR ${splitCash.toLocaleString()}`, 6, y);
+        y += 4;
+        doc.text(`Cheque    : LKR ${splitCheque.toLocaleString()} [${isPending ? 'PENDING' : 'PASSED'}]`, 6, y);
+      }
+      if (parsedTxMeta?.chequeNumber) {
+        y += 4;
+        doc.text(`Cheque #  : #${parsedTxMeta.chequeNumber}`, 6, y);
+      }
+      if (parsedTxMeta?.chequeDate) {
+        y += 4;
+        doc.text(`Due Date  : ${formatDisplayDate(parsedTxMeta.chequeDate)}`, 6, y);
+      }
 
       y += 4;
       doc.text('------------------------------------------', 40, y, { align: 'center' });
@@ -1998,9 +2032,45 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text('------------------------------------------', 40, y, { align: 'center' });
       y += 5;
       doc.setFont('courier', 'bold');
-      doc.setFontSize(10);
-      doc.text('TOTAL PAID    :', 6, y);
+      doc.setFontSize(9);
+      doc.text('TOTAL BILL    :', 6, y);
       doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+
+      if (isSplit) {
+        y += 4.5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(8);
+        doc.text('CASH RECEIVED :', 6, y);
+        doc.text(`LKR ${splitCash.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 4.5;
+        doc.text(`CHEQUE (${isPending ? 'HOLD' : 'PASS'}):`, 6, y);
+        doc.text(`LKR ${splitCheque.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(9.5);
+        doc.text('TOTAL DUE     :', 6, y);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
+      } else if (parsedTxMeta?.method === 'Cheque') {
+        y += 4.5;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(8);
+        doc.text(`CHEQUE (${isPending ? 'HOLD' : 'PASS'}):`, 6, y);
+        doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(9.5);
+        doc.text('TOTAL DUE     :', 6, y);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
+      } else {
+        y += 5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(10);
+        doc.text('TOTAL PAID    :', 6, y);
+        doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+      }
 
       y += 6;
       doc.setFont('courier', 'normal');
@@ -2076,8 +2146,16 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.setFontSize(9.5);
       doc.text(`Customer Name : ${customerName}`, 14, 50);
       doc.text(`Phone Number  : ${customerPhone}`, 14, 56);
-      doc.text(`Payment Method: ${paymentMethod}`, 14, 62);
+      const methodDisplay = isSplit ? `Cash + Cheque (Split)` : paymentMethod;
+      doc.text(`Payment Method: ${methodDisplay}`, 14, 62);
+      if (parsedTxMeta?.chequeNumber) {
+        doc.setFontSize(8.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`Cheque #: #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}`, 14, 67);
+        doc.setTextColor(30, 41, 59);
+      }
 
+      doc.setFontSize(9.5);
       doc.text(`Store Name : ${shopName || 'SMART TIME'}`, 115, 50);
       doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 56);
       doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 62);
@@ -2108,21 +2186,66 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : 94;
 
       // Summary Box
+      const boxHeight = isSplit ? 40 : (parsedTxMeta?.method === 'Cheque' ? 32 : 24);
       doc.setFillColor(248, 250, 252);
-      doc.rect(120, finalY + 8, 76, 26, 'F');
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.text('TOTAL PAID:', 124, finalY + 22);
-      doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+      doc.rect(115, finalY + 8, 81, boxHeight, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.rect(115, finalY + 8, 81, boxHeight, 'S');
+
+      if (isSplit) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(71, 85, 105);
+        doc.text('Total Bill:', 119, finalY + 16);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 16, { align: 'right' });
+
+        doc.setTextColor(5, 150, 105);
+        doc.text('Cash Amount Paid:', 119, finalY + 22);
+        doc.text(`LKR ${splitCash.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+
+        doc.setTextColor(180, 83, 9);
+        doc.text(`Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}):`, 119, finalY + 28);
+        doc.text(`LKR ${splitCheque.toLocaleString()}`, 192, finalY + 28, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(totalDue > 0 ? 225 : 5, totalDue > 0 ? 29 : 150, totalDue > 0 ? 72 : 105);
+        doc.text('TOTAL DUE:', 119, finalY + 38);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, finalY + 38, { align: 'right' });
+      } else if (parsedTxMeta?.method === 'Cheque') {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(71, 85, 105);
+        doc.text('Total Bill:', 119, finalY + 16);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 16, { align: 'right' });
+
+        doc.setTextColor(180, 83, 9);
+        doc.text(`Cheque (${isPending ? 'On Hold' : 'Cleared'}):`, 119, finalY + 22);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(totalDue > 0 ? 225 : 5, totalDue > 0 ? 29 : 150, totalDue > 0 ? 72 : 105);
+        doc.text('TOTAL DUE:', 119, finalY + 32);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, finalY + 32, { align: 'right' });
+      } else {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(5, 150, 105);
+        doc.text('TOTAL PAID:', 119, finalY + 22);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+      }
 
       // Terms & Conditions
+      const termsTop = finalY + (isSplit ? 54 : (parsedTxMeta?.method === 'Cheque' ? 46 : 38));
+      doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
-      doc.text('Terms & Conditions', 14, finalY + 45);
+      doc.text('Terms & Conditions', 14, termsTop);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       const termsLines = (shopReceiptTerms || DEFAULT_RECEIPT_TERMS).split('\n');
-      let termY = finalY + 52;
+      let termY = termsTop + 7;
       termsLines.forEach(line => {
         doc.text(line, 14, termY);
         termY += 5;
@@ -2157,7 +2280,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const entryItemsList: CashbookEntryItem[] = Array.isArray(item.items) && item.items.length > 0
       ? item.items
       : extractCashbookItems(item.description).items;
-    const parsedTxMeta = type === 'TRANSACTION' ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : null;
+    const parsedTxMeta = type === 'TRANSACTION' ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
     const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Credit Item Sale') : 'Service Order'));
     const cleanRawDesc = type === 'TRANSACTION' && parsedTxMeta
       ? parsedTxMeta.cleanNotes
@@ -2167,11 +2290,31 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const paymentMethod = parsedTxMeta?.method || item.paymentMethod || 'Cash';
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
+    const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
+    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? 0) : 0;
+    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
+    const isPending = type === 'TRANSACTION' ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
+    const totalDue = isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0);
+
     const shareToWhatsApp = () => {
       const chequeDetails = parsedTxMeta?.chequeNumber ? ` (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})` : '';
       const itemsText = entryItemsList.length > 0
         ? `\n*Items / Products:*\n` + entryItemsList.map(i => `• ${i.item || i.sku} (${i.qty} × LKR ${getItemUnitSalePrice(i).toLocaleString()}) = LKR ${(Number(i.qty) * getItemUnitSalePrice(i)).toLocaleString()}`).join('\n') + `\n`
         : '';
+
+      const paymentSummaryText = isSplit
+        ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+          `💵 *Cash Amount Paid: LKR ${splitCash.toLocaleString()}*\n` +
+          `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${splitCheque.toLocaleString()}*\n` +
+          (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})\n` : '') +
+          `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*` +
+          (totalDue > 0 ? `\n(Balance will become LKR 0 once cheque clears)` : `\n(Fully Settled)`)
+        : parsedTxMeta?.method === 'Cheque'
+        ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+          `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${amount.toLocaleString()}*\n` +
+          (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''})\n` : '') +
+          `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*`
+        : `*Total Amount Paid: LKR ${amount.toLocaleString()}*`;
 
       const shareText = `🧾 *${(shopName || 'SMART TIME').toUpperCase()} - OFFICIAL RECEIPT*\n` +
         (shopAddress ? `📍 ${shopAddress}\n` : '') +
@@ -2182,10 +2325,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         `Customer: ${customerName}` + (contact?.city ? ` (${contact.city})` : '') + `\n` +
         `Phone: ${customerPhone}\n` +
         `Category: ${categoryName}\n` +
-        `Payment Method: ${paymentMethod}${chequeDetails}\n` +
+        `Payment Method: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}${chequeDetails}\n` +
         itemsText +
         `-----------------------------------\n` +
-        `*Total Amount Paid: LKR ${amount.toLocaleString()}*\n\n` +
+        paymentSummaryText + `\n\n` +
         (shopReceiptTerms || DEFAULT_RECEIPT_TERMS) + `\n\n` +
         `Thank you for your business!`;
 
@@ -2197,7 +2340,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     };
 
     const copyInvoiceText = () => {
-      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}\nMethod: ${paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
+      const splitText = isSplit ? `\nCash Paid: LKR ${splitCash.toLocaleString()}\nCheque (${isPending ? 'On Hold' : 'Cleared'}): LKR ${splitCheque.toLocaleString()}\nTotal Due: LKR ${totalDue.toLocaleString()}` : '';
+      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}${splitText}\nMethod: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
       navigator.clipboard.writeText(text);
       showProfileToast('Invoice details copied to clipboard!');
     };
@@ -2275,7 +2419,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   <div className="flex justify-between"><span className="text-slate-500">Date:</span> <span>{dateStr} {timeStr}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Customer:</span> <span className="font-semibold">{customerName} {contact?.city ? `(${contact.city})` : ''}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Phone:</span> <span>{customerPhone}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Method:</span> <span className="font-bold">{paymentMethod}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Method:</span> <span className="font-bold">{isSplit ? 'Cash + Cheque (Split)' : paymentMethod}</span></div>
+                  {isSplit && (
+                    <>
+                      <div className="flex justify-between text-emerald-700 font-semibold"><span>Cash Paid:</span> <span>LKR {splitCash.toLocaleString()}</span></div>
+                      <div className="flex justify-between text-amber-800 font-semibold"><span>Cheque ({isPending ? 'On Hold' : 'Cleared'}):</span> <span>LKR {splitCheque.toLocaleString()}</span></div>
+                    </>
+                  )}
                   {parsedTxMeta?.chequeNumber && (
                     <div className="flex justify-between"><span className="text-slate-500">Cheque #:</span> <span className="font-mono font-bold">#{parsedTxMeta.chequeNumber}</span></div>
                   )}
@@ -2321,9 +2471,47 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   )}
                 </div>
 
-                <div className="flex justify-between items-center text-sm font-extrabold pt-1">
-                  <span>TOTAL PAID:</span>
-                  <span className="text-emerald-700 text-base">LKR {amount.toLocaleString()}</span>
+                <div className="space-y-1 pt-1 border-t border-dashed border-slate-300">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-600 font-bold">TOTAL BILL:</span>
+                    <span className="font-extrabold text-slate-900 text-sm">LKR {amount.toLocaleString()}</span>
+                  </div>
+                  {isSplit ? (
+                    <>
+                      <div className="flex justify-between items-center text-[11px] text-emerald-700 font-bold">
+                        <span>CASH RECEIVED:</span>
+                        <span>LKR {splitCash.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-[11px] text-amber-800 font-bold">
+                        <span>CHEQUE ({isPending ? 'ON HOLD' : 'CLEARED'}):</span>
+                        <span>LKR {splitCheque.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs font-black pt-1 border-t border-dotted border-slate-300">
+                        <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>TOTAL DUE (BALANCE):</span>
+                        <span className={`text-sm ${totalDue > 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                          LKR {totalDue.toLocaleString()}
+                        </span>
+                      </div>
+                    </>
+                  ) : parsedTxMeta?.method === 'Cheque' ? (
+                    <>
+                      <div className="flex justify-between items-center text-[11px] text-amber-800 font-bold">
+                        <span>CHEQUE ({isPending ? 'ON HOLD' : 'CLEARED'}):</span>
+                        <span>LKR {amount.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs font-black pt-1 border-t border-dotted border-slate-300">
+                        <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>TOTAL DUE:</span>
+                        <span className={`text-sm ${totalDue > 0 ? "text-rose-600" : "text-emerald-700"}`}>
+                          LKR {totalDue.toLocaleString()}
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex justify-between items-center text-xs font-extrabold pt-1">
+                      <span>TOTAL PAID:</span>
+                      <span className="text-emerald-700 text-sm">LKR {amount.toLocaleString()}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-center pt-3 border-t border-dashed border-slate-300 space-y-1 text-[10px] text-slate-500">
@@ -2411,9 +2599,53 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </div>
 
                 <div className="flex justify-end pt-2">
-                  <div className="bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-xl text-right">
-                    <span className="text-[10px] font-bold text-emerald-800 uppercase block">Total Amount Paid</span>
-                    <span className="text-base font-black text-emerald-700">LKR {amount.toLocaleString()}</span>
+                  <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl min-w-[240px] space-y-1.5 text-right">
+                    <div className="flex justify-between text-xs font-bold text-slate-700">
+                      <span>Total Bill:</span>
+                      <span>LKR {amount.toLocaleString()}</span>
+                    </div>
+                    {isSplit ? (
+                      <>
+                        <div className="flex justify-between text-xs font-bold text-emerald-700">
+                          <span>Cash Amount Paid:</span>
+                          <span>LKR {splitCash.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-xs font-bold text-amber-800">
+                          <span>Cheque ({isPending ? 'Pending on Hold' : 'Cleared'}):</span>
+                          <span>LKR {splitCheque.toLocaleString()}</span>
+                        </div>
+                        {parsedTxMeta?.chequeNumber && (
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            #{parsedTxMeta.chequeNumber} • Due: {formatDisplayDate(parsedTxMeta.chequeDate)}
+                          </div>
+                        )}
+                        <div className="border-t border-slate-300 pt-1.5 flex justify-between text-sm font-black">
+                          <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>Total Due (Balance):</span>
+                          <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>LKR {totalDue.toLocaleString()}</span>
+                        </div>
+                      </>
+                    ) : parsedTxMeta?.method === 'Cheque' ? (
+                      <>
+                        <div className="flex justify-between text-xs font-bold text-amber-800">
+                          <span>Cheque ({isPending ? 'Pending on Hold' : 'Cleared'}):</span>
+                          <span>LKR {amount.toLocaleString()}</span>
+                        </div>
+                        {parsedTxMeta?.chequeNumber && (
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            #{parsedTxMeta.chequeNumber} • Due: {formatDisplayDate(parsedTxMeta.chequeDate)}
+                          </div>
+                        )}
+                        <div className="border-t border-slate-300 pt-1.5 flex justify-between text-sm font-black">
+                          <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>Total Due:</span>
+                          <span className={totalDue > 0 ? "text-rose-600" : "text-emerald-700"}>LKR {totalDue.toLocaleString()}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="border-t border-slate-200 pt-1 flex justify-between text-sm font-black text-emerald-700">
+                        <span>Total Paid:</span>
+                        <span>LKR {amount.toLocaleString()}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2946,6 +3178,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           let parsedCollectedItems: string[] = [];
           let parsedOtherCollectedItems = '';
           let parsedDeviceIssue = '';
+          let parsedCity = '';
           if (c.end_date) {
             try {
               if (c.end_date.startsWith('{')) {
@@ -2957,6 +3190,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 parsedCollectedItems = Array.isArray(parsed.collectedItems) ? parsed.collectedItems : [];
                 parsedOtherCollectedItems = parsed.otherCollectedItems || '';
                 parsedDeviceIssue = parsed.deviceIssue || '';
+                parsedCity = parsed.city || '';
               } else {
                 parsedStatus = c.end_date;
               }
@@ -2969,7 +3203,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             userId: c.user_id,
             name: c.name, 
             phone: c.phone || '', 
-            city: c.city || '',
+            city: c.city || parsedCity || '',
             type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
             balance: c.balance || 0, 
             targetAmount: c.target_amount != null ? Number(c.target_amount) : (c.type === 'RENT' ? 30000 : undefined),
@@ -3493,36 +3727,57 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const effectiveOrderDate = addOrderDate || new Date().toISOString().slice(0, 10);
       const effectiveAdvDate = addAdvanceDate || new Date().toISOString().slice(0, 10);
 
+      const cleanCity = addCity.trim();
+      const serviceMeta = { 
+        status: addServiceStatus, 
+        advance: advanceVal || 0,
+        advanceDate: effectiveAdvDate,
+        orderDate: effectiveOrderDate,
+        collectedItems: addCollectedItems,
+        otherCollectedItems: addOtherCollectedItems.trim(),
+        deviceIssue: addDeviceIssue.trim(),
+        ...(cleanCity ? { city: cleanCity } : {})
+      };
+
       const payload: any = { 
         user_id: authUser?.id,
         name: addName.trim(), 
         phone: addPhone.trim(),
-        city: addCity.trim(),
+        city: cleanCity,
         type: isService ? 'SERVICE' : contactType, 
         target_amount: isService ? costVal : rentTargetVal, 
         start_date: isService ? addPhoneModel.trim() : null,
-        end_date: isService ? JSON.stringify({ 
-          status: addServiceStatus, 
-          advance: advanceVal || 0,
-          advanceDate: effectiveAdvDate,
-          orderDate: effectiveOrderDate,
-          collectedItems: addCollectedItems,
-          otherCollectedItems: addOtherCollectedItems.trim(),
-          deviceIssue: addDeviceIssue.trim()
-        }) : null,
+        end_date: isService ? JSON.stringify(serviceMeta) : (cleanCity ? JSON.stringify({ city: cleanCity }) : null),
         last_updated: new Date().toISOString() 
       };
       
       let res;
       let contactId = editingContact?.id;
-      if (editingContact) {
-        let q = supabase.from('contacts').update(payload).eq('id', editingContact.id);
-        if (authUser?.id) q = q.eq('user_id', authUser.id);
-        res = await q.select();
-      } else {
-        const newId = generateUUID();
-        contactId = newId;
-        res = await supabase.from('contacts').insert([{ ...payload, id: newId, balance: 0 }]).select();
+      const newId = editingContact ? editingContact.id : generateUUID();
+      if (!editingContact) contactId = newId;
+
+      const executeContactMutation = async (mutPayload: any) => {
+        if (editingContact) {
+          let q = supabase.from('contacts').update(mutPayload).eq('id', editingContact.id);
+          if (authUser?.id) q = q.eq('user_id', authUser.id);
+          return await q.select();
+        }
+        return await supabase.from('contacts').insert([{ ...mutPayload, id: newId, balance: 0 }]).select();
+      };
+
+      res = await executeContactMutation(payload);
+
+      // If Supabase contacts table doesn't have a native `city` column yet, retry without `city` column
+      // (city is already preserved inside `end_date` JSON so it syncs across devices without errors!)
+      if (
+        res.error &&
+        (res.error.code === 'PGRST204' ||
+          res.error.code === '42703' ||
+          res.error.message?.toLowerCase().includes('city') ||
+          (res.error.message?.includes('schema cache') && !res.error.message?.includes('table')))
+      ) {
+        const { city: _omitCity, ...payloadWithoutCity } = payload;
+        res = await executeContactMutation(payloadWithoutCity);
       }
 
       if (res.error) {
@@ -3533,7 +3788,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             userId: authUser?.id,
             name: addName.trim(), 
             phone: addPhone.trim(),
-            city: addCity.trim(),
+            city: cleanCity,
             type: isService ? 'SERVICE' : contactType,
             balance: 0,
             targetAmount: isService ? costVal : (isRent ? rentTargetVal : null),
@@ -3565,6 +3820,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           showProfileToast("Saved locally! Run Supabase SQL setup to sync to cloud.", "error");
           setAddName(''); 
           setAddPhone(''); 
+          setAddCity('');
           setAddPhoneModel('');
           setAddDeviceIssue('');
           setAddTotalCost('');
@@ -3583,12 +3839,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
       
       if (res.data) {
+        setDbStatus('connected');
         const savedData = res.data[0];
         const updatedContact: Contact = {
           id: savedData.id,
           userId: savedData.user_id,
           name: savedData.name,
           phone: savedData.phone || '',
+          city: savedData.city || cleanCity || '',
           type: savedData.type === 'SUPPLIER' ? 'VENDOR' : savedData.type,
           balance: savedData.balance || 0,
           targetAmount: isRent ? (rentTargetVal || 30000) : (savedData.target_amount != null ? Number(savedData.target_amount) : costVal),
@@ -3776,6 +4034,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       
       setAddName(''); 
       setAddPhone(''); 
+      setAddCity('');
       setAddPhoneModel('');
       setAddDeviceIssue('');
       setAddTotalCost('');
@@ -3787,6 +4046,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setAddOtherCollectedItems('');
       setTargetAmount('30000'); 
       setEditingContact(null);
+      showProfileToast(editingContact ? 'Contact updated!' : 'Contact saved!');
       handleBack();
     } catch (err: any) { alert(err.message); }
     finally { setIsSubmitting(false); }
@@ -3962,10 +4222,18 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     setIsSubmitting(true);
     try {
       const isCustomerPaidItemSale = selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && validTransItems.length > 0 && !transIsUnpaidCredit;
-      const hasTxPaymentMeta = transType === 'PAYMENT' || isCustomerPaidItemSale || (!transIsUnpaidCredit && transPaymentMethod === 'Cheque');
+      const hasTxPaymentMeta = transType === 'PAYMENT' || isCustomerPaidItemSale || (!transIsUnpaidCredit && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque'));
       let formattedDesc = stripCashbookItems(transDesc.trim());
       if (hasTxPaymentMeta) {
-        if (transPaymentMethod === 'Cheque') {
+        if (transPaymentMethod === 'Cash + Cheque') {
+          const cashAmtNum = parseFloat(transCashAmount) || 0;
+          const chqAmtNum = Math.max(0, amountVal - cashAmtNum);
+          const parts: string[] = [`Cash: LKR ${cashAmtNum.toLocaleString()}, Cheque: LKR ${chqAmtNum.toLocaleString()} [${transChequeStatus}]`];
+          if (transChequeDate) parts.push(`Due: ${transChequeDate}`);
+          if (transChequeNumber.trim()) parts.push(`#${transChequeNumber.trim()}`);
+          if (formattedDesc) parts.push(formattedDesc);
+          formattedDesc = parts.join(' • ');
+        } else if (transPaymentMethod === 'Cheque') {
           const parts: string[] = [`Cheque [${transChequeStatus}]`];
           if (transChequeDate) parts.push(`Due: ${transChequeDate}`);
           if (transChequeNumber.trim()) parts.push(`#${transChequeNumber.trim()}`);
@@ -3977,12 +4245,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
 
       // When cheque is marked as passed, update date to the cheque date
-      const effectiveTxDate = (!transIsUnpaidCredit && transPaymentMethod === 'Cheque' && transChequeStatus === 'PASSED' && transChequeDate)
+      const effectiveTxDate = (!transIsUnpaidCredit && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') && transChequeStatus === 'PASSED' && transChequeDate)
         ? transChequeDate
         : transDate;
 
       const cleanFormattedDesc = stripCashbookItems(stripAttachmentToken(formattedDesc));
-      const rawActiveAttachment = (!transIsUnpaidCredit && transPaymentMethod === 'Cheque') ? transAttachmentUrl : null;
+      const rawActiveAttachment = (!transIsUnpaidCredit && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque')) ? transAttachmentUrl : null;
       const pendingTxKey = editingTransaction ? editingTransaction.id : generateUUID();
       const cloudAttachmentUrl = rawActiveAttachment
         ? await uploadTxAttachmentToCloud(rawActiveAttachment, pendingTxKey, transAttachmentDocType, authUser?.id)
@@ -4061,9 +4329,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             amount: amountVal,
             type: transType,
             paymentMethod: hasTxPaymentMeta ? transPaymentMethod : undefined,
-            chequeStatus: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
-            chequeNumber: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
-            chequeDate: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
+            chequeStatus: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeStatus : undefined,
+            chequeNumber: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeNumber.trim() : undefined,
+            chequeDate: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeDate : undefined,
             description: dbDescription,
             balanceAfter: 0,
             hasAttachment: Boolean(cloudAttachmentUrl),
@@ -4079,9 +4347,32 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           await applyStockDeductionIfEnabled();
 
           if (shouldLinkToCashbook) {
-            const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
-            if (isPendingChq) {
+            const isSplitMethod = transPaymentMethod === 'Cash + Cheque';
+            const splitCashNum = parseFloat(transCashAmount) || 0;
+            const isPendingChq = (transPaymentMethod === 'Cheque' || isSplitMethod) && transChequeStatus === 'PENDING';
+            if (isPendingChq && !isSplitMethod) {
               await removeLinkedCashbookEntry(fallbackTx.id);
+            } else if (isPendingChq && isSplitMethod) {
+              if (splitCashNum > 0) {
+                await recordOrUpdateLinkedCashbookEntry({
+                  txId: fallbackTx.id,
+                  contactId: selectedContact.id,
+                  contactName: selectedContact.name,
+                  contactType: selectedContact.type,
+                  txType: transType,
+                  phoneModel: selectedContact.phoneModel,
+                  amount: splitCashNum,
+                  date: effectiveTxDate,
+                  paymentMethod: 'Cash',
+                  descriptionNote: `Cash part of Split Sale • ${cleanFormattedDesc}`,
+                  isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
+                  categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
+                  items: shouldLinkItemSale ? validTransItems : undefined,
+                  isItemCreditSale: shouldLinkItemSale
+                });
+              } else {
+                await removeLinkedCashbookEntry(fallbackTx.id);
+              }
             } else {
               await recordOrUpdateLinkedCashbookEntry({
                 txId: fallbackTx.id,
@@ -4130,9 +4421,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           amount: res.data[0].amount, 
           type: res.data[0].type, 
           paymentMethod: hasTxPaymentMeta ? transPaymentMethod : undefined,
-          chequeStatus: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
-          chequeNumber: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
-          chequeDate: hasTxPaymentMeta && transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
+          chequeStatus: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeStatus : undefined,
+          chequeNumber: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeNumber.trim() : undefined,
+          chequeDate: hasTxPaymentMeta && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') ? transChequeDate : undefined,
           balanceAfter: 0,
           hasAttachment: Boolean(cloudAttachmentUrl),
           attachmentUrl: cloudAttachmentUrl,
@@ -4151,10 +4442,35 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         await applyStockDeductionIfEnabled();
 
         if (shouldLinkToCashbook) {
-          const isPendingChq = transPaymentMethod === 'Cheque' && transChequeStatus === 'PENDING';
-          if (isPendingChq) {
+          const isSplitMethod = transPaymentMethod === 'Cash + Cheque';
+          const splitCashNum = parseFloat(transCashAmount) || 0;
+          const isPendingChq = (transPaymentMethod === 'Cheque' || isSplitMethod) && transChequeStatus === 'PENDING';
+          if (isPendingChq && !isSplitMethod) {
             await removeLinkedCashbookEntry(saved.id);
             showProfileToast("Cheque saved as Pending (Will show in Sales/Expenses once passed)");
+          } else if (isPendingChq && isSplitMethod) {
+            if (splitCashNum > 0) {
+              await recordOrUpdateLinkedCashbookEntry({
+                txId: saved.id,
+                contactId: selectedContact.id,
+                contactName: selectedContact.name,
+                contactType: selectedContact.type,
+                txType: transType,
+                phoneModel: selectedContact.phoneModel,
+                amount: splitCashNum,
+                date: effectiveTxDate,
+                paymentMethod: 'Cash',
+                descriptionNote: `Cash part of Split Sale • ${cleanFormattedDesc}`,
+                isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
+                categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
+                items: shouldLinkItemSale ? validTransItems : undefined,
+                isItemCreditSale: shouldLinkItemSale
+              });
+              showProfileToast(`LKR ${splitCashNum.toLocaleString()} cash recorded to Sales! Cheque on hold.`);
+            } else {
+              await removeLinkedCashbookEntry(saved.id);
+              showProfileToast("Cheque saved as Pending on hold");
+            }
           } else {
             await recordOrUpdateLinkedCashbookEntry({
               txId: saved.id,
@@ -4204,6 +4520,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
     const effectiveChequeDate = parsed.chequeDate || tx.chequeDate || new Date().toISOString().slice(0, 10);
     const sectionName = contact?.type === 'VENDOR' ? 'Expenses' : (contact?.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+    const isSplit = tx.paymentMethod === 'Cash + Cheque' || parsed.method === 'Cash + Cheque';
 
     let updatedDesc = tx.description || '';
     if (updatedDesc.includes('[PENDING]')) {
@@ -4212,6 +4529,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       updatedDesc = updatedDesc.replace(/\[BOUNCED\]/gi, '[PASSED]');
     } else if (updatedDesc.startsWith('Cheque')) {
       updatedDesc = updatedDesc.replace(/^Cheque/i, 'Cheque [PASSED]');
+    } else if (isSplit) {
+      updatedDesc = `${updatedDesc} [PASSED]`;
     } else {
       updatedDesc = `Cheque [PASSED]${parsed.chequeNumber ? ` • #${parsed.chequeNumber}` : ''}${updatedDesc ? ` • ${updatedDesc}` : ''}`;
     }
@@ -4220,7 +4539,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       ...tx,
       date: effectiveChequeDate,
       chequeDate: effectiveChequeDate,
-      paymentMethod: 'Cheque',
+      paymentMethod: isSplit ? 'Cash + Cheque' : 'Cheque',
       chequeStatus: 'PASSED',
       description: updatedDesc
     };
@@ -4258,7 +4577,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         phoneModel: contact.phoneModel,
         amount: tx.amount,
         date: effectiveChequeDate,
-        paymentMethod: 'Cheque',
+        paymentMethod: isSplit ? 'Cash + Cheque' : 'Cheque',
         descriptionNote: cleanPassDesc,
         isAdvance: cleanPassDesc.toLowerCase().includes('advance'),
         categoryOverride: isItemCredit ? (passItems?.[0]?.category || 'Spare Parts Sale') : undefined,
@@ -4301,7 +4620,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handlePassChequeFromCashbook = async (entry: CashbookEntry) => {
     const matchingTx = transactions.find(t => t.id === entry.id) ||
-      transactions.find(t => isPendingCheque(t) && t.amount === entry.amount);
+      transactions.find(t => isPendingCheque(t) && (t.amount === entry.amount || getTransactionChequeAmount(t) === entry.amount));
     if (matchingTx) {
       await handleQuickPassCheque(matchingTx);
     } else {
@@ -4581,7 +4900,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       handleOpenCashbookModal('SALE');
                       return;
                     }
-                    setEditingContact(null); setAddName(''); setAddPhone(''); setAddPhoneModel(''); setAddDeviceIssue(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM');
+                    setEditingContact(null); setAddName(''); setAddPhone(''); setAddCity(''); setAddPhoneModel(''); setAddDeviceIssue(''); setAddTotalCost(''); setAddAdvancePayment(''); setAddServiceStatus('Pending'); setAddCollectedItems([]); setAddOtherCollectedItems(''); setTargetAmount('30000'); navigateTo('CONTACT_FORM');
                   }} 
                   className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl shadow-sm active:scale-90 transition-transform flex items-center justify-center" 
                   title={isDashboardItemsTab ? "Add New Item" : isDashboardSalesTab ? "Add New Sale" : "Add New Party / Order"}
@@ -5555,11 +5874,22 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     let currentSum = 0;
     const computedWithBalance = contactTransactions.map(t => {
       const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+      const isSplit = parsed.method === 'Cash + Cheque' || t.paymentMethod === 'Cash + Cheque';
+      const chqAmt = getTransactionChequeAmount(t, parsed);
+      const cashAmt = getTransactionCashAmount(t, parsed);
+
       if (isPendingCheque(t)) {
-        // Pending Cheque PAYMENT does not reduce balance until passed;
+        // Pending Cheque PAYMENT does not reduce balance until passed (unless split cash was paid);
         // Pending Cheque CREDIT (Customer Gave Items) increases balance owed until cheque passes.
         if (t.type === 'CREDIT') {
-          currentSum += (isRent ? -t.amount : t.amount);
+          // If split: cash is already received, only the cheque amount is owed until passed!
+          const dueAmt = isSplit ? chqAmt : t.amount;
+          currentSum += (isRent ? -dueAmt : dueAmt);
+        } else {
+          // PAYMENT with pending cheque: if split, cash reduces balance immediately!
+          if (isSplit && cashAmt > 0) {
+            currentSum += (isRent ? cashAmt : -cashAmt);
+          }
         }
       } else if (
         selectedContact.type === 'CUSTOMER' &&
@@ -5567,7 +5897,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         (parsed.method === 'Cash' ||
           parsed.method === 'Bank Transfer' ||
           parsed.method === 'Card' ||
-          (parsed.method === 'Cheque' && parsed.chequeStatus !== 'BOUNCED'))
+          ((parsed.method === 'Cheque' || parsed.method === 'Cash + Cheque') && parsed.chequeStatus !== 'BOUNCED'))
       ) {
         // Settled Customer item sale: items + immediate/cleared payment cancel out
         currentSum += 0;
@@ -5581,11 +5911,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const pendingChequesNet = contactTransactions
       .filter(t => isPendingCheque(t))
       .reduce((sum, t) => {
+        const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+        const chqAmt = getTransactionChequeAmount(t, parsed);
         if (isRent) {
-          return sum + (t.type === 'PAYMENT' ? t.amount : -t.amount);
+          return sum + (t.type === 'PAYMENT' ? chqAmt : -chqAmt);
         }
-        // Any pending cheque (whether PAYMENT or Customer CREDIT item sale paid by Cheque) reduces balance when passed
-        return sum - t.amount;
+        // Any pending cheque reduces balance by its pending cheque amount when passed
+        return sum - chqAmt;
       }, 0);
 
     const balanceIfPassCheque = balance + pendingChequesNet;
@@ -5716,6 +6048,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 setEditingContact(selectedContact); 
                 setAddName(selectedContact.name); 
                 setAddPhone(selectedContact.phone); 
+                setAddCity(selectedContact.city || '');
                 setTargetAmount(selectedContact.targetAmount?.toString() || '30000'); 
                 setAddPhoneModel(selectedContact.phoneModel || ''); 
                 setAddTotalCost(selectedContact.totalCost?.toString() || selectedContact.targetAmount?.toString() || (contactStats[selectedContact.id]?.totalCredit ? contactStats[selectedContact.id].totalCredit.toString() : '')); 
@@ -5963,6 +6296,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             <div className="space-y-2 mt-2 pt-2 border-t border-slate-200/70">
               {dueOrPassedCheques.map(chq => {
                 const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus, chq.chequeDate);
+                const chqAmt = getTransactionChequeAmount(chq, parsed);
+                const cashAmt = getTransactionCashAmount(chq, parsed);
+                const isSplit = parsed.method === 'Cash + Cheque' || chq.paymentMethod === 'Cash + Cheque';
                 const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
                 const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
                 return (
@@ -5970,8 +6306,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     <div className="overflow-hidden">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-extrabold text-xs text-slate-900">
-                          LKR {chq.amount.toLocaleString()}
+                          LKR {chqAmt.toLocaleString()}
                         </span>
+                        {isSplit && (
+                          <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                            Split (Cash: LKR {cashAmt.toLocaleString()})
+                          </span>
+                        )}
                         {parsed.chequeNumber && (
                           <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
                             #{parsed.chequeNumber}
@@ -6020,6 +6361,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             <div className="space-y-2 mt-2 pt-2 border-t border-slate-200/70">
               {upcomingContactCheques.map(chq => {
                 const parsed = parsePaymentMethod(chq.description, chq.paymentMethod, chq.chequeStatus, chq.chequeDate);
+                const chqAmt = getTransactionChequeAmount(chq, parsed);
+                const cashAmt = getTransactionCashAmount(chq, parsed);
+                const isSplit = parsed.method === 'Cash + Cheque' || chq.paymentMethod === 'Cash + Cheque';
                 const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
                 const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
                 const daysLeft = getDaysRemaining(chqDate, todayStr);
@@ -6028,8 +6372,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     <div className="overflow-hidden">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-extrabold text-xs text-slate-900">
-                          LKR {chq.amount.toLocaleString()}
+                          LKR {chqAmt.toLocaleString()}
                         </span>
+                        {isSplit && (
+                          <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                            Split (Cash: LKR {cashAmt.toLocaleString()})
+                          </span>
+                        )}
                         {parsed.chequeNumber && (
                           <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
                             #{parsed.chequeNumber}
@@ -6257,7 +6606,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
                 <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">Total Paid to Date:</span>
                 <span className="font-black text-emerald-700">
-                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT' && !isPendingCheque(t)).reduce((sum, p) => sum + p.amount, 0).toLocaleString()}
+                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT').reduce((sum, p) => sum + (isPendingCheque(p) ? getTransactionCashAmount(p) : p.amount), 0).toLocaleString()}
                 </span>
               </div>
             </div>
@@ -7011,7 +7360,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </span>
               </label>
               
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 <button
                   type="button"
                   onClick={() => { setTransIsUnpaidCredit(false); setTransPaymentMethod('Cash'); if (selectedContact.type === 'CUSTOMER' && transType === 'CREDIT') setTransLinkSaleToCashbook(true); }}
@@ -7079,7 +7428,117 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   </div>
                   <span className="text-xs font-bold tracking-tight">Cheque</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setTransIsUnpaidCredit(false); setTransPaymentMethod('Cash + Cheque'); if (selectedContact.type === 'CUSTOMER' && transType === 'CREDIT') setTransLinkSaleToCashbook(true); }}
+                  className={`py-3.5 px-2 rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all active:scale-95 shadow-sm col-span-2 sm:col-span-2 ${
+                    !transIsUnpaidCredit && transPaymentMethod === 'Cash + Cheque'
+                      ? 'border-indigo-600 bg-indigo-50/90 text-indigo-900 ring-2 ring-indigo-400/40'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                    !transIsUnpaidCredit && transPaymentMethod === 'Cash + Cheque' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    <Wallet size={18} />
+                  </div>
+                  <span className="text-xs font-bold tracking-tight">Cash + Cheque (Split Payment)</span>
+                </button>
               </div>
+
+              {/* Cash + Cheque Split Payment Management Box */}
+              {!transIsUnpaidCredit && transPaymentMethod === 'Cash + Cheque' && (
+                <div className="mt-4 p-4 bg-indigo-50/80 border border-indigo-200/90 rounded-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between pb-2 border-b border-indigo-200/70">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-800">
+                        <Wallet size={15} />
+                      </div>
+                      <h4 className="font-extrabold text-xs text-indigo-900 uppercase tracking-wider">Split Payment: Cash & Cheque Balance</h4>
+                    </div>
+                    <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border bg-indigo-100 text-indigo-900 border-indigo-300">
+                      {transChequeStatus === 'PENDING' ? '⏳ Cheque on Hold' : '✓ Cheque Passed'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider mb-1 block">
+                        Cash Paid Amount (LKR)
+                      </label>
+                      <input
+                        type="number"
+                        value={transCashAmount}
+                        onChange={e => setTransCashAmount(e.target.value)}
+                        placeholder="e.g. 5000"
+                        className="w-full bg-white border border-indigo-300 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-indigo-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider mb-1 block">
+                        Cheque Amount (Balance)
+                      </label>
+                      <div className="bg-white border border-indigo-300 rounded-xl px-3 py-2 text-xs font-extrabold text-indigo-900 flex items-center">
+                        LKR {Math.max(0, (parseFloat(transAmount) || 0) - (parseFloat(transCashAmount) || 0)).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 pt-2 border-t border-indigo-200/70">
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider mb-1.5 block">
+                        Cheque Clearance Status
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTransChequeStatus('PENDING')}
+                          className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                            transChequeStatus === 'PENDING' ? 'bg-indigo-700 text-white border-indigo-800' : 'bg-white text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <Clock size={13} /> Pending (On Hold)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTransChequeStatus('PASSED')}
+                          className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                            transChequeStatus === 'PASSED' ? 'bg-emerald-700 text-white border-emerald-800' : 'bg-white text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <CheckCircle2 size={13} /> Passed / Cleared
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider mb-1 block">
+                        Cheque Due Date / Maturity Date
+                      </label>
+                      <input
+                        type="date"
+                        value={transChequeDate}
+                        onChange={e => setTransChequeDate(e.target.value)}
+                        className="w-full bg-white border border-indigo-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-600"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider mb-1 block">
+                        Cheque Number
+                      </label>
+                      <input
+                        type="text"
+                        value={transChequeNumber}
+                        onChange={e => setTransChequeNumber(e.target.value)}
+                        placeholder="e.g. CHQ-8812"
+                        className="w-full bg-white border border-indigo-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-600"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && transItems.length > 0 && (
                 <button
@@ -10015,10 +10474,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         const contact = contacts.find(c => c.id === t.contactId);
         const contactType = contact?.type || 'CUSTOMER';
         const type: 'SALE' | 'EXPENSE' = (contactType === 'VENDOR' || contactType === 'RENT') ? 'EXPENSE' : 'SALE';
+        const chqAmt = getTransactionChequeAmount(t, parsed);
         const item = {
           id: t.id,
           tx: t,
-          amount: t.amount,
+          amount: chqAmt,
           contactName: contact?.name || 'Party',
           chequeDate: chqDate,
           type,

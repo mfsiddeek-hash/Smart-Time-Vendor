@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye } from 'lucide-react';
+import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye, Wallet } from 'lucide-react';
 import { Transaction, PaymentMethod, ChequeStatus, ContactType, CashbookEntryItem } from '../types';
 
 export interface ParsedTransactionMetadata {
@@ -7,6 +7,8 @@ export interface ParsedTransactionMetadata {
   chequeStatus?: ChequeStatus;
   chequeNumber?: string;
   chequeDate?: string;
+  cashAmount?: number;
+  chequeAmount?: number;
   attachmentUrl?: string;
   attachmentDocType?: 'Cheque' | 'Invoice';
   items?: CashbookEntryItem[];
@@ -86,12 +88,32 @@ export const isPendingCheque = (t: Transaction): boolean => {
   if (t.chequeStatus === 'PENDING') return true;
   
   const desc = t.description || '';
-  const isCheque = t.paymentMethod === 'Cheque' || desc.toLowerCase().includes('cheque');
+  const isCheque = t.paymentMethod === 'Cheque' || t.paymentMethod === 'Cash + Cheque' || desc.toLowerCase().includes('cheque');
   if (!isCheque) return false;
   
   if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
   if (desc.includes('[BOUNCED]')) return false;
   return true;
+};
+
+export const getTransactionChequeAmount = (t: Transaction, parsed?: ParsedTransactionMetadata): number => {
+  const p = parsed || parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+  const isSplit = p.method === 'Cash + Cheque' || t.paymentMethod === 'Cash + Cheque';
+  if (isSplit) {
+    if (p.chequeAmount !== undefined && p.chequeAmount > 0) return p.chequeAmount;
+    if (p.cashAmount !== undefined) return Math.max(0, t.amount - p.cashAmount);
+  }
+  return t.amount;
+};
+
+export const getTransactionCashAmount = (t: Transaction, parsed?: ParsedTransactionMetadata): number => {
+  const p = parsed || parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+  const isSplit = p.method === 'Cash + Cheque' || t.paymentMethod === 'Cash + Cheque';
+  if (isSplit) {
+    if (p.cashAmount !== undefined) return p.cashAmount;
+    if (p.chequeAmount !== undefined) return Math.max(0, t.amount - p.chequeAmount);
+  }
+  return 0;
 };
 
 const formatDisplayDate = (dStr: string | null | undefined) => {
@@ -127,6 +149,53 @@ export const parsePaymentMethod = (
 
   if (!cleanDesc) return result;
   const trimmed = cleanDesc.trim();
+
+  // Check Cash + Cheque (Split Payment) format
+  if (explicitMethod === 'Cash + Cheque' || trimmed.startsWith('Cash + Cheque') || (trimmed.toLowerCase().includes('cash') && trimmed.toLowerCase().includes('cheque'))) {
+    result.method = 'Cash + Cheque';
+    
+    if (!result.chequeStatus) {
+      if (trimmed.includes('[PASSED]') || trimmed.includes('[CLEARED]') || trimmed.includes('Status: Passed')) {
+        result.chequeStatus = 'PASSED';
+      } else if (trimmed.includes('[BOUNCED]')) {
+        result.chequeStatus = 'BOUNCED';
+      } else {
+        result.chequeStatus = 'PENDING';
+      }
+    }
+
+    const cashMatch = trimmed.match(/Cash:\s*(?:LKR\s*)?([0-9,]+(?:\.[0-9]+)?)/i);
+    if (cashMatch) {
+      result.cashAmount = parseFloat(cashMatch[1].replace(/,/g, ''));
+    }
+
+    const chqMatch = trimmed.match(/Cheque:\s*(?:LKR\s*)?([0-9,]+(?:\.[0-9]+)?)/i);
+    if (chqMatch) {
+      result.chequeAmount = parseFloat(chqMatch[1].replace(/,/g, ''));
+    }
+
+    const chqNumMatch = trimmed.match(/#([A-Za-z0-9-]+)/);
+    if (chqNumMatch) {
+      result.chequeNumber = chqNumMatch[1];
+    }
+
+    const dueDateMatch = trimmed.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+    if (dueDateMatch) {
+      result.chequeDate = dueDateMatch[1];
+    } else if (explicitChequeDate) {
+      result.chequeDate = explicitChequeDate;
+    }
+
+    let notes = trimmed
+      .replace(/^Cash\s*\+\s*Cheque\s*(\[(PENDING|PASSED|BOUNCED)\])?/i, '')
+      .replace(/•\s*#(?:[A-Za-z0-9-]+)/g, '')
+      .replace(/•\s*(?:Due|Date):\s*\d{4}-\d{2}-\d{2}/g, '')
+      .replace(/^[•\s-]+|[•\s-]+$/g, '')
+      .trim();
+
+    result.cleanNotes = notes;
+    return result;
+  }
 
   // Check Cheque format
   if (explicitMethod === 'Cheque' || trimmed.startsWith('Cheque')) {
@@ -242,9 +311,23 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
             {pendingCheque ? '⏳ ' : (isPayment ? '+' : '-')} LKR {transaction.amount.toLocaleString()}
           </span>
           {pendingCheque && (
-            <p className="text-[10px] text-amber-800 dark:text-amber-400 font-bold tracking-wider">
-              Due Date: {formatDisplayDate(chqDueDate)} • Amount On Hold
-            </p>
+            <div className="text-[10px] text-amber-800 dark:text-amber-400 font-bold tracking-wider space-y-0.5">
+              {parsed.method === 'Cash + Cheque' ? (
+                <>
+                  <p className="font-extrabold text-amber-900 dark:text-amber-300">
+                    Cheque on Hold: LKR {getTransactionChequeAmount(transaction, parsed).toLocaleString()}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400 font-bold">
+                    Cash Paid: LKR {getTransactionCashAmount(transaction, parsed).toLocaleString()}
+                  </p>
+                  <p className="text-[9px] text-slate-500 dark:text-slate-400 font-medium">
+                    Due Date: {formatDisplayDate(chqDueDate)}
+                  </p>
+                </>
+              ) : (
+                <p>Due Date: {formatDisplayDate(chqDueDate)} • Amount On Hold</p>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -252,7 +335,15 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
       <div className="flex justify-between items-end gap-2">
         <div className="flex flex-col gap-1.5 flex-1 overflow-hidden">
           <div className="flex items-center gap-1.5 flex-wrap">
-            {isCheque ? (
+            {parsed.method === 'Cash + Cheque' ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-900 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/60">
+                <Wallet size={12} className="text-indigo-600 dark:text-indigo-400" />
+                <span>Cash + Cheque (Split)</span>
+                {parsed.chequeNumber && (
+                  <span className="opacity-90 font-mono">#{parsed.chequeNumber}</span>
+                )}
+              </span>
+            ) : isCheque ? (
               <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md border ${
                 pendingCheque
                   ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border-amber-300 dark:border-amber-800/60'

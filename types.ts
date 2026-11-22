@@ -24,7 +24,7 @@ export interface Contact {
 }
 
 export type TransactionType = 'CREDIT' | 'PAYMENT';
-export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Cheque';
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Card' | 'Cheque' | 'Cash + Cheque';
 export type ChequeStatus = 'PENDING' | 'PASSED' | 'BOUNCED';
 
 export interface Transaction {

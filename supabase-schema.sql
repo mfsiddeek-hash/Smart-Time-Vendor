@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS public.contacts (
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     name TEXT NOT NULL,
     phone TEXT,
+    city TEXT,
     type TEXT NOT NULL, -- 'CUSTOMER' | 'VENDOR' | 'RENT' | 'SERVICE'
     balance NUMERIC DEFAULT 0,
     target_amount NUMERIC,
@@ -73,7 +74,7 @@ CREATE TABLE IF NOT EXISTS public.contacts (
     last_updated TIMESTAMPTZ DEFAULT NOW()
 );
 
--- If contacts table already existed without user_id, add column safely:
+-- If contacts table already existed without user_id or city, add columns safely:
 DO $$ 
 BEGIN
     IF NOT EXISTS (
@@ -83,6 +84,14 @@ BEGIN
         AND column_name = 'user_id'
     ) THEN
         ALTER TABLE public.contacts ADD COLUMN user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'contacts' 
+        AND column_name = 'city'
+    ) THEN
+        ALTER TABLE public.contacts ADD COLUMN city TEXT;
     END IF;
 END $$;
 
