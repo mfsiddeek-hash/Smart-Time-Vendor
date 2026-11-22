@@ -5,6 +5,7 @@ export interface Contact {
   userId?: string;
   name: string;
   phone: string;
+  city?: string;
   type: ContactType;
   balance: number; // For RENT: Amount Saved. For Others: Amount Owed/Due
   targetAmount?: number; // Only used for RENT
@@ -94,6 +95,31 @@ export interface UserProfile {
 
 export type CashbookEntryType = 'SALE' | 'EXPENSE';
 
+export interface CashbookEntryItem {
+  id: string;
+  item: string;
+  sku?: string;
+  category?: string;
+  qty: number;
+  cost: number;
+  wholesalePrice: number;
+  retailPrice?: number;
+  priceType?: 'RETAIL' | 'WHOLESALE';
+}
+
+export interface DaybookStockItem {
+  id: string;
+  userId?: string;
+  item: string;
+  sku?: string;
+  category?: string;
+  qty: number;
+  cost: number;
+  wholesalePrice: number;
+  retailPrice?: number;
+  updatedAt: string;
+}
+
 export interface CashbookEntry {
   id: string;
   userId?: string;
@@ -105,5 +131,6 @@ export interface CashbookEntry {
   paymentMethod: PaymentMethod;
   referenceNo?: string;
   contactName?: string;
+  items?: CashbookEntryItem[];
   createdAt?: string;
 }

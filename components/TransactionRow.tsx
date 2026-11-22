@@ -1,6 +1,6 @@
 import React from 'react';
 import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye } from 'lucide-react';
-import { Transaction, PaymentMethod, ChequeStatus, ContactType } from '../types';
+import { Transaction, PaymentMethod, ChequeStatus, ContactType, CashbookEntryItem } from '../types';
 
 export interface ParsedTransactionMetadata {
   method?: PaymentMethod;
@@ -9,10 +9,40 @@ export interface ParsedTransactionMetadata {
   chequeDate?: string;
   attachmentUrl?: string;
   attachmentDocType?: 'Cheque' | 'Invoice';
+  items?: CashbookEntryItem[];
   cleanNotes: string;
 }
 
 const ATT_TOKEN_REGEX = /\s*•?\s*\[ATT:(Cheque|Invoice)\|([^\]]+)\]/i;
+const ITEMS_TOKEN_REGEX = /\s*•?\s*\[ITEMS:([A-Za-z0-9+/=]+)\]/;
+
+export const extractItemsToken = (desc?: string): { items: CashbookEntryItem[]; cleanDesc: string } => {
+  if (!desc) return { items: [], cleanDesc: '' };
+  const match = desc.match(ITEMS_TOKEN_REGEX);
+  if (!match) return { items: [], cleanDesc: desc };
+  let items: CashbookEntryItem[] = [];
+  try {
+    const bin = atob(match[1]);
+    const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
+    const parsed = JSON.parse(json);
+    if (Array.isArray(parsed)) items = parsed;
+  } catch {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(escape(atob(match[1]))));
+      if (Array.isArray(parsed)) items = parsed;
+    } catch {}
+  }
+  const cleanDesc = desc
+    .replace(ITEMS_TOKEN_REGEX, '')
+    .replace(/^[•\s]+|[•\s]+$/g, '')
+    .trim();
+  return { items, cleanDesc };
+};
+
+export const stripItemsToken = (desc?: string): string => {
+  return extractItemsToken(desc).cleanDesc;
+};
 
 export const extractAttachmentToken = (desc?: string): {
   attachmentUrl?: string;
@@ -83,13 +113,15 @@ export const parsePaymentMethod = (
   explicitStatus?: ChequeStatus,
   explicitChequeDate?: string
 ): ParsedTransactionMetadata => {
-  const { attachmentUrl, attachmentDocType, cleanDesc } = extractAttachmentToken(desc);
+  const { attachmentUrl, attachmentDocType, cleanDesc: descNoAtt } = extractAttachmentToken(desc);
+  const { items, cleanDesc } = extractItemsToken(descNoAtt);
   const result: ParsedTransactionMetadata = {
     method: explicitMethod,
     chequeStatus: explicitStatus,
     chequeDate: explicitChequeDate,
     attachmentUrl,
     attachmentDocType,
+    items: items.length > 0 ? items : undefined,
     cleanNotes: cleanDesc
   };
 
@@ -233,7 +265,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                 )}
               </span>
             ) : (
-              isPayment && parsed.method && (
+              (isPayment || Boolean(parsed.method)) && parsed.method && (
                 <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md border ${
                   parsed.method === 'Bank Transfer' 
                     ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/50' 
@@ -273,10 +305,48 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
 
             {parsed.cleanNotes ? (
               <span className="text-sm text-slate-600 dark:text-slate-300 font-medium truncate">{parsed.cleanNotes}</span>
-            ) : (!parsed.method && stripAttachmentToken(transaction.description) ? (
-              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{stripAttachmentToken(transaction.description)}</span>
+            ) : (!parsed.method && stripItemsToken(stripAttachmentToken(transaction.description)) ? (
+              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{stripItemsToken(stripAttachmentToken(transaction.description))}</span>
             ) : null)}
           </div>
+
+          {parsed.items && parsed.items.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-0.5">
+              {parsed.items.map((it, idx) => {
+                const retail = Number(it.retailPrice) || 0;
+                const wholesale = Number(it.wholesalePrice) || 0;
+                const cost = Number(it.cost) || 0;
+                const unitPrice = it.priceType === 'WHOLESALE'
+                  ? (wholesale > 0 ? wholesale : (retail > 0 ? retail : cost))
+                  : (retail > 0 ? retail : (wholesale > 0 ? wholesale : cost));
+                const lineTotal = (Number(it.qty) || 0) * unitPrice;
+                return (
+                  <div
+                    key={it.id || idx}
+                    className="inline-flex items-center gap-1.5 flex-wrap px-2 py-0.5 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/50 text-[10px] font-semibold text-slate-700 dark:text-slate-200"
+                  >
+                    <span className="font-extrabold text-slate-900 dark:text-white">{it.item || it.sku}</span>
+                    {it.category && (
+                      <span className="text-blue-700 dark:text-blue-300 bg-white/80 dark:bg-[#131b2a] px-1 rounded font-bold">
+                        {it.category}
+                      </span>
+                    )}
+                    {it.sku && (
+                      <span className="font-mono text-indigo-700 dark:text-indigo-300">
+                        SKU:{it.sku}
+                      </span>
+                    )}
+                    <span className="font-bold text-slate-700 dark:text-slate-300">× {it.qty}</span>
+                    {lineTotal > 0 && (
+                      <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
+                        LKR {lineTotal.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {(resolvedAttachmentUrl || transaction.hasAttachment) && (
             <button

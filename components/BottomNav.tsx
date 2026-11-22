@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookText, Wallet, Receipt, UserCircle } from 'lucide-react';
+import { BookText, Receipt, UserCircle } from 'lucide-react';
 
 interface BottomNavProps {
   currentView: string;
@@ -22,12 +22,11 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, a
   const activeColorClass = getThemeTextColor(activeTheme);
   
   const isDashboard = currentView === 'DASHBOARD' || currentView === 'DETAIL' || currentView === 'TRANSACTION_FORM';
-  const isCashBook = currentView === 'CASH_BOOK';
   const isProfile = currentView === 'PROFILE';
   const isInvoice = currentView === 'INVOICE';
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-[#0b101d] border-t border-slate-200 dark:border-[#1e2a3c] py-2 px-6 flex justify-between items-center z-40 pb-safe shadow-[0_-1px_10px_rgba(0,0,0,0.05)] dark:shadow-none">
+    <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-[#0b101d] border-t border-slate-200 dark:border-[#1e2a3c] py-2 px-8 flex justify-around items-center z-40 pb-safe shadow-[0_-1px_10px_rgba(0,0,0,0.05)] dark:shadow-none">
       <button 
         onClick={() => onNavigate('DASHBOARD')}
         className={`flex flex-col items-center gap-1 transition-colors ${isDashboard ? `${activeColorClass} dark:text-blue-400 font-bold` : 'text-slate-400 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
@@ -42,14 +41,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, a
       >
         <UserCircle size={20} />
         <span className="text-[10px] font-medium">Profile</span>
-      </button>
-      
-      <button 
-        onClick={() => onNavigate('CASH_BOOK')}
-        className={`flex flex-col items-center gap-1 transition-colors ${isCashBook ? `${activeColorClass} dark:text-blue-400 font-bold` : 'text-slate-400 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
-      >
-        <Wallet size={20} />
-        <span className="text-[10px] font-medium">Sales & Expense</span>
       </button>
       
       <button 
