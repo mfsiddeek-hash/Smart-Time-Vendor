@@ -15,7 +15,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow, parsePaymentMethod, isPendingCheque } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
@@ -560,6 +560,108 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     } catch (e) {
       console.warn('Could not persist attachment in localStorage:', e);
     }
+  };
+
+  const dataUrlToBlob = (dataUrl: string): { blob: Blob; mimeType: string; ext: string } | null => {
+    try {
+      const parts = dataUrl.split(',');
+      if (parts.length < 2) return null;
+      const mimeMatch = parts[0].match(/data:([^;]+);base64/i);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const byteString = atob(parts[1]);
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+      }
+      const ext = mimeType === 'application/pdf'
+        ? 'pdf'
+        : mimeType === 'image/png'
+        ? 'png'
+        : mimeType === 'image/webp'
+        ? 'webp'
+        : 'jpg';
+      return { blob: new Blob([ab], { type: mimeType }), mimeType, ext };
+    } catch {
+      return null;
+    }
+  };
+
+  const compressImageDataUrl = (dataUrl: string, maxDim = 760, quality = 0.62): Promise<string> => {
+    return new Promise((resolve) => {
+      if (!dataUrl.startsWith('data:image/')) {
+        resolve(dataUrl);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width;
+        let h = img.height;
+        if (w > h) {
+          if (w > maxDim) { h = Math.round((h * maxDim) / w); w = maxDim; }
+        } else {
+          if (h > maxDim) { w = Math.round((w * maxDim) / h); h = maxDim; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  };
+
+  const uploadTxAttachmentToCloud = async (
+    urlOrDataUrl: string,
+    txKey: string,
+    _docType: 'Cheque' | 'Invoice',
+    uid?: string
+  ): Promise<string> => {
+    if (!urlOrDataUrl) return urlOrDataUrl;
+    if (urlOrDataUrl.startsWith('http://') || urlOrDataUrl.startsWith('https://')) {
+      return urlOrDataUrl;
+    }
+    const targetUid = uid || authUser?.id;
+    if (targetUid && urlOrDataUrl.startsWith('data:')) {
+      const converted = dataUrlToBlob(urlOrDataUrl);
+      if (converted) {
+        try {
+          const safeKey = txKey.replace(/[^a-zA-Z0-9_-]/g, '');
+          const filePath = `${targetUid}/tx-attachments/${safeKey}_${Date.now()}.${converted.ext}`;
+          const { error: uploadError } = await supabase.storage
+            .from('shop-logos')
+            .upload(filePath, converted.blob, {
+              contentType: converted.mimeType,
+              cacheControl: '31536000',
+              upsert: true,
+            });
+          if (!uploadError) {
+            const { data: urlData } = supabase.storage
+              .from('shop-logos')
+              .getPublicUrl(filePath);
+            if (urlData?.publicUrl) {
+              return urlData.publicUrl;
+            }
+          } else {
+            console.warn('Supabase tx attachment upload fallback:', uploadError);
+          }
+        } catch (err) {
+          console.warn('Supabase tx attachment upload error:', err);
+        }
+      }
+      // Fallback: if storage bucket is unavailable, keep image compact so DB row still syncs across devices
+      if (urlOrDataUrl.startsWith('data:image/') && urlOrDataUrl.length > 90000) {
+        return await compressImageDataUrl(urlOrDataUrl, 760, 0.6);
+      }
+    }
+    return urlOrDataUrl;
   };
 
   const stopCameraStream = () => {
@@ -1427,7 +1529,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const customerName = item.contactName || contact?.name || 'Valued Customer';
     const customerPhone = contact?.phone || '-';
     const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : 'Service Order');
-    const description = item.description || item.cleanNotes || 'Payment / Sale Entry';
+    const description = stripAttachmentToken(item.description || item.cleanNotes) || 'Payment / Sale Entry';
     const paymentMethod = item.paymentMethod || 'Cash';
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
@@ -1645,7 +1747,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const customerName = item.contactName || contact?.name || 'Valued Customer';
     const customerPhone = contact?.phone || '-';
     const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : 'Service Order');
-    const description = item.description || item.cleanNotes || 'Payment / Sale Entry';
+    const description = stripAttachmentToken(item.description || item.cleanNotes) || 'Payment / Sale Entry';
     const paymentMethod = item.paymentMethod || 'Cash';
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
@@ -2415,8 +2517,24 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       if (transRes.data) {
         const attachMap = getTxAttachmentsMap(activeUid);
+        const legacyToSync: Array<{ id: string; desc: string; url: string; docType: 'Cheque' | 'Invoice' }> = [];
         mappedTx = transRes.data.map((t: any) => {
-          const att = attachMap[t.id];
+          const parsedAtt = extractAttachmentToken(t.description);
+          const localAtt = attachMap[t.id];
+          const resolvedUrl = parsedAtt.attachmentUrl || localAtt?.url || null;
+          const resolvedDocType = parsedAtt.attachmentDocType || localAtt?.docType || 'Cheque';
+
+          if (!parsedAtt.attachmentUrl && localAtt?.url) {
+            legacyToSync.push({
+              id: t.id,
+              desc: t.description || '',
+              url: localAtt.url,
+              docType: resolvedDocType
+            });
+          } else if (parsedAtt.attachmentUrl && (!localAtt || localAtt.url !== parsedAtt.attachmentUrl)) {
+            saveTxAttachment(t.id, parsedAtt.attachmentUrl, resolvedDocType, activeUid);
+          }
+
           return {
             id: t.id, 
             userId: t.user_id,
@@ -2426,9 +2544,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             amount: t.amount, 
             type: t.type, 
             balanceAfter: t.balance_after,
-            hasAttachment: Boolean(att?.url),
-            attachmentUrl: att?.url || null,
-            attachmentDocType: att?.docType
+            hasAttachment: Boolean(resolvedUrl),
+            attachmentUrl: resolvedUrl,
+            attachmentDocType: resolvedUrl ? resolvedDocType : undefined
           };
         });
         setTransactions(mappedTx);
@@ -2436,6 +2554,32 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           localStorage.setItem(`st_cached_transactions_${activeUid}`, JSON.stringify(mappedTx));
           localStorage.setItem('st_cached_transactions', JSON.stringify(mappedTx)); 
         } catch {}
+
+        // Background-migrate older local-only Chrome attachments to Supabase so mobile & other browsers see them too
+        if (legacyToSync.length > 0) {
+          (async () => {
+            for (const item of legacyToSync) {
+              try {
+                const cloudUrl = await uploadTxAttachmentToCloud(item.url, item.id, item.docType, activeUid);
+                if (cloudUrl) {
+                  const cleanBase = stripAttachmentToken(item.desc);
+                  const newDesc = cleanBase ? `${cleanBase} • [ATT:${item.docType}|${cloudUrl}]` : `[ATT:${item.docType}|${cloudUrl}]`;
+                  await supabase.from('transactions').update({ description: newDesc }).eq('id', item.id).eq('user_id', activeUid);
+                  saveTxAttachment(item.id, cloudUrl, item.docType, activeUid);
+                  setTransactions(prev => prev.map(tx => tx.id === item.id ? {
+                    ...tx,
+                    description: newDesc,
+                    hasAttachment: true,
+                    attachmentUrl: cloudUrl,
+                    attachmentDocType: item.docType
+                  } : tx));
+                }
+              } catch (syncErr) {
+                console.warn('Legacy attachment cloud sync warning:', syncErr);
+              }
+            }
+          })();
+        }
       }
 
       if (cashbookRes.data) {
@@ -2472,7 +2616,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           if (shouldAutoSync) {
             const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
             const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
-            const parsedDesc = parsed.cleanNotes || tx.description || 'Payment';
+            const parsedDesc = parsed.cleanNotes || stripAttachmentToken(tx.description) || 'Payment';
 
             let entryType: CashbookEntryType = 'SALE';
             let category = 'Customer Payment';
@@ -2704,6 +2848,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   }) => {
     if (!params.amount || params.amount <= 0) return;
     const method = (params.paymentMethod || 'Cash') as PaymentMethod;
+    const cleanNote = stripAttachmentToken(params.descriptionNote);
 
     let entryType: CashbookEntryType = 'SALE';
     let category = 'Customer Payment';
@@ -2714,23 +2859,23 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       entryType = 'SALE';
       category = 'Customer Payment';
       refPrefix = 'CUST';
-      desc = `Payment Received - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+      desc = `Payment Received - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
     } else if (params.contactType === 'VENDOR') {
       entryType = 'EXPENSE';
       category = 'Vendor Payment';
       refPrefix = 'VEND';
-      desc = `Payment to Vendor - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+      desc = `Payment to Vendor - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
     } else if (params.contactType === 'RENT') {
       if (params.txType === 'CREDIT') {
         entryType = 'SALE';
         category = 'Shop Rent';
         refPrefix = 'RENT';
-        desc = `Rent Withdrawal - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+        desc = `Rent Withdrawal - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
       } else {
         entryType = 'EXPENSE';
         category = 'Shop Rent';
         refPrefix = 'RENT';
-        desc = `Rent Deposit / Payment - ${params.contactName}${params.descriptionNote ? ' (' + params.descriptionNote + ')' : ''}`;
+        desc = `Rent Deposit / Payment - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
       }
     } else if (params.contactType === 'SERVICE') {
       entryType = 'SALE';
@@ -2738,7 +2883,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       refPrefix = 'SO';
       const descPrefix = params.isAdvance ? 'Advance Payment' : 'Service Payment';
       const modelText = params.phoneModel ? ` - ${params.phoneModel}` : '';
-      const noteText = params.descriptionNote ? ` (${params.descriptionNote})` : '';
+      const noteText = cleanNote ? ` (${cleanNote})` : '';
       desc = `${descPrefix}${modelText}${noteText}`;
     }
 
@@ -3275,13 +3420,24 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         ? transChequeDate
         : transDate;
 
+      const cleanFormattedDesc = stripAttachmentToken(formattedDesc);
+      const rawActiveAttachment = transPaymentMethod === 'Cheque' ? transAttachmentUrl : null;
+      const pendingTxKey = editingTransaction ? editingTransaction.id : generateUUID();
+      const cloudAttachmentUrl = rawActiveAttachment
+        ? await uploadTxAttachmentToCloud(rawActiveAttachment, pendingTxKey, transAttachmentDocType, authUser?.id)
+        : null;
+
+      const dbDescription = cloudAttachmentUrl
+        ? (cleanFormattedDesc ? `${cleanFormattedDesc} • [ATT:${transAttachmentDocType}|${cloudAttachmentUrl}]` : `[ATT:${transAttachmentDocType}|${cloudAttachmentUrl}]`)
+        : cleanFormattedDesc;
+
       const txPayload = { 
         user_id: authUser?.id,
         contact_id: selectedContact.id, 
         date: effectiveTxDate, 
         amount: amountVal, 
         type: transType, 
-        description: formattedDesc, 
+        description: dbDescription, 
         balance_after: 0 
       };
       let res;
@@ -3295,9 +3451,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       if (res.error) {
         if (res.error.code === 'PGRST205' || res.error.message?.includes('schema cache') || res.error.message?.includes('not find')) {
           setDbStatus('needs_tables');
-          const txId = editingTransaction ? editingTransaction.id : generateUUID();
-          const activeAttachment = transPaymentMethod === 'Cheque' ? transAttachmentUrl : null;
-          saveTxAttachment(txId, activeAttachment, transAttachmentDocType);
+          const txId = pendingTxKey;
+          saveTxAttachment(txId, cloudAttachmentUrl, transAttachmentDocType);
           const fallbackTx: Transaction = {
             id: txId,
             contactId: selectedContact.id,
@@ -3308,11 +3463,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             chequeStatus: transPaymentMethod === 'Cheque' ? transChequeStatus : undefined,
             chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
             chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
-            description: formattedDesc,
+            description: dbDescription,
             balanceAfter: 0,
-            hasAttachment: Boolean(activeAttachment),
-            attachmentUrl: activeAttachment,
-            attachmentDocType: activeAttachment ? transAttachmentDocType : undefined
+            hasAttachment: Boolean(cloudAttachmentUrl),
+            attachmentUrl: cloudAttachmentUrl,
+            attachmentDocType: cloudAttachmentUrl ? transAttachmentDocType : undefined
           };
           if (editingTransaction) {
             setTransactions(prev => prev.map(t => t.id === editingTransaction.id ? fallbackTx : t));
@@ -3320,11 +3475,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             setTransactions(prev => [fallbackTx, ...prev]);
           }
 
-          // Link to Cashbook:
-          // Customer got money -> Sales
-          // Vendor paid money -> Expense
-          // Rent deposit -> Expense (Shop Rent) / Rent withdrawal -> Sale (Shop Rent)
-          // Service payment -> Sales (Repair Charges)
           const shouldLinkToCashbook = (
             (transType === 'PAYMENT' || (selectedContact.type === 'RENT' && transType === 'CREDIT')) && amountVal > 0
           );
@@ -3344,8 +3494,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 amount: amountVal,
                 date: effectiveTxDate,
                 paymentMethod: transPaymentMethod,
-                descriptionNote: formattedDesc,
-                isAdvance: formattedDesc?.toLowerCase().includes('advance')
+                descriptionNote: cleanFormattedDesc,
+                isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance')
               });
             }
           } else if (editingTransaction && !shouldLinkToCashbook) {
@@ -3368,8 +3518,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
       if (res.data) {
         const savedId = res.data[0].id;
-        const activeAttachment = transPaymentMethod === 'Cheque' ? transAttachmentUrl : null;
-        saveTxAttachment(savedId, activeAttachment, transAttachmentDocType);
+        saveTxAttachment(savedId, cloudAttachmentUrl, transAttachmentDocType);
         const saved: Transaction = { 
           id: savedId, 
           contactId: res.data[0].contact_id, 
@@ -3382,9 +3531,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           chequeNumber: transPaymentMethod === 'Cheque' ? transChequeNumber.trim() : undefined,
           chequeDate: transPaymentMethod === 'Cheque' ? transChequeDate : undefined,
           balanceAfter: 0,
-          hasAttachment: Boolean(activeAttachment),
-          attachmentUrl: activeAttachment,
-          attachmentDocType: activeAttachment ? transAttachmentDocType : undefined
+          hasAttachment: Boolean(cloudAttachmentUrl),
+          attachmentUrl: cloudAttachmentUrl,
+          attachmentDocType: cloudAttachmentUrl ? transAttachmentDocType : undefined
         };
         const updatedTxList = editingTransaction
           ? transactions.map(t => t.id === editingTransaction.id ? saved : t)
@@ -3396,11 +3545,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           localStorage.setItem('st_cached_transactions', JSON.stringify(updatedTxList));
         } catch {}
 
-        // Link to Cashbook:
-        // Customer got money -> Sales
-        // Vendor paid money -> Expense
-        // Rent deposit -> Expense (Shop Rent) / Rent withdrawal -> Sale (Shop Rent)
-        // Service payment -> Sales (Repair Charges)
         const shouldLinkToCashbook = (
           (transType === 'PAYMENT' || (selectedContact.type === 'RENT' && transType === 'CREDIT')) && amountVal > 0
         );
@@ -3421,8 +3565,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               amount: amountVal,
               date: effectiveTxDate,
               paymentMethod: transPaymentMethod,
-              descriptionNote: formattedDesc,
-              isAdvance: formattedDesc?.toLowerCase().includes('advance')
+              descriptionNote: cleanFormattedDesc,
+              isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance')
             });
 
             const toastMsg = 
@@ -3490,6 +3634,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     }
 
     // Update or insert linked Cashbook entry with the passed cheque date in Expenses or Sales
+    const cleanPassDesc = stripAttachmentToken(updatedDesc);
     if (contact) {
       await recordOrUpdateLinkedCashbookEntry({
         txId: tx.id,
@@ -3500,8 +3645,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         amount: tx.amount,
         date: effectiveChequeDate,
         paymentMethod: 'Cheque',
-        descriptionNote: updatedDesc,
-        isAdvance: updatedDesc.toLowerCase().includes('advance')
+        descriptionNote: cleanPassDesc,
+        isAdvance: cleanPassDesc.toLowerCase().includes('advance')
       });
     } else {
       setCashbookEntries(prev => {
@@ -3510,7 +3655,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             return {
               ...e,
               date: effectiveChequeDate,
-              description: e.description?.replace(/\[PENDING\]/gi, '[PASSED]') || updatedDesc
+              description: e.description?.replace(/\[PENDING\]/gi, '[PASSED]') || cleanPassDesc
             };
           }
           return e;
@@ -3525,7 +3670,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       try {
         let cbq = supabase.from('cashbook_entries').update({
           date: effectiveChequeDate,
-          description: updatedDesc
+          description: cleanPassDesc
         }).eq('id', tx.id);
         if (authUser?.id) cbq = cbq.eq('user_id', authUser.id);
         await cbq;
@@ -5292,8 +5437,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                           setTransChequeNumber(parsed.chequeNumber || p.chequeNumber || '');
                           setTransChequeDate(parsed.chequeDate || p.chequeDate || p.date);
                           setTransDesc(parsed.cleanNotes);
-                          setTransAttachmentUrl(p.attachmentUrl || null);
-                          setTransAttachmentDocType(p.attachmentDocType || 'Cheque');
+                          setTransAttachmentUrl(p.attachmentUrl || parsed.attachmentUrl || null);
+                          setTransAttachmentDocType(p.attachmentDocType || parsed.attachmentDocType || 'Cheque');
                           navigateTo('TRANSACTION_FORM', selectedContact.id);
                         }}
                         className={`py-2.5 flex items-center justify-between hover:bg-slate-50 rounded-xl px-2 cursor-pointer transition-colors group ${
@@ -5332,7 +5477,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                                   </span>
                                 )
                               )}
-                              <span className="font-bold text-xs text-slate-800">{parsed.cleanNotes || p.description || 'Payment'}</span>
+                              <span className="font-bold text-xs text-slate-800">{parsed.cleanNotes || stripAttachmentToken(p.description) || 'Payment'}</span>
                               <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold flex items-center gap-1">
                                 <Calendar size={10} className="text-slate-400" />
                                 {formatDisplayDate(p.date)}
@@ -5346,6 +5491,21 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                                   <Clock size={10} className={pendingChq ? 'text-amber-700' : 'text-emerald-700'} />
                                   <span>Due: {formatDisplayDate(chqDueDate)}</span>
                                 </span>
+                              )}
+                              {(p.attachmentUrl || parsed.attachmentUrl) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const url = p.attachmentUrl || parsed.attachmentUrl;
+                                    const docType = p.attachmentDocType || parsed.attachmentDocType || 'Cheque';
+                                    if (url) setViewingAttachment({ url, title: `${docType} Attachment` });
+                                  }}
+                                  className="text-[10px] px-2 py-0.5 rounded-md font-bold bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100 flex items-center gap-1"
+                                >
+                                  <Eye size={10} />
+                                  <span>{p.attachmentDocType || parsed.attachmentDocType || 'Cheque'}</span>
+                                </button>
                               )}
                             </div>
                             <p className="text-[10px] text-slate-500 mt-0.5">
@@ -5540,9 +5700,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   setTransChequeStatus(parsed.chequeStatus || tx.chequeStatus || 'PENDING');
                   setTransChequeNumber(parsed.chequeNumber || tx.chequeNumber || '');
                   setTransChequeDate(parsed.chequeDate || tx.chequeDate || tx.date);
-                  setTransDesc(parsed.cleanNotes || (parsed.method ? '' : (tx.description || ''))); 
-                  setTransAttachmentUrl(tx.attachmentUrl || null);
-                  setTransAttachmentDocType(tx.attachmentDocType || 'Cheque');
+                  setTransDesc(parsed.cleanNotes || (parsed.method ? '' : stripAttachmentToken(tx.description))); 
+                  setTransAttachmentUrl(tx.attachmentUrl || parsed.attachmentUrl || null);
+                  setTransAttachmentDocType(tx.attachmentDocType || parsed.attachmentDocType || 'Cheque');
                   navigateTo('TRANSACTION_FORM', selectedContact.id); 
                 }} 
               />
@@ -5998,7 +6158,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                           onClick={() => setViewingAttachment({ url: transAttachmentUrl, title: `${transAttachmentDocType} Photo` })}
                           className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1"
                         >
-                          {transAttachmentUrl.startsWith('data:image/') ? (
+                          {isImageAttachment(transAttachmentUrl) ? (
                             <img
                               src={transAttachmentUrl}
                               alt={`${transAttachmentDocType} preview`}
@@ -10585,9 +10745,22 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">{viewingAttachment.title}</h3>
               </div>
               <div className="flex items-center gap-2">
+                {viewingAttachment.url.startsWith('http') && (
+                  <a
+                    href={viewingAttachment.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-slate-200 transition-colors"
+                  >
+                    <ExternalLink size={14} />
+                    <span>Open</span>
+                  </a>
+                )}
                 <a
                   href={viewingAttachment.url}
                   download={`${viewingAttachment.title.replace(/\s+/g, '_')}`}
+                  target={viewingAttachment.url.startsWith('http') ? '_blank' : undefined}
+                  rel={viewingAttachment.url.startsWith('http') ? 'noopener noreferrer' : undefined}
                   className="px-3 py-1.5 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 rounded-xl text-xs font-bold flex items-center gap-1 hover:bg-blue-100 transition-colors"
                 >
                   <Download size={14} />
@@ -10603,7 +10776,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </div>
             </div>
             <div className="flex-1 overflow-auto p-4 bg-slate-100 dark:bg-[#080d16] flex items-center justify-center">
-              {viewingAttachment.url.startsWith('data:image/') ? (
+              {isImageAttachment(viewingAttachment.url) ? (
                 <img
                   src={viewingAttachment.url}
                   alt={viewingAttachment.title}

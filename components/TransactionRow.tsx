@@ -7,8 +7,48 @@ export interface ParsedTransactionMetadata {
   chequeStatus?: ChequeStatus;
   chequeNumber?: string;
   chequeDate?: string;
+  attachmentUrl?: string;
+  attachmentDocType?: 'Cheque' | 'Invoice';
   cleanNotes: string;
 }
+
+const ATT_TOKEN_REGEX = /\s*•?\s*\[ATT:(Cheque|Invoice)\|([^\]]+)\]/i;
+
+export const extractAttachmentToken = (desc?: string): {
+  attachmentUrl?: string;
+  attachmentDocType?: 'Cheque' | 'Invoice';
+  rawToken?: string;
+  cleanDesc: string;
+} => {
+  if (!desc) return { cleanDesc: '' };
+  const match = desc.match(ATT_TOKEN_REGEX);
+  if (!match) return { cleanDesc: desc };
+  const docType = match[1]?.toLowerCase() === 'invoice' ? 'Invoice' : 'Cheque';
+  const url = match[2]?.trim();
+  const rawToken = `[ATT:${docType}|${url}]`;
+  const cleanDesc = desc
+    .replace(ATT_TOKEN_REGEX, '')
+    .replace(/^[•\s]+|[•\s]+$/g, '')
+    .trim();
+  return {
+    attachmentUrl: url || undefined,
+    attachmentDocType: docType,
+    rawToken,
+    cleanDesc,
+  };
+};
+
+export const stripAttachmentToken = (desc?: string): string => {
+  return extractAttachmentToken(desc).cleanDesc;
+};
+
+export const isImageAttachment = (url?: string | null): boolean => {
+  if (!url) return false;
+  if (url.startsWith('data:image/')) return true;
+  if (url.startsWith('data:application/pdf')) return false;
+  if (/\.pdf(\?.*)?$/i.test(url)) return false;
+  return true;
+};
 
 export const isPendingCheque = (t: Transaction): boolean => {
   if (t.chequeStatus === 'PASSED') return false;
@@ -43,15 +83,18 @@ export const parsePaymentMethod = (
   explicitStatus?: ChequeStatus,
   explicitChequeDate?: string
 ): ParsedTransactionMetadata => {
+  const { attachmentUrl, attachmentDocType, cleanDesc } = extractAttachmentToken(desc);
   const result: ParsedTransactionMetadata = {
     method: explicitMethod,
     chequeStatus: explicitStatus,
     chequeDate: explicitChequeDate,
-    cleanNotes: desc || ''
+    attachmentUrl,
+    attachmentDocType,
+    cleanNotes: cleanDesc
   };
 
-  if (!desc) return result;
-  const trimmed = desc.trim();
+  if (!cleanDesc) return result;
+  const trimmed = cleanDesc.trim();
 
   // Check Cheque format
   if (explicitMethod === 'Cheque' || trimmed.startsWith('Cheque')) {
@@ -136,6 +179,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
   const pendingCheque = isPendingCheque(transaction);
   const isCheque = parsed.method === 'Cheque' || transaction.paymentMethod === 'Cheque';
   const chqDueDate = parsed.chequeDate || transaction.chequeDate || transaction.date;
+  const resolvedAttachmentUrl = transaction.attachmentUrl || parsed.attachmentUrl;
+  const resolvedAttachmentDocType = transaction.attachmentDocType || parsed.attachmentDocType || 'Cheque';
 
   return (
     <div 
@@ -228,32 +273,32 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
 
             {parsed.cleanNotes ? (
               <span className="text-sm text-slate-600 dark:text-slate-300 font-medium truncate">{parsed.cleanNotes}</span>
-            ) : (!parsed.method && transaction.description ? (
-              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{transaction.description}</span>
+            ) : (!parsed.method && stripAttachmentToken(transaction.description) ? (
+              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{stripAttachmentToken(transaction.description)}</span>
             ) : null)}
           </div>
 
-          {(transaction.attachmentUrl || transaction.hasAttachment) && (
+          {(resolvedAttachmentUrl || transaction.hasAttachment) && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                if (transaction.attachmentUrl && onViewAttachment) {
-                  onViewAttachment(transaction.attachmentUrl, transaction.attachmentDocType || 'Cheque');
+                if (resolvedAttachmentUrl && onViewAttachment) {
+                  onViewAttachment(resolvedAttachmentUrl, resolvedAttachmentDocType);
                 }
               }}
               className="mt-1 inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/30 hover:bg-amber-100/80 dark:hover:bg-amber-950/50 transition-all w-fit active:scale-95"
               title="View Attached Cheque / Invoice"
             >
-              {transaction.attachmentUrl && transaction.attachmentUrl.startsWith('data:image/') ? (
+              {resolvedAttachmentUrl && isImageAttachment(resolvedAttachmentUrl) ? (
                 <img
-                  src={transaction.attachmentUrl}
-                  alt={transaction.attachmentDocType || 'Cheque / Invoice'}
+                  src={resolvedAttachmentUrl}
+                  alt={resolvedAttachmentDocType}
                   className="w-8 h-6 object-cover rounded border border-amber-300 dark:border-amber-700 shrink-0"
                 />
               ) : (
                 <div className="w-7 h-6 rounded bg-white dark:bg-[#1a2538] border border-amber-200 dark:border-amber-800 flex items-center justify-center shrink-0">
-                  {transaction.attachmentUrl?.startsWith('data:application/pdf') ? (
+                  {resolvedAttachmentUrl && !isImageAttachment(resolvedAttachmentUrl) ? (
                     <FileText size={13} className="text-rose-600" />
                   ) : (
                     <ImageIcon size={13} className="text-amber-600" />
@@ -261,8 +306,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                 </div>
               )}
               <span className="text-[11px] font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1">
-                <span>{transaction.attachmentDocType || 'Cheque / Invoice'}</span>
-                {transaction.attachmentUrl && <Eye size={11} className="opacity-75" />}
+                <span>{resolvedAttachmentDocType}</span>
+                {resolvedAttachmentUrl && <Eye size={11} className="opacity-75" />}
               </span>
             </button>
           )}
