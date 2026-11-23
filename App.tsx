@@ -31,16 +31,7 @@ export const DEFAULT_COLLECTED_ITEMS = [
   'Original Box'
 ] as const;
 
-export const SALE_CATEGORIES = [
-  'Customer Payment',
-  'Mobile Accessories',
-  'Repair Charges',
-  'Mobile Phone Sales',
-  'Spare Parts Sale',
-  'SIM / Reload',
-  'Software / Unlocking',
-  'Other Sales'
-] as const;
+export const SALE_CATEGORIES: string[] = [];
 
 const getItemUnitSalePrice = (
   it: { cost?: number; wholesalePrice?: number; retailPrice?: number; priceType?: 'RETAIL' | 'WHOLESALE' }
@@ -276,7 +267,8 @@ export default function App() {
   const [cashbookType, setCashbookType] = useState<CashbookEntryType>('SALE');
   const [cashbookAmount, setCashbookAmount] = useState('');
   const [cashbookDate, setCashbookDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [cashbookCategory, setCashbookCategory] = useState<string>('Mobile Accessories');
+  const [cashbookCategory, setCashbookCategory] = useState<string>('');
+  const [cashbookCategoryManual, setCashbookCategoryManual] = useState<boolean>(false);
   const [cashbookCustomCategory, setCashbookCustomCategory] = useState('');
   const [cashbookDesc, setCashbookDesc] = useState('');
   const [cashbookPaymentMethod, setCashbookPaymentMethod] = useState<PaymentMethod>('Cash');
@@ -385,7 +377,7 @@ export default function App() {
   const [instInvCustomerName, setInstInvCustomerName] = useState('');
   const [instInvCustomerPhone, setInstInvCustomerPhone] = useState('');
   const [instInvSelectedContactId, setInstInvSelectedContactId] = useState('');
-  const [instInvCategory, setInstInvCategory] = useState<string>('Mobile Accessories');
+  const [instInvCategory, setInstInvCategory] = useState<string>('');
   const [instInvCustomCategory, setInstInvCustomCategory] = useState('');
   const [instInvDescription, setInstInvDescription] = useState('');
   const [instInvAmount, setInstInvAmount] = useState('');
@@ -426,10 +418,54 @@ export default function App() {
   const [sellChequeNumber, setSellChequeNumber] = useState('');
   const [sellChequeDate, setSellChequeDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [sellChequeStatus, setSellChequeStatus] = useState<ChequeStatus>('PENDING');
-  const [sellCategory, setSellCategory] = useState<string>('Spare Parts Sale');
+  const [sellCategory, setSellCategory] = useState<string>('');
+  const [sellCategoryManual, setSellCategoryManual] = useState<boolean>(false);
   const [sellNotes, setSellNotes] = useState('');
   const [sellStockSearch, setSellStockSearch] = useState('');
   const [sellError, setSellError] = useState('');
+
+  const resolveCanonicalCategory = (rawCat?: string): string => {
+    const clean = (rawCat || '').trim();
+    if (!clean) return '';
+    const match = userItemCategories.find(c => c.toLowerCase() === clean.toLowerCase());
+    return match || clean;
+  };
+
+  const inferItemCategory = (itemObj?: { id?: string; item?: string; sku?: string; category?: string } | null): string => {
+    if (!itemObj) return '';
+    const direct = resolveCanonicalCategory(itemObj.category);
+    if (direct) return direct;
+
+    const matchedStock = daybookItems.find(
+      d =>
+        (itemObj.id && d.id === itemObj.id) ||
+        (itemObj.sku && d.sku && d.sku.toLowerCase() === itemObj.sku.toLowerCase()) ||
+        (itemObj.item && d.item.toLowerCase() === itemObj.item.trim().toLowerCase())
+    );
+    if (matchedStock?.category) {
+      const fromStock = resolveCanonicalCategory(matchedStock.category);
+      if (fromStock) return fromStock;
+    }
+
+    const itemName = (itemObj.item || '').trim();
+    if (itemName && userItemCategories.length > 0) {
+      const sortedCats = [...userItemCategories].sort((a, b) => b.length - a.length);
+      for (const cat of sortedCats) {
+        const escaped = cat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i');
+        if (regex.test(itemName)) return cat;
+      }
+    }
+    return '';
+  };
+
+  useEffect(() => {
+    if (!isSellStockModalOpen || sellCategoryManual || sellCartItems.length === 0) return;
+    const autoCat = sellCartItems.map(it => inferItemCategory(it)).find(Boolean) || '';
+    if (autoCat !== sellCategory) {
+      setSellCategory(autoCat);
+    }
+  }, [isSellStockModalOpen, sellCartItems, sellCategoryManual, userItemCategories, daybookItems]);
 
   const [restockingItem, setRestockingItem] = useState<DaybookStockItem | null>(null);
   const [restockQty, setRestockQty] = useState('');
@@ -3729,7 +3765,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               type: 'SALE' as CashbookEntryType,
               amount: Number(c.amount) || 0,
               date: c.date,
-              category: c.category || 'General',
+              category: c.category || '',
               description: c.description || '',
               paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
               referenceNo: c.reference_no || '',
@@ -3775,7 +3811,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             let desc = `Payment Received - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
 
             if (isPaidCustomerItemCredit && parsed.items) {
-              category = parsed.items[0]?.category || 'Spare Parts Sale';
+              category = parsed.items[0]?.category || '';
               refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
               desc = `Item Sale - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''} • ${encodeCashbookItemsToken(parsed.items)}`;
             } else if (contact.type === 'RENT') {
@@ -4015,7 +4051,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     if (params.contactType === 'CUSTOMER') {
       if (params.isItemCreditSale) {
-        category = params.categoryOverride || params.items?.[0]?.category || 'Spare Parts Sale';
+        category = params.categoryOverride || params.items?.[0]?.category || '';
         refPrefix = 'CUST';
         desc = `Item Sale - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
       } else {
@@ -4805,7 +4841,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 paymentMethod: transPaymentMethod,
                 descriptionNote: cleanFormattedDesc,
                 isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
-                categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
+                categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
                 items: shouldLinkItemSale ? validTransItems : undefined,
                 isItemCreditSale: shouldLinkItemSale
               });
@@ -4879,7 +4915,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               paymentMethod: transPaymentMethod,
               descriptionNote: cleanFormattedDesc,
               isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
-              categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
+              categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
               items: shouldLinkItemSale ? validTransItems : undefined,
               isItemCreditSale: shouldLinkItemSale
             });
@@ -4976,7 +5012,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         paymentMethod: isSplit ? 'Cash + Cheque' : 'Cheque',
         descriptionNote: cleanPassDesc,
         isAdvance: cleanPassDesc.toLowerCase().includes('advance'),
-        categoryOverride: isItemCredit ? (passItems?.[0]?.category || 'Spare Parts Sale') : undefined,
+        categoryOverride: isItemCredit ? (passItems?.[0]?.category || '') : undefined,
         items: passItems,
         isItemCreditSale: isItemCredit
       });
@@ -10423,12 +10459,31 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   }, [baseFilteredCashbookEntries]);
 
   const existingCategories = useMemo(() => {
+    const legacyDefaults = new Set([
+      'customer payment',
+      'mobile accessories',
+      'repair charges',
+      'mobile phone sales',
+      'spare parts sale',
+      'sim / reload',
+      'software / unlocking',
+      'other sales',
+      'general',
+      'general sale',
+      'store sale'
+    ]);
+    const userCatLower = new Set(userItemCategories.map(c => c.toLowerCase()));
     const set = new Set<string>();
     cashbookEntries.forEach(e => {
-      if ((e.type as string) !== 'EXPENSE' && e.category) set.add(e.category);
+      const cat = (e.category || '').trim();
+      if ((e.type as string) !== 'EXPENSE' && cat) {
+        if (!legacyDefaults.has(cat.toLowerCase()) || userCatLower.has(cat.toLowerCase())) {
+          set.add(cat);
+        }
+      }
     });
     return Array.from(set);
-  }, [cashbookEntries]);
+  }, [cashbookEntries, userItemCategories]);
 
   const groupedCashbookEntries = useMemo(() => {
     const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number }> = [];
@@ -10464,7 +10519,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       setCashbookType('SALE');
       setCashbookAmount(entryToEdit.amount.toString());
       setCashbookDate(entryToEdit.date || new Date().toISOString().slice(0, 10));
-      setCashbookCategory(entryToEdit.category || SALE_CATEGORIES[0]);
+      setCashbookCategory(entryToEdit.category || '');
+      setCashbookCategoryManual(Boolean(entryToEdit.category));
       setCashbookCustomCategory('');
       setCashbookDesc(extracted.cleanDesc || '');
       setCashbookPaymentMethod(entryToEdit.paymentMethod || 'Cash');
@@ -10474,10 +10530,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       setCashbookAutoCalcAmount(false);
       setCashbookSyncStockOnSave(false);
     } else {
+      const prefillCat = inferItemCategory(prefillItem);
       setEditingCashbookEntry(null);
       setCashbookType('SALE');
       setCashbookDate(new Date().toISOString().slice(0, 10));
-      setCashbookCategory(SALE_CATEGORIES[0]);
+      setCashbookCategory(prefillCat);
+      setCashbookCategoryManual(false);
       setCashbookCustomCategory('');
       setCashbookDesc('');
       setCashbookPaymentMethod('Cash');
@@ -10488,7 +10546,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           id: generateUUID(),
           item: prefillItem.item,
           sku: prefillItem.sku || '',
-          category: prefillItem.category || undefined,
+          category: prefillCat || prefillItem.category || undefined,
           qty: 1,
           cost: prefillItem.cost || 0,
           wholesalePrice: prefillItem.wholesalePrice || 0,
@@ -10536,7 +10594,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     }
     const finalCategory = (cashbookCategory === 'Other' && cashbookCustomCategory.trim())
       ? cashbookCustomCategory.trim()
-      : (cashbookCategory || 'General Sale').trim();
+      : (cashbookCategory === 'Other' ? '' : cashbookCategory.trim());
 
     const cleanUserDesc = stripCashbookItems(cashbookDesc.trim());
     const dbDescription = validItems.length > 0
@@ -10693,7 +10751,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const customer = instInvCustomerName.trim() || 'Walk-in Customer';
     const finalCategory = (instInvCategory === 'Other' && instInvCustomCategory.trim())
       ? instInvCustomCategory.trim()
-      : (instInvCategory || 'Store Sale').trim();
+      : (instInvCategory === 'Other' ? '' : instInvCategory.trim());
     const invNo = instInvInvoiceNo.trim() || `INV-${Math.floor(1000 + Math.random() * 9000)}`;
 
     let finalDesc = instInvDescription.trim() || finalCategory;
@@ -11516,9 +11574,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
                             <div className="overflow-hidden">
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
-                                  {entry.category}
-                                </span>
+                                {entry.category && (
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                                    {entry.category}
+                                  </span>
+                                )}
 
                                 {/* Payment Method Badge */}
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
@@ -11844,13 +11904,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 Category
               </label>
               <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 dark:bg-[#1a2538] rounded-2xl border border-slate-200/80 dark:border-[#26354d]">
-                {SALE_CATEGORIES.map(cat => {
+                {Array.from(new Set([...userItemCategories, ...existingCategories])).map(cat => {
                   const isSelected = cashbookCategory === cat;
                   return (
                     <button
                       key={cat}
                       type="button"
-                      onClick={() => setCashbookCategory(cat)}
+                      onClick={() => {
+                        setCashbookCategoryManual(!isSelected);
+                        setCashbookCategory(isSelected ? '' : cat);
+                      }}
                       className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                         isSelected
                           ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
@@ -11863,7 +11926,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 })}
                 <button
                   type="button"
-                  onClick={() => setCashbookCategory('Other')}
+                  onClick={() => {
+                    const nextVal = cashbookCategory === 'Other' ? '' : 'Other';
+                    setCashbookCategoryManual(Boolean(nextVal));
+                    setCashbookCategory(nextVal);
+                  }}
                   className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                     cashbookCategory === 'Other'
                       ? 'bg-slate-900 text-white border-slate-900'
@@ -11983,13 +12050,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       const pickedId = e.target.value;
                       const found = daybookItems.find(it => it.id === pickedId);
                       if (!found) return;
+                      const resolvedItemCat = inferItemCategory(found);
                       const next = [
                         ...cashbookEntryItems,
                         {
                           id: generateUUID(),
                           item: found.item,
                           sku: found.sku || '',
-                          category: found.category || undefined,
+                          category: resolvedItemCat || found.category || undefined,
                           qty: 1,
                           cost: found.cost || 0,
                           wholesalePrice: found.wholesalePrice || 0,
@@ -11998,6 +12066,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         }
                       ];
                       setCashbookEntryItems(next);
+                      if (!cashbookCategoryManual) {
+                        const autoCat = next.map(r => inferItemCategory(r)).find(Boolean) || '';
+                        if (autoCat) setCashbookCategory(autoCat);
+                      }
                       if (cashbookAutoCalcAmount) {
                         const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                         if (total > 0) setCashbookAmount(total.toString());
@@ -12021,6 +12093,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     const updateItemRow = (patch: Partial<CashbookEntryItem>) => {
                       const next = cashbookEntryItems.map((r, i) => i === idx ? { ...r, ...patch } : r);
                       setCashbookEntryItems(next);
+                      if (!cashbookCategoryManual && (patch.category !== undefined || patch.item !== undefined)) {
+                        const autoCat = next.map(r => inferItemCategory(r)).find(Boolean) || '';
+                        setCashbookCategory(autoCat);
+                      }
                       if (cashbookAutoCalcAmount) {
                         const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                         setCashbookAmount(total > 0 ? total.toString() : '');
@@ -12060,6 +12136,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                               onClick={() => {
                                 const next = cashbookEntryItems.filter((_, i) => i !== idx);
                                 setCashbookEntryItems(next);
+                                if (!cashbookCategoryManual) {
+                                  const autoCat = next.map(r => inferItemCategory(r)).find(Boolean) || '';
+                                  setCashbookCategory(autoCat);
+                                }
                                 if (cashbookAutoCalcAmount) {
                                   if (next.length > 0) {
                                     const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
@@ -13262,9 +13342,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                           </div>
                           <div className="overflow-hidden">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
-                                {entry.category}
-                              </span>
+                              {entry.category && (
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                                  {entry.category}
+                                </span>
+                              )}
                               <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                                 entry.paymentMethod === 'Bank Transfer'
                                   ? 'bg-blue-50 text-blue-700 border-blue-200'
@@ -13698,7 +13780,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     setSellChequeNumber('');
     setSellChequeDate(new Date().toISOString().slice(0, 10));
     setSellChequeStatus('PENDING');
-    setSellCategory(prefillItem?.category || 'Spare Parts Sale');
+    const prefillCat = inferItemCategory(prefillItem);
+    setSellCategory(prefillCat);
+    setSellCategoryManual(false);
     setSellNotes('');
     setSellStockSearch('');
     setTransAttachmentUrl(null);
@@ -13709,7 +13793,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           id: prefillItem.id,
           item: prefillItem.item,
           sku: prefillItem.sku,
-          category: prefillItem.category,
+          category: prefillCat || prefillItem.category,
           qty: 1,
           cost: Number(prefillItem.cost) || 0,
           wholesalePrice: Number(prefillItem.wholesalePrice) || 0,
@@ -13958,7 +14042,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
       // 4. Sync Paid Portion (including Cheque & Cash + Cheque) to Sales Details
       if (!isCreditSale) {
-        const resolvedCat = sellCategory.trim() || validItems[0]?.category || 'Spare Parts Sale';
+        const resolvedCat = sellCategory.trim() || validItems[0]?.category || '';
         if ((isChequeMethod || isSplitMethod) && sellChequeStatus === 'BOUNCED') {
           showProfileToast(`Bounced cheque sale saved for ${resolvedContact.name} & stock updated.`);
         } else {
@@ -14038,6 +14122,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     const addItemToSellCart = (stockItem: DaybookStockItem) => {
       setSellError('');
+      const resolvedItemCat = inferItemCategory(stockItem);
       setSellCartItems(prev => {
         const existingIdx = prev.findIndex(c => c.id === stockItem.id);
         if (existingIdx >= 0) {
@@ -14049,7 +14134,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             id: stockItem.id,
             item: stockItem.item,
             sku: stockItem.sku,
-            category: stockItem.category,
+            category: resolvedItemCat || stockItem.category,
             qty: 1,
             cost: Number(stockItem.cost) || 0,
             wholesalePrice: Number(stockItem.wholesalePrice) || 0,
@@ -14058,8 +14143,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           }
         ];
       });
-      if (stockItem.category && !sellCategory) {
-        setSellCategory(stockItem.category);
+      if (resolvedItemCat && !sellCategoryManual && !sellCategory) {
+        setSellCategory(resolvedItemCat);
       }
     };
 
@@ -14264,7 +14349,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                           </div>
                           <button
                             type="button"
-                            onClick={() => setSellCartItems(prev => prev.filter((_, i) => i !== idx))}
+                            onClick={() => {
+                              const next = sellCartItems.filter((_, i) => i !== idx);
+                              setSellCartItems(next);
+                              if (!sellCategoryManual) {
+                                const nextCat = next.map(it => inferItemCategory(it)).find(Boolean) || '';
+                                setSellCategory(nextCat);
+                              }
+                            }}
                             className="p-1 text-slate-400 hover:text-rose-600 rounded-lg"
                             title="Remove item"
                           >
@@ -14514,12 +14606,27 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Category</label>
                   <select
                     value={sellCategory}
-                    onChange={e => setSellCategory(e.target.value)}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSellCategory(val);
+                      setSellCategoryManual(true);
+                    }}
                     className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none"
                   >
-                    {Array.from(new Set([...SALE_CATEGORIES, ...userItemCategories])).map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
+                    <option value="">-- Select Category (Optional) --</option>
+                    {(() => {
+                      const optsMap = new Map<string, string>();
+                      userItemCategories.forEach(c => {
+                        const clean = (c || '').trim();
+                        if (clean && !optsMap.has(clean.toLowerCase())) optsMap.set(clean.toLowerCase(), clean);
+                      });
+                      if (sellCategory && !optsMap.has(sellCategory.toLowerCase())) {
+                        optsMap.set(sellCategory.toLowerCase(), sellCategory);
+                      }
+                      return Array.from(optsMap.values()).map(cat => (
+                        <option key={cat} value={cat}>{cat}</option>
+                      ));
+                    })()}
                   </select>
                 </div>
               </div>
@@ -15100,13 +15207,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 Category
               </label>
               <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 dark:bg-[#131b2a] rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c]">
-                {SALE_CATEGORIES.map(cat => {
+                {Array.from(new Set([...userItemCategories, ...existingCategories])).map(cat => {
                   const isSelected = instInvCategory === cat;
                   return (
                     <button
                       key={cat}
                       type="button"
-                      onClick={() => setInstInvCategory(cat)}
+                      onClick={() => setInstInvCategory(isSelected ? '' : cat)}
                       className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                         isSelected
                           ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
@@ -15119,7 +15226,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 })}
                 <button
                   type="button"
-                  onClick={() => setInstInvCategory('Other')}
+                  onClick={() => setInstInvCategory(instInvCategory === 'Other' ? '' : 'Other')}
                   className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                     instInvCategory === 'Other'
                       ? 'bg-slate-900 text-white border-slate-900'
@@ -15660,7 +15767,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   onChange={e => setInstInvCategory(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 outline-none"
                 >
-                  {SALE_CATEGORIES.map(cat => (
+                  <option value="">-- Select Category (Optional) --</option>
+                  {Array.from(new Set([...userItemCategories, ...existingCategories])).map(cat => (
                     <option key={cat} value={cat}>{cat}</option>
                   ))}
                 </select>
@@ -15833,9 +15941,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             #{refDisplay}
                           </span>
 
-                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                            {inv.category}
-                          </span>
+                          {inv.category && (
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                              {inv.category}
+                            </span>
+                          )}
 
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                             inv.paymentMethod === 'Bank Transfer'
