@@ -1533,9 +1533,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     return { totalPaid, totalCredit };
   }, [transactions, contacts, activeTab, selectedContact, reportRange, reportTarget]);
 
+  // Helper to identify bounced cheques in cashbook entries
+  const isBouncedCashbookEntry = (entry: CashbookEntry): boolean => {
+    return (entry.description || '').toUpperCase().includes('[BOUNCED]');
+  };
+
   // Helper to identify pending cheques in cashbook entries
   const isPendingCashbookEntry = (entry: CashbookEntry): boolean => {
-    if (entry.paymentMethod === 'Cheque') {
+    if (entry.paymentMethod === 'Cheque' || entry.paymentMethod === 'Cash + Cheque') {
       const desc = entry.description || '';
       if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
       if (desc.includes('[BOUNCED]')) return false;
@@ -1544,10 +1549,33 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     return false;
   };
 
+  // Helper to split Cash / Bank / Card / Cheque amounts (handles Cash + Cheque split sales)
+  const getCashbookEntryPaymentSplit = (entry: CashbookEntry): { cash: number; bank: number; card: number; cheque: number } => {
+    const amt = Number(entry.amount) || 0;
+    if (entry.paymentMethod === 'Cash') return { cash: amt, bank: 0, card: 0, cheque: 0 };
+    if (entry.paymentMethod === 'Bank Transfer') return { cash: 0, bank: amt, card: 0, cheque: 0 };
+    if (entry.paymentMethod === 'Card') return { cash: 0, bank: 0, card: amt, cheque: 0 };
+    if (entry.paymentMethod === 'Cheque') return { cash: 0, bank: 0, card: 0, cheque: amt };
+    if (entry.paymentMethod === 'Cash + Cheque') {
+      const desc = entry.description || '';
+      const cashMatch = desc.match(/Cash:\s*(?:LKR\s*)?([0-9,]+(?:\.[0-9]+)?)/i);
+      const chqMatch = desc.match(/Cheque:\s*(?:LKR\s*)?([0-9,]+(?:\.[0-9]+)?)/i);
+      const cashNum = cashMatch ? parseFloat(cashMatch[1].replace(/,/g, '')) : 0;
+      const chqNum = chqMatch ? parseFloat(chqMatch[1].replace(/,/g, '')) : Math.max(0, amt - cashNum);
+      if (cashNum > 0 || chqNum > 0) {
+        return { cash: cashNum, bank: 0, card: 0, cheque: chqNum };
+      }
+      return { cash: 0, bank: 0, card: 0, cheque: amt };
+    }
+    return { cash: amt, bank: 0, card: 0, cheque: 0 };
+  };
+
   const todayCashbookSnapshot = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const todayEntries = cashbookEntries.filter(e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isPendingCashbookEntry(e));
-    const sales = todayEntries.reduce((s, e) => s + e.amount, 0);
+    const todayEntries = cashbookEntries.filter(
+      e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isBouncedCashbookEntry(e)
+    );
+    const sales = todayEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
     return {
       count: todayEntries.length,
       sales
@@ -3723,20 +3751,34 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         for (const tx of mappedTx) {
           if (!allContactsMap.has(tx.contactId) || existingCbIds.has(tx.id) || !tx.amount || tx.amount <= 0) continue;
           const contact = allContactsMap.get(tx.contactId)!;
+          const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
+          const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
+          const isChequeLike = method === 'Cheque' || method === 'Cash + Cheque';
+          const isPaidCustomerItemCredit =
+            contact.type === 'CUSTOMER' &&
+            tx.type === 'CREDIT' &&
+            Array.isArray(parsed.items) &&
+            parsed.items.length > 0 &&
+            isChequeLike &&
+            parsed.chequeStatus !== 'BOUNCED';
           const shouldAutoSync =
             ((contact.type === 'CUSTOMER' || contact.type === 'SERVICE') && tx.type === 'PAYMENT') ||
-            (contact.type === 'RENT' && tx.type === 'CREDIT');
+            (contact.type === 'RENT' && tx.type === 'CREDIT') ||
+            isPaidCustomerItemCredit;
 
           if (shouldAutoSync) {
-            const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
-            const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
-            const parsedDesc = parsed.cleanNotes || stripAttachmentToken(tx.description) || 'Payment';
+            const rawCleanDesc = stripCashbookItems(stripAttachmentToken(tx.description || ''));
+            const parsedDesc = isChequeLike ? rawCleanDesc : (parsed.cleanNotes || rawCleanDesc || 'Payment');
 
             let category = 'Customer Payment';
             let refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
             let desc = `Payment Received - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
 
-            if (contact.type === 'RENT') {
+            if (isPaidCustomerItemCredit && parsed.items) {
+              category = parsed.items[0]?.category || 'Spare Parts Sale';
+              refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
+              desc = `Item Sale - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''} • ${encodeCashbookItemsToken(parsed.items)}`;
+            } else if (contact.type === 'RENT') {
               category = 'Shop Rent';
               refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
               desc = `Rent Withdrawal - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
@@ -3761,6 +3803,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               referenceNo: refNo,
               contactName: contact.name,
               contactId: contact.id,
+              items: parsed.items && parsed.items.length > 0 ? parsed.items : undefined,
               createdAt: new Date().toISOString()
             };
             missingCbEntries.push(newCb);
@@ -4746,32 +4789,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           await applyStockDeductionIfEnabled();
 
           if (shouldLinkToCashbook) {
-            const isSplitMethod = transPaymentMethod === 'Cash + Cheque';
-            const splitCashNum = parseFloat(transCashAmount) || 0;
-            const isPendingChq = (transPaymentMethod === 'Cheque' || isSplitMethod) && transChequeStatus === 'PENDING';
-            if (isPendingChq && !isSplitMethod) {
+            const isChequeOrSplit = transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque';
+            if (isChequeOrSplit && transChequeStatus === 'BOUNCED') {
               await removeLinkedCashbookEntry(fallbackTx.id);
-            } else if (isPendingChq && isSplitMethod) {
-              if (splitCashNum > 0) {
-                await recordOrUpdateLinkedCashbookEntry({
-                  txId: fallbackTx.id,
-                  contactId: selectedContact.id,
-                  contactName: selectedContact.name,
-                  contactType: selectedContact.type,
-                  txType: transType,
-                  phoneModel: selectedContact.phoneModel,
-                  amount: splitCashNum,
-                  date: effectiveTxDate,
-                  paymentMethod: 'Cash',
-                  descriptionNote: `Cash part of Split Sale • ${cleanFormattedDesc}`,
-                  isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
-                  categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
-                  items: shouldLinkItemSale ? validTransItems : undefined,
-                  isItemCreditSale: shouldLinkItemSale
-                });
-              } else {
-                await removeLinkedCashbookEntry(fallbackTx.id);
-              }
             } else {
               await recordOrUpdateLinkedCashbookEntry({
                 txId: fallbackTx.id,
@@ -4841,35 +4861,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         await applyStockDeductionIfEnabled();
 
         if (shouldLinkToCashbook) {
-          const isSplitMethod = transPaymentMethod === 'Cash + Cheque';
-          const splitCashNum = parseFloat(transCashAmount) || 0;
-          const isPendingChq = (transPaymentMethod === 'Cheque' || isSplitMethod) && transChequeStatus === 'PENDING';
-          if (isPendingChq && !isSplitMethod) {
+          const isChequeOrSplit = transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque';
+          const isPendingChq = isChequeOrSplit && transChequeStatus === 'PENDING';
+          if (isChequeOrSplit && transChequeStatus === 'BOUNCED') {
             await removeLinkedCashbookEntry(saved.id);
-            showProfileToast("Cheque saved as Pending (Will show in Sales once passed)");
-          } else if (isPendingChq && isSplitMethod) {
-            if (splitCashNum > 0) {
-              await recordOrUpdateLinkedCashbookEntry({
-                txId: saved.id,
-                contactId: selectedContact.id,
-                contactName: selectedContact.name,
-                contactType: selectedContact.type,
-                txType: transType,
-                phoneModel: selectedContact.phoneModel,
-                amount: splitCashNum,
-                date: effectiveTxDate,
-                paymentMethod: 'Cash',
-                descriptionNote: `Cash part of Split Sale • ${cleanFormattedDesc}`,
-                isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
-                categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || 'Spare Parts Sale') : undefined,
-                items: shouldLinkItemSale ? validTransItems : undefined,
-                isItemCreditSale: shouldLinkItemSale
-              });
-              showProfileToast(`LKR ${splitCashNum.toLocaleString()} cash recorded to Sales! Cheque on hold.`);
-            } else {
-              await removeLinkedCashbookEntry(saved.id);
-              showProfileToast("Cheque saved as Pending on hold");
-            }
+            showProfileToast("Bounced cheque removed from Sales Details");
           } else {
             await recordOrUpdateLinkedCashbookEntry({
               txId: saved.id,
@@ -4888,7 +4884,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               isItemCreditSale: shouldLinkItemSale
             });
 
-            const toastMsg = shouldLinkItemSale
+            const toastMsg = isPendingChq
+              ? `${transPaymentMethod} (Pending) saved & added to Sales Details!`
+              : shouldLinkItemSale
               ? "Items sold, stock updated & linked to Sales!"
               : selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
                 selectedContact.type === 'RENT' ? (transType === 'CREDIT' ? "Rent withdrawal saved & linked to Sales (+ Sale)!" : "Rent deposit saved!") :
@@ -10326,9 +10324,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     return cashbookEntries.filter(entry => {
       if ((entry.type as string) === 'EXPENSE') return false;
-
-      // 1. Pending cheques do NOT show in Sales Daybook until passed
-      if (isPendingCashbookEntry(entry)) return false;
+      if (isBouncedCashbookEntry(entry)) return false;
 
       // 2. Category filter
       if (cashbookCategoryFilter !== 'ALL' && entry.category !== cashbookCategoryFilter) return false;
@@ -10384,15 +10380,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     let cardSales = 0;
     let chequeSales = 0;
     let totalItemsSoldQty = 0;
+    let totalItemCost = 0;
     let totalItemProfit = 0;
 
     baseFilteredCashbookEntries.forEach(e => {
       const amt = Number(e.amount) || 0;
       totalSales += amt;
-      if (e.paymentMethod === 'Cash') cashSales += amt;
-      else if (e.paymentMethod === 'Bank Transfer') bankSales += amt;
-      else if (e.paymentMethod === 'Card') cardSales += amt;
-      else if (e.paymentMethod === 'Cheque') chequeSales += amt;
+      const split = getCashbookEntryPaymentSplit(e);
+      cashSales += split.cash;
+      bankSales += split.bank;
+      cardSales += split.card;
+      chequeSales += split.cheque;
 
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
@@ -10400,8 +10398,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         const cost = Number(it.cost) || 0;
         const unitSale = getItemUnitSalePrice(it);
         totalItemsSoldQty += q;
-        if (cost > 0 && unitSale > 0) {
-          totalItemProfit += (unitSale - cost) * q;
+        if (cost > 0) {
+          totalItemCost += cost * q;
+          if (unitSale > 0) {
+            totalItemProfit += (unitSale - cost) * q;
+          }
         }
       });
     });
@@ -10413,6 +10414,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       cardSales,
       chequeSales,
       totalItemsSoldQty,
+      totalItemCost,
       totalItemProfit,
       hasBank: bankSales > 0,
       hasCard: cardSales > 0,
@@ -10802,7 +10804,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         } catch {}
       }
 
-      showProfileToast(`Invoice #${invNo} created & linked to Sales (+ LKR ${amountVal.toLocaleString()})!`);
+      showProfileToast(`Sale #${invNo} saved to Sales Details (+ LKR ${amountVal.toLocaleString()})!`);
 
       const invoiceData = {
         type: 'CASHBOOK' as const,
@@ -12716,16 +12718,18 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const allCompletedSales = cashbookEntries.filter(
-      e => e.type === 'SALE' && !isPendingCashbookEntry(e)
+      e => e.type === 'SALE' && !isBouncedCashbookEntry(e)
     );
-    const pendingSaleCheques = cashbookEntries.filter(
-      e => e.type === 'SALE' && isPendingCashbookEntry(e)
+    const pendingSaleCheques = allCompletedSales.filter(
+      e => isPendingCashbookEntry(e)
     );
 
     const todaySalesEntries = allCompletedSales.filter(e => e.date === todayStr);
     const yesterdaySalesEntries = allCompletedSales.filter(e => e.date === yesterdayStr);
     const todayTotalAmount = todaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
     const yesterdayTotalAmount = yesterdaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const todayChequeAmount = todaySalesEntries.reduce((s, e) => s + getCashbookEntryPaymentSplit(e).cheque, 0);
+    const yesterdayChequeAmount = yesterdaySalesEntries.reduce((s, e) => s + getCashbookEntryPaymentSplit(e).cheque, 0);
 
     let todayItemsQty = 0;
     let todayItemCost = 0;
@@ -12741,6 +12745,25 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           todayItemCost += cost * qty;
           if (unitSale > 0) {
             todayItemProfit += (unitSale - cost) * qty;
+          }
+        }
+      });
+    });
+
+    let yesterdayItemsQty = 0;
+    let yesterdayItemCost = 0;
+    let yesterdayItemProfit = 0;
+    yesterdaySalesEntries.forEach(e => {
+      const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      entryItems.forEach(it => {
+        const qty = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        yesterdayItemsQty += qty;
+        if (cost > 0) {
+          yesterdayItemCost += cost * qty;
+          if (unitSale > 0) {
+            yesterdayItemProfit += (unitSale - cost) * qty;
           }
         }
       });
@@ -12763,7 +12786,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     const filteredSales = dateFilteredSales
       .filter(entry => {
-        if (salesDetailsPaymentFilter !== 'ALL' && entry.paymentMethod !== salesDetailsPaymentFilter) return false;
+        if (salesDetailsPaymentFilter !== 'ALL') {
+          if (salesDetailsPaymentFilter === 'Cheque') {
+            if (entry.paymentMethod !== 'Cheque' && entry.paymentMethod !== 'Cash + Cheque') return false;
+          } else if (entry.paymentMethod !== salesDetailsPaymentFilter) {
+            return false;
+          }
+        }
         if (salesDetailsSearch.trim()) {
           const q = salesDetailsSearch.toLowerCase();
           const matchesCat = entry.category?.toLowerCase().includes(q);
@@ -12798,10 +12827,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     filteredSales.forEach(e => {
       const amt = Number(e.amount) || 0;
       periodTotalAmount += amt;
-      if (e.paymentMethod === 'Cash') cashSales += amt;
-      else if (e.paymentMethod === 'Bank Transfer') bankSales += amt;
-      else if (e.paymentMethod === 'Card') cardSales += amt;
-      else if (e.paymentMethod === 'Cheque') chequeSales += amt;
+      const split = getCashbookEntryPaymentSplit(e);
+      cashSales += split.cash;
+      bankSales += split.bank;
+      cardSales += split.card;
+      chequeSales += split.cheque;
 
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
@@ -12988,7 +13018,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </div>
             </div>
             <div className="mt-1.5">
-              <p className="text-2xl font-black text-white">LKR {periodTotalAmount.toLocaleString()}</p>
+              <p className="text-2xl font-black text-white tabular-nums">LKR {periodTotalAmount.toLocaleString()}</p>
               <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/90 font-semibold mt-1">
                 <span>{filteredSales.length} sale{filteredSales.length === 1 ? '' : 's'}</span>
                 {salesDetailsDateFilter === 'CUSTOM' && (
@@ -13024,6 +13054,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
             <div className="mt-1.5">
               <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">LKR {todayTotalAmount.toLocaleString()}</p>
+              {todayChequeAmount > 0 && (
+                <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mt-0.5 tabular-nums">
+                  Incl. Cheque: LKR {todayChequeAmount.toLocaleString()}
+                </p>
+              )}
               <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-xs font-bold tabular-nums">
                 <span className="text-slate-600 dark:text-slate-300">
                   {todayItemsQty > 0 ? `${todayItemsQty} pcs sold` : `${todaySalesEntries.length} sale${todaySalesEntries.length === 1 ? '' : 's'}`}
@@ -13054,9 +13089,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
             <div className="mt-1.5">
               <p className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">LKR {yesterdayTotalAmount.toLocaleString()}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1">
-                {yesterdaySalesEntries.length} sale{yesterdaySalesEntries.length === 1 ? '' : 's'} yesterday
-              </p>
+              {yesterdayChequeAmount > 0 && (
+                <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mt-0.5 tabular-nums">
+                  Incl. Cheque: LKR {yesterdayChequeAmount.toLocaleString()}
+                </p>
+              )}
+              <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-xs font-bold tabular-nums">
+                <span className="text-slate-500 dark:text-slate-400">
+                  {yesterdayItemsQty > 0 ? `${yesterdayItemsQty} pcs sold` : `${yesterdaySalesEntries.length} sale${yesterdaySalesEntries.length === 1 ? '' : 's'}`}
+                </span>
+                {yesterdayItemCost > 0 && (
+                  <span className={`font-extrabold ${yesterdayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                    Profit: {yesterdayItemProfit >= 0 ? '+' : ''}LKR {yesterdayItemProfit.toLocaleString()}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -13090,7 +13137,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               ) : (
                 <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1">
                   {pendingSaleCheques.length > 0
-                    ? `${pendingSaleCheques.length} pending cheque on hold`
+                    ? `${pendingSaleCheques.length} cheque pending clearance`
                     : 'Across filtered sales'}
                 </p>
               )}
@@ -13117,11 +13164,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque'] as const).map(pm => (
+            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque'] as const).map(pm => (
               <button
                 key={pm}
                 type="button"
-                onClick={() => setSalesDetailsPaymentFilter(pm)}
+                onClick={() => setSalesDetailsPaymentFilter(pm as any)}
                 className={`py-1 px-2.5 rounded-xl text-[11px] font-bold transition-all shrink-0 border ${
                   salesDetailsPaymentFilter === pm
                     ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
@@ -13191,7 +13238,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       ({group.entries.length} sale{group.entries.length > 1 ? 's' : ''})
                     </span>
                   </div>
-                  <span className="text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-0.5 rounded-md border border-emerald-200/60 dark:border-emerald-800/50 text-[11px] font-extrabold">
+                  <span className="text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-0.5 rounded-md border border-emerald-200/60 dark:border-emerald-800/50 text-[11px] font-extrabold tabular-nums">
                     + LKR {group.dayTotal.toLocaleString()}
                   </span>
                 </div>
@@ -13201,6 +13248,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     const extracted = extractCashbookItems(entry.description);
                     const cleanDesc = extracted.cleanDesc;
                     const entryItems = entry.items && entry.items.length > 0 ? entry.items : extracted.items;
+                    const isChequeLike = entry.paymentMethod === 'Cheque' || entry.paymentMethod === 'Cash + Cheque';
+                    const isPendingChqEntry = isPendingCashbookEntry(entry);
 
                     return (
                       <div
@@ -13223,14 +13272,26 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                   ? 'bg-purple-50 text-purple-700 border-purple-200'
                                   : entry.paymentMethod === 'Cheque'
                                   ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                  : entry.paymentMethod === 'Cash + Cheque'
+                                  ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
                                   : 'bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
                               }`}>
                                 {entry.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
                                  entry.paymentMethod === 'Card' ? <CreditCard size={10} /> :
-                                 entry.paymentMethod === 'Cheque' ? <Landmark size={10} /> :
+                                 isChequeLike ? <Landmark size={10} /> :
                                  <Banknote size={10} />}
                                 {entry.paymentMethod}
                               </span>
+                              {isChequeLike && (
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
+                                  isPendingChqEntry
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800/50'
+                                    : 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/50'
+                                }`}>
+                                  {isPendingChqEntry ? <Clock size={10} /> : <CheckCircle2 size={10} />}
+                                  {isPendingChqEntry ? 'Cheque Pending' : 'Cheque Passed'}
+                                </span>
+                              )}
                               {entry.referenceNo && (
                                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 font-bold">
                                   #{entry.referenceNo}
@@ -13291,10 +13352,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400">
+                          <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
                             + LKR {(Number(entry.amount) || 0).toLocaleString()}
                           </span>
                           <div className="flex items-center gap-1">
+                            {isPendingChqEntry && (
+                              <button
+                                type="button"
+                                onClick={() => handlePassChequeFromCashbook(entry)}
+                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1 active:scale-95"
+                                title="Mark Cheque as Passed"
+                              >
+                                <CheckCircle2 size={12} />
+                                <span className="hidden sm:inline">Pass</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => openInvoiceModalForCashbook(entry)}
@@ -13884,31 +13956,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         localStorage.setItem('st_cached_transactions', JSON.stringify(nextTxList));
       } catch {}
 
-      // 4. Sync Paid Portion to Sales Daybook
+      // 4. Sync Paid Portion (including Cheque & Cash + Cheque) to Sales Details
       if (!isCreditSale) {
         const resolvedCat = sellCategory.trim() || validItems[0]?.category || 'Spare Parts Sale';
-        if (isPendingChq && isChequeMethod) {
-          showProfileToast(`Pending cheque sale saved for ${resolvedContact.name} & stock updated!`);
-        } else if (isPendingChq && isSplitMethod) {
-          if (splitCashNum > 0) {
-            await recordOrUpdateLinkedCashbookEntry({
-              txId,
-              contactId: resolvedContact.id,
-              contactName: resolvedContact.name,
-              contactType: resolvedContact.type,
-              txType: 'CREDIT',
-              amount: splitCashNum,
-              date: effectiveTxDate,
-              paymentMethod: 'Cash',
-              descriptionNote: cleanNotes ? `Cash part of Split Sale • ${cleanNotes}` : 'Cash part of Split Sale',
-              categoryOverride: resolvedCat,
-              items: validItems,
-              isItemCreditSale: true
-            });
-            showProfileToast(`LKR ${splitCashNum.toLocaleString()} cash recorded to Sales! Cheque on hold.`);
-          } else {
-            showProfileToast(`Split cheque sale saved for ${resolvedContact.name} & stock updated!`);
-          }
+        if ((isChequeMethod || isSplitMethod) && sellChequeStatus === 'BOUNCED') {
+          showProfileToast(`Bounced cheque sale saved for ${resolvedContact.name} & stock updated.`);
         } else {
           await recordOrUpdateLinkedCashbookEntry({
             txId,
@@ -13919,12 +13971,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             amount: saleTotal,
             date: effectiveTxDate,
             paymentMethod: sellPaymentMethod,
-            descriptionNote: cleanNotes,
+            descriptionNote: formattedDesc,
             categoryOverride: resolvedCat,
             items: validItems,
             isItemCreditSale: true
           });
-          showProfileToast(`Sold to ${resolvedContact.name} (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+          if (isPendingChq) {
+            showProfileToast(`Cheque (${sellPaymentMethod}) sale recorded to Sales Details (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+          } else {
+            showProfileToast(`Sold to ${resolvedContact.name} (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+          }
         }
       } else {
         showProfileToast(`Credit sale LKR ${saleTotal.toLocaleString()} added to ${resolvedContact.name}'s ledger & stock updated!`);
@@ -14942,7 +14998,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <Receipt size={20} />
               </div>
               <div>
-                <h3 className="font-extrabold text-base leading-tight">Create Instant Invoice</h3>
+                <h3 className="font-extrabold text-base leading-tight">Add Sales Details</h3>
                 <p className="text-[11px] text-white/80 font-medium">Auto-records into Sales Details &amp; Customer Ledger</p>
               </div>
             </div>
@@ -15258,8 +15314,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfMonthStr = startOfMonth.toISOString().slice(0, 10);
 
-    // Filter all Daybook Sales entries as invoices
-    const salesInvoices = cashbookEntries.filter(e => e.type === 'SALE');
+    // Filter all non-bounced Daybook Sales entries (including Cheque & Cash + Cheque)
+    const salesInvoices = cashbookEntries.filter(e => e.type === 'SALE' && !isBouncedCashbookEntry(e));
 
     const filteredInvoices = salesInvoices.filter(inv => {
       // Date filter
@@ -15287,14 +15343,67 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 
-    // Compute Metrics
+    // Compute Today, Yesterday, and Items Sold & Profit (including Cheque payments)
     const todaySales = salesInvoices.filter(e => e.date === todayStr);
-    const todayTotal = todaySales.reduce((sum, e) => sum + e.amount, 0);
+    const todayTotal = todaySales.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    const todayChequeTotal = todaySales.reduce((sum, e) => sum + getCashbookEntryPaymentSplit(e).cheque, 0);
+    let todayItemsSoldQty = 0;
+    let todayItemCost = 0;
+    let todayItemProfit = 0;
+    todaySales.forEach(e => {
+      const eItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      eItems.forEach(it => {
+        const qty = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        todayItemsSoldQty += qty;
+        if (cost > 0) {
+          todayItemCost += cost * qty;
+          if (unitSale > 0) todayItemProfit += (unitSale - cost) * qty;
+        }
+      });
+    });
 
-    const monthSales = salesInvoices.filter(e => e.date >= startOfMonthStr);
-    const monthTotal = monthSales.reduce((sum, e) => sum + e.amount, 0);
+    const yesterdaySales = salesInvoices.filter(e => e.date === yesterdayStr);
+    const yesterdayTotal = yesterdaySales.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    const yesterdayChequeTotal = yesterdaySales.reduce((sum, e) => sum + getCashbookEntryPaymentSplit(e).cheque, 0);
+    let yesterdayItemsSoldQty = 0;
+    let yesterdayItemCost = 0;
+    let yesterdayItemProfit = 0;
+    yesterdaySales.forEach(e => {
+      const eItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      eItems.forEach(it => {
+        const qty = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        yesterdayItemsSoldQty += qty;
+        if (cost > 0) {
+          yesterdayItemCost += cost * qty;
+          if (unitSale > 0) yesterdayItemProfit += (unitSale - cost) * qty;
+        }
+      });
+    });
 
-    const totalInvoicesSum = filteredInvoices.reduce((sum, e) => sum + e.amount, 0);
+    let filteredItemsSoldQty = 0;
+    let filteredItemCost = 0;
+    let filteredItemProfit = 0;
+    let filteredChequeTotal = 0;
+    filteredInvoices.forEach(e => {
+      filteredChequeTotal += getCashbookEntryPaymentSplit(e).cheque;
+      const eItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      eItems.forEach(it => {
+        const qty = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        filteredItemsSoldQty += qty;
+        if (cost > 0) {
+          filteredItemCost += cost * qty;
+          if (unitSale > 0) filteredItemProfit += (unitSale - cost) * qty;
+        }
+      });
+    });
+
+    const totalInvoicesSum = filteredInvoices.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-28 no-scrollbar transition-colors">
@@ -15314,8 +15423,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <Receipt size={18} />
                 </div>
                 <div>
-                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Instant Invoice</h1>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName || 'Ledger Book'} • Sales Linked Billing</p>
+                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Sales Details</h1>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName || 'Ledger Book'} • Sales &amp; Invoice Billing</p>
                 </div>
               </div>
             </div>
@@ -15334,69 +15443,146 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 className="px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1.5 text-xs font-bold"
               >
                 <Plus size={16} />
-                <span>+ Create Invoice</span>
+                <span>Add Sale</span>
               </button>
             </div>
           </div>
         </header>
 
         {/* Content Body */}
-        <div className="p-4 max-w-4xl mx-auto w-full space-y-4">
-          {/* Top Metrics Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-emerald-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+        <div className="p-4 max-w-5xl mx-auto w-full space-y-4">
+          {/* Top Metrics Cards: Today Sale, Yesterday Sale, Items Sold & Profit, Selected View Total */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Today Sale */}
+            <div
+              onClick={() => setInvDateFilter('TODAY')}
+              className={`bg-white dark:bg-[#131b2a] rounded-2xl p-4 border shadow-xs flex flex-col justify-between cursor-pointer transition-all ${
+                invDateFilter === 'TODAY'
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20'
+                  : 'border-emerald-100 dark:border-[#1e2a3c] hover:border-emerald-400'
+              }`}
+            >
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Today's Invoices</span>
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-400 uppercase tracking-wider">Today Sale</span>
                 <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
                   <TrendingUp size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-                  + LKR {todayTotal.toLocaleString()}
+                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  LKR {todayTotal.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                  {todaySales.length} invoices generated today
-                </p>
+                {todayChequeTotal > 0 && (
+                  <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mt-0.5 tabular-nums">
+                    Incl. Cheque: LKR {todayChequeTotal.toLocaleString()}
+                  </p>
+                )}
+                <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-[11px] font-bold tabular-nums">
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {todayItemsSoldQty > 0 ? `${todayItemsSoldQty} pcs sold` : `${todaySales.length} sale${todaySales.length === 1 ? '' : 's'}`}
+                  </span>
+                  {todayItemCost > 0 && (
+                    <span className={`font-extrabold ${todayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                      Profit: {todayItemProfit >= 0 ? '+' : ''}LKR {todayItemProfit.toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
-            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-blue-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+            {/* Yesterday Sale */}
+            <div
+              onClick={() => setInvDateFilter('YESTERDAY')}
+              className={`bg-white dark:bg-[#131b2a] rounded-2xl p-4 border shadow-xs flex flex-col justify-between cursor-pointer transition-all ${
+                invDateFilter === 'YESTERDAY'
+                  ? 'border-blue-500 ring-2 ring-blue-500/20'
+                  : 'border-blue-100 dark:border-[#1e2a3c] hover:border-blue-400'
+              }`}
+            >
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">This Month Sales</span>
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-400 uppercase tracking-wider">Yesterday Sale</span>
                 <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center">
                   <Calendar size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-blue-600 dark:text-blue-400">
-                  + LKR {monthTotal.toLocaleString()}
+                <h3 className="text-2xl font-black text-blue-600 dark:text-blue-400 tabular-nums">
+                  LKR {yesterdayTotal.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                  {monthSales.length} total monthly sales
-                </p>
+                {yesterdayChequeTotal > 0 && (
+                  <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mt-0.5 tabular-nums">
+                    Incl. Cheque: LKR {yesterdayChequeTotal.toLocaleString()}
+                  </p>
+                )}
+                <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-[11px] font-bold tabular-nums">
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {yesterdayItemsSoldQty > 0 ? `${yesterdayItemsSoldQty} pcs sold` : `${yesterdaySales.length} sale${yesterdaySales.length === 1 ? '' : 's'}`}
+                  </span>
+                  {yesterdayItemCost > 0 && (
+                    <span className={`font-extrabold ${yesterdayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                      Profit: {yesterdayItemProfit >= 0 ? '+' : ''}LKR {yesterdayItemProfit.toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
+            {/* Items Sold & Profit */}
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-slate-200 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-400 uppercase tracking-wider">Items Sold &amp; Profit</span>
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
+                  <Package size={16} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <h3 className="text-2xl font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
+                  {filteredItemsSoldQty > 0 ? `${filteredItemsSoldQty} pcs` : `${filteredInvoices.length} tx`}
+                </h3>
+                {filteredItemCost > 0 ? (
+                  <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] tabular-nums">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Cost</span>
+                      <span className="text-xs font-extrabold text-rose-600 dark:text-rose-400">
+                        LKR {filteredItemCost.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Profit</span>
+                      <span className={`text-sm font-black ${filteredItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                        {filteredItemProfit >= 0 ? '+' : ''}LKR {filteredItemProfit.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold mt-1">
+                    Across filtered sales
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Selected Period Total Sales */}
             <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white rounded-2xl p-4 border border-indigo-500 shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-white/80 uppercase tracking-wider">Sales Linked Invoices</span>
+                <span className="text-[10px] font-extrabold text-white/80 uppercase tracking-wider">Period Sales Total</span>
                 <div className="w-8 h-8 rounded-xl bg-white/20 text-white flex items-center justify-center">
                   <Wallet size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-white">
-                  + LKR {totalInvoicesSum.toLocaleString()}
+                <h3 className="text-2xl font-black text-white tabular-nums">
+                  LKR {totalInvoicesSum.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-white/80 font-semibold mt-0.5">
-                  {filteredInvoices.length} invoices in selected view
+                <p className="text-[10px] text-white/85 font-semibold mt-0.5 tabular-nums">
+                  {filteredInvoices.length} sale{filteredInvoices.length === 1 ? '' : 's'}
+                  {filteredChequeTotal > 0 ? ` • Cheque: LKR ${filteredChequeTotal.toLocaleString()}` : ''}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Quick Instant Bill Creation Card */}
+          {/* Quick Sales Details Bill Creation Card */}
           <div className="bg-white dark:bg-[#131b2a] p-4 sm:p-5 rounded-3xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-[#1e2a3c] pb-3">
               <div className="flex items-center gap-2.5">
@@ -15404,8 +15590,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <Receipt size={17} />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">⚡ Quick Instant Bill to Customer</h3>
-                  <p className="text-[10px] text-slate-400 font-medium">Issue receipt &amp; instantly record into Sales Details</p>
+                  <h3 className="font-extrabold text-sm text-slate-900 dark:text-slate-100">⚡ Quick Sales Details Bill</h3>
+                  <p className="text-[10px] text-slate-400 font-medium">Issue receipt &amp; record directly into Sales Details</p>
                 </div>
               </div>
               <span className="text-[10px] font-mono font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-md">
@@ -15566,7 +15752,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <Search size={16} className="text-slate-400 mr-2 shrink-0" />
                 <input
                   type="text"
-                  placeholder="Search by invoice #, customer name, phone, or items..."
+                  placeholder="Search by ref #, customer name, phone, or items..."
                   value={invSearchQuery}
                   onChange={e => setInvSearchQuery(e.target.value)}
                   className="bg-transparent outline-none text-xs w-full text-slate-800 dark:text-slate-100 placeholder:text-slate-400 font-medium"
@@ -15586,7 +15772,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 { id: 'YESTERDAY', label: 'Yesterday' },
                 { id: 'THIS_WEEK', label: 'This Week' },
                 { id: 'THIS_MONTH', label: 'This Month' },
-                { id: 'ALL', label: 'All Invoices' },
+                { id: 'ALL', label: 'All Sales' },
               ].map(f => (
                 <button
                   key={f.id}
@@ -15603,16 +15789,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
           </div>
 
-          {/* Invoices List */}
+          {/* Sales List */}
           {filteredInvoices.length === 0 ? (
             <div className="bg-white dark:bg-[#131b2a] rounded-3xl p-8 border border-slate-200/90 dark:border-[#1e2a3c] text-center space-y-4 shadow-xs">
               <div className="w-16 h-16 rounded-3xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 mx-auto flex items-center justify-center">
                 <Receipt size={32} />
               </div>
               <div className="max-w-sm mx-auto">
-                <h3 className="text-base font-extrabold text-slate-800 dark:text-slate-100">No Invoices Found</h3>
+                <h3 className="text-base font-extrabold text-slate-800 dark:text-slate-100">No Sales Found</h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Use the quick instant bill creator above or tap &ldquo;+ Create Invoice&rdquo; to issue an instant receipt linked to Sales Details.
+                  Use the quick bill creator above or tap &ldquo;Add Sale&rdquo; to record a sale and issue a receipt.
                 </p>
               </div>
               <button
@@ -15621,13 +15807,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all active:scale-95 inline-flex items-center gap-1.5"
               >
                 <Plus size={15} />
-                <span>Create Instant Invoice</span>
+                <span>Add Sales Details</span>
               </button>
             </div>
           ) : (
             <div className="space-y-2.5">
               {filteredInvoices.map(inv => {
-                const isCheque = inv.paymentMethod === 'Cheque';
+                const isChequeLike = inv.paymentMethod === 'Cheque' || inv.paymentMethod === 'Cash + Cheque';
+                const isPendingChq = isPendingCashbookEntry(inv);
                 const refDisplay = inv.referenceNo || `INV-${inv.id.slice(0, 6).toUpperCase()}`;
 
                 return (
@@ -15657,14 +15844,27 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                               ? 'bg-purple-50 text-purple-700 border-purple-200'
                               : inv.paymentMethod === 'Cheque'
                               ? 'bg-amber-50 text-amber-800 border-amber-300'
+                              : inv.paymentMethod === 'Cash + Cheque'
+                              ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
                               : 'bg-slate-100 text-slate-700 border-slate-200'
                           }`}>
                             {inv.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
                              inv.paymentMethod === 'Card' ? <CreditCard size={10} /> :
-                             inv.paymentMethod === 'Cheque' ? <Landmark size={10} /> :
+                             isChequeLike ? <Landmark size={10} /> :
                              <Banknote size={10} />}
                             {inv.paymentMethod}
                           </span>
+
+                          {isChequeLike && (
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
+                              isPendingChq
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            }`}>
+                              {isPendingChq ? <Clock size={10} /> : <CheckCircle2 size={10} />}
+                              {isPendingChq ? 'Pending' : 'Passed'}
+                            </span>
+                          )}
 
                           <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
                             {formatDisplayDate(inv.date)}
@@ -15683,11 +15883,22 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400">
+                      <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
                         + LKR {inv.amount.toLocaleString()}
                       </span>
 
                       <div className="flex items-center gap-1">
+                        {isPendingChq && (
+                          <button
+                            type="button"
+                            onClick={() => handlePassChequeFromCashbook(inv)}
+                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95 flex items-center gap-1"
+                            title="Mark Cheque as Passed"
+                          >
+                            <CheckCircle2 size={12} />
+                            <span className="hidden sm:inline">Pass</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => {

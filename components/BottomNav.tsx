@@ -48,7 +48,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, a
         className={`flex flex-col items-center gap-1 transition-colors ${isInvoice ? `${activeColorClass} dark:text-blue-400 font-bold` : 'text-slate-400 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
       >
         <Receipt size={20} />
-        <span className="text-[10px] font-medium">Invoice</span>
+        <span className="text-[10px] font-medium">Sales Details</span>
       </button>
     </div>
   );
