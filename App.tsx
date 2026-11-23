@@ -293,6 +293,10 @@ export default function App() {
     } catch {}
     return [];
   });
+  const daybookItemsRef = useRef<DaybookStockItem[]>(daybookItems);
+  daybookItemsRef.current = daybookItems;
+  const lastStockMutationTsRef = useRef<number>(0);
+  const fetchedUidRef = useRef<string | null>(null);
   const [customItemCategories, setCustomItemCategories] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('st_custom_item_categories');
@@ -826,17 +830,37 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const persistDaybookItems = async (nextItems: DaybookStockItem[], uid?: string, deletedId?: string) => {
     const targetUid = uid || authUser?.id;
+    const nowTs = Date.now();
+    daybookItemsRef.current = nextItems;
+    lastStockMutationTsRef.current = nowTs;
     setDaybookItems(nextItems);
     try {
       if (targetUid) {
         localStorage.setItem(`st_daybook_items_${targetUid}`, JSON.stringify(nextItems));
+        localStorage.setItem(`st_daybook_items_ts_${targetUid}`, String(nowTs));
+        if (deletedId) {
+          const delKey = `st_daybook_deleted_ids_${targetUid}`;
+          const prevDel = JSON.parse(localStorage.getItem(delKey) || '[]');
+          const nextDel = Array.from(new Set([...(Array.isArray(prevDel) ? prevDel : []), deletedId]));
+          localStorage.setItem(delKey, JSON.stringify(nextDel));
+        }
       }
       localStorage.setItem('st_daybook_items', JSON.stringify(nextItems));
+      localStorage.setItem('st_daybook_items_ts', String(nowTs));
     } catch {}
     if (targetUid) {
       try {
         if (deletedId) {
-          await supabase.from('daybook_items').delete().eq('id', deletedId).eq('user_id', targetUid);
+          const { error: delErr } = await supabase.from('daybook_items').delete().eq('id', deletedId).eq('user_id', targetUid);
+          if (!delErr) {
+            try {
+              const delKey = `st_daybook_deleted_ids_${targetUid}`;
+              const prevDel = JSON.parse(localStorage.getItem(delKey) || '[]');
+              if (Array.isArray(prevDel)) {
+                localStorage.setItem(delKey, JSON.stringify(prevDel.filter((d: string) => d !== deletedId)));
+              }
+            } catch {}
+          }
         } else if (nextItems.length > 0) {
           const dbRows = nextItems.map(it => ({
             id: it.id,
@@ -850,20 +874,51 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             retail_price: Number(it.retailPrice) || 0,
             updated_at: it.updatedAt || new Date().toISOString()
           }));
-          await supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' });
+          const upsertRes = await supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' });
+          if (upsertRes.error) {
+            console.warn('Daybook items upsert warning, applying row-level sync:', upsertRes.error.message);
+            for (const row of dbRows) {
+              try {
+                const { error: updErr } = await supabase
+                  .from('daybook_items')
+                  .update({
+                    item: row.item,
+                    sku: row.sku,
+                    category: row.category,
+                    qty: row.qty,
+                    cost: row.cost,
+                    wholesale_price: row.wholesale_price,
+                    retail_price: row.retail_price,
+                    updated_at: row.updated_at
+                  })
+                  .eq('id', row.id)
+                  .eq('user_id', targetUid);
+                if (updErr) {
+                  await supabase
+                    .from('daybook_items')
+                    .update({ qty: row.qty, updated_at: row.updated_at })
+                    .eq('id', row.id)
+                    .eq('user_id', targetUid);
+                }
+              } catch {}
+            }
+          }
         }
       } catch (dbErr) {
         console.warn('Daybook items table sync fallback:', dbErr);
       }
       try {
         const blob = new Blob([JSON.stringify(nextItems)], { type: 'application/json' });
-        await supabase.storage
+        const { error: storageErr } = await supabase.storage
           .from('shop-logos')
           .upload(`${targetUid}/daybook-items.json`, blob, {
             contentType: 'application/json',
             cacheControl: '0',
             upsert: true,
           });
+        if (storageErr) {
+          console.warn('Daybook items storage upload warning:', storageErr.message);
+        }
       } catch (e) {
         console.warn('Daybook items cloud sync warning:', e);
       }
@@ -903,15 +958,29 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const loadDaybookItemsCloud = async (uid: string) => {
     let localItems: DaybookStockItem[] = [];
+    let localTs = lastStockMutationTsRef.current || 0;
+    let deletedIds = new Set<string>();
     try {
       const rawLocal = localStorage.getItem(`st_daybook_items_${uid}`) || localStorage.getItem('st_daybook_items');
       if (rawLocal) {
         const parsed = JSON.parse(rawLocal);
         if (Array.isArray(parsed)) localItems = parsed;
       }
+      const storedTs = Number(
+        localStorage.getItem(`st_daybook_items_ts_${uid}`) ||
+        localStorage.getItem('st_daybook_items_ts') ||
+        '0'
+      );
+      if (storedTs > localTs) localTs = storedTs;
+      const rawDel = localStorage.getItem(`st_daybook_deleted_ids_${uid}`);
+      if (rawDel) {
+        const parsedDel = JSON.parse(rawDel);
+        if (Array.isArray(parsedDel)) deletedIds = new Set(parsedDel.map(String));
+      }
     } catch {}
 
     if (localItems.length > 0) {
+      daybookItemsRef.current = localItems;
       setDaybookItems(localItems);
     }
 
@@ -925,6 +994,46 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
     } catch {}
 
+    const mergeCloudWithLocal = (cloudList: DaybookStockItem[]): { merged: DaybookStockItem[]; needsPushBack: boolean } => {
+      const localMap = new Map<string, DaybookStockItem>(localItems.map(i => [i.id, i]));
+      const mergedMap = new Map<string, DaybookStockItem>();
+      let needsPushBack = false;
+      const hasVeryRecentLocalMutation = Date.now() - localTs < 90_000;
+
+      cloudList.forEach(cItem => {
+        if (deletedIds.has(cItem.id)) {
+          needsPushBack = true;
+          return;
+        }
+        const lItem = localMap.get(cItem.id);
+        if (lItem) {
+          const lMs = Date.parse(lItem.updatedAt || '') || 0;
+          const cMs = Date.parse(cItem.updatedAt || '') || 0;
+          if (lMs > cMs || (hasVeryRecentLocalMutation && Number(lItem.qty) !== Number(cItem.qty))) {
+            mergedMap.set(cItem.id, lItem);
+            needsPushBack = true;
+          } else {
+            mergedMap.set(cItem.id, cItem);
+          }
+        } else {
+          mergedMap.set(cItem.id, cItem);
+        }
+      });
+
+      localItems.forEach(lItem => {
+        if (deletedIds.has(lItem.id)) return;
+        if (!mergedMap.has(lItem.id)) {
+          const lMs = Date.parse(lItem.updatedAt || '') || 0;
+          if (hasVeryRecentLocalMutation || lMs > 0) {
+            mergedMap.set(lItem.id, lItem);
+            needsPushBack = true;
+          }
+        }
+      });
+
+      return { merged: Array.from(mergedMap.values()), needsPushBack };
+    };
+
     let loadedFromTable = false;
     try {
       const { data: tableRows, error: tableErr } = await supabase
@@ -933,26 +1042,29 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         .eq('user_id', uid)
         .order('updated_at', { ascending: false });
 
-      if (!tableErr && Array.isArray(tableRows)) {
-        if (tableRows.length > 0) {
-          const mappedItems: DaybookStockItem[] = tableRows.map((r: any) => ({
-            id: r.id,
-            userId: r.user_id,
-            item: r.item || '',
-            sku: r.sku || '',
-            category: r.category || undefined,
-            qty: Number(r.qty) || 0,
-            cost: Number(r.cost) || 0,
-            wholesalePrice: Number(r.wholesale_price) || 0,
-            retailPrice: Number(r.retail_price) || 0,
-            updatedAt: r.updated_at || new Date().toISOString()
-          }));
-          setDaybookItems(mappedItems);
-          try {
-            localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(mappedItems));
-            localStorage.setItem('st_daybook_items', JSON.stringify(mappedItems));
-          } catch {}
-          loadedFromTable = true;
+      if (!tableErr && Array.isArray(tableRows) && tableRows.length > 0) {
+        const mappedItems: DaybookStockItem[] = tableRows.map((r: any) => ({
+          id: r.id,
+          userId: r.user_id,
+          item: r.item || '',
+          sku: r.sku || '',
+          category: r.category || undefined,
+          qty: Number(r.qty) || 0,
+          cost: Number(r.cost) || 0,
+          wholesalePrice: Number(r.wholesale_price) || 0,
+          retailPrice: Number(r.retail_price) || 0,
+          updatedAt: r.updated_at || new Date().toISOString()
+        }));
+        const { merged, needsPushBack } = mergeCloudWithLocal(mappedItems);
+        daybookItemsRef.current = merged;
+        setDaybookItems(merged);
+        try {
+          localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(merged));
+          localStorage.setItem('st_daybook_items', JSON.stringify(merged));
+        } catch {}
+        loadedFromTable = true;
+        if (needsPushBack) {
+          persistDaybookItems(merged, uid).catch(() => {});
         }
       }
     } catch (e) {
@@ -961,34 +1073,55 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     if (!loadedFromTable) {
       try {
-        const { data: blobData, error } = await supabase.storage
-          .from('shop-logos')
-          .download(`${uid}/daybook-items.json`);
-        if (!error && blobData) {
-          const text = await blobData.text();
-          const cloudParsed = JSON.parse(text);
-          if (Array.isArray(cloudParsed)) {
-            setDaybookItems(cloudParsed);
-            try {
-              localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(cloudParsed));
-              localStorage.setItem('st_daybook_items', JSON.stringify(cloudParsed));
-            } catch {}
-            // Auto-seed into daybook_items table if available
-            if (cloudParsed.length > 0) {
-              const dbRows = cloudParsed.map((it: any) => ({
-                id: it.id || generateUUID(),
-                user_id: uid,
-                item: it.item || '',
-                sku: it.sku || '',
-                category: it.category || null,
-                qty: Number(it.qty) || 0,
-                cost: Number(it.cost) || 0,
-                wholesale_price: Number(it.wholesalePrice) || 0,
-                retail_price: Number(it.retailPrice) || 0,
-                updated_at: it.updatedAt || new Date().toISOString()
-              }));
-              supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' }).then(() => {}, () => {});
+        let cloudParsed: DaybookStockItem[] | null = null;
+        try {
+          const { data: pubData } = supabase.storage
+            .from('shop-logos')
+            .getPublicUrl(`${uid}/daybook-items.json`);
+          if (pubData?.publicUrl) {
+            const bustRes = await fetch(`${pubData.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
+            if (bustRes.ok) {
+              const parsed = await bustRes.json();
+              if (Array.isArray(parsed)) cloudParsed = parsed;
             }
+          }
+        } catch {}
+
+        if (!cloudParsed) {
+          const { data: blobData, error } = await supabase.storage
+            .from('shop-logos')
+            .download(`${uid}/daybook-items.json`);
+          if (!error && blobData) {
+            const text = await blobData.text();
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) cloudParsed = parsed;
+          }
+        }
+
+        if (Array.isArray(cloudParsed)) {
+          const { merged, needsPushBack } = mergeCloudWithLocal(cloudParsed);
+          daybookItemsRef.current = merged;
+          setDaybookItems(merged);
+          try {
+            localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(merged));
+            localStorage.setItem('st_daybook_items', JSON.stringify(merged));
+          } catch {}
+          if (needsPushBack) {
+            persistDaybookItems(merged, uid).catch(() => {});
+          } else if (merged.length > 0) {
+            const dbRows = merged.map((it: any) => ({
+              id: it.id || generateUUID(),
+              user_id: uid,
+              item: it.item || '',
+              sku: it.sku || '',
+              category: it.category || null,
+              qty: Number(it.qty) || 0,
+              cost: Number(it.cost) || 0,
+              wholesale_price: Number(it.wholesalePrice) || 0,
+              retail_price: Number(it.retailPrice) || 0,
+              updated_at: it.updatedAt || new Date().toISOString()
+            }));
+            supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' }).then(() => {}, () => {});
           }
         }
       } catch (e) {
@@ -1068,9 +1201,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
     }
 
+    const currentStock = daybookItemsRef.current;
     let nextItems: DaybookStockItem[];
     if (editingDaybookItem) {
-      nextItems = daybookItems.map(it =>
+      nextItems = currentStock.map(it =>
         it.id === editingDaybookItem.id
           ? {
               ...it,
@@ -1099,7 +1233,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         retailPrice: retailVal,
         updatedAt: nowIso
       };
-      nextItems = [newItem, ...daybookItems];
+      nextItems = [newItem, ...currentStock];
       showProfileToast('Item added to inventory!');
     }
 
@@ -1113,9 +1247,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       showProfileToast("Access Denied: You do not have permission to delete items.", "error");
       return;
     }
-    const target = daybookItems.find(i => i.id === id);
+    const currentStock = daybookItemsRef.current;
+    const target = currentStock.find(i => i.id === id);
     if (!window.confirm(`Delete "${target?.item || 'this item'}" from Items & Stock?`)) return;
-    const nextItems = daybookItems.filter(i => i.id !== id);
+    const nextItems = currentStock.filter(i => i.id !== id);
     await persistDaybookItems(nextItems, undefined, id);
     showProfileToast('Item deleted from inventory!');
   };
@@ -3708,8 +3843,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
           }
 
+          fetchedUidRef.current = session.user.id;
           fetchData(session.user.id).catch(e => console.warn('Fetch data init warning:', e));
         } else {
+          fetchedUidRef.current = null;
           updateUserProfileState(null);
         }
       } catch (err) {
@@ -3742,6 +3879,16 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setAuthUser(session?.user || null);
 
       if (session?.user) {
+        const alreadyFetchedForUser = fetchedUidRef.current === session.user.id;
+        if (event === 'TOKEN_REFRESHED' || (alreadyFetchedForUser && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN'))) {
+          if (mounted) {
+            setIsAuthLoading(false);
+            setIsProfileLoading(false);
+            clearTimeout(safetyTimer);
+          }
+          return;
+        }
+
         setIsProfileLoading(true);
         if (session.user.email_confirmed_at) {
           setIsAuthenticated(true);
@@ -3759,8 +3906,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
         }
 
+        fetchedUidRef.current = session.user.id;
         fetchData(session.user.id).catch(e => console.warn('Fetch data on change warning:', e));
       } else {
+        fetchedUidRef.current = null;
         updateUserProfileState(null);
         setShopName('');
         setShopPhone('');
@@ -4397,12 +4546,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       // Restore deducted stock if deleting a Customer Credit Item Sale
       if (selectedContact?.type === 'CUSTOMER' && editingTransaction.type === 'CREDIT') {
         const deletedItems = extractCashbookItems(editingTransaction.description).items;
-        if (deletedItems.length > 0 && daybookItems.length > 0) {
+        if (deletedItems.length > 0 && daybookItemsRef.current.length > 0) {
           const nowIso = new Date().toISOString();
           let stockChanged = false;
-          const nextStock = daybookItems.map(s => ({ ...s }));
+          const nextStock = daybookItemsRef.current.map(s => ({ ...s }));
           deletedItems.forEach(soldIt => {
             const idx = nextStock.findIndex(s =>
+              (soldIt.id && s.id === soldIt.id) ||
               (soldIt.sku && s.sku && s.sku.toLowerCase() === soldIt.sku.toLowerCase()) ||
               (soldIt.item && s.item.toLowerCase() === soldIt.item.toLowerCase())
             );
@@ -4525,10 +4675,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const applyStockDeductionIfEnabled = async () => {
         if (selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && validTransItems.length > 0 && transDeductStockOnSave) {
           const nowIso = new Date().toISOString();
-          const nextStock = daybookItems.map(s => ({ ...s }));
+          const nextStock = daybookItemsRef.current.map(s => ({ ...s }));
           let stockUpdated = false;
           validTransItems.forEach(soldIt => {
             const idx = nextStock.findIndex(s =>
+              (soldIt.id && s.id === soldIt.id) ||
               (soldIt.sku && s.sku && s.sku.toLowerCase() === soldIt.sku.toLowerCase()) ||
               (soldIt.item && s.item.toLowerCase() === soldIt.item.toLowerCase())
             );
@@ -7459,6 +7610,61 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                               <span className="text-xs font-black text-slate-900">LKR {lineTotal.toLocaleString()}</span>
                             </div>
                           </div>
+
+                          {(() => {
+                            const unitCost = Number(matchedStock?.cost ?? row.cost) || 0;
+                            const savedW = Number(matchedStock?.wholesalePrice) || 0;
+                            const savedR = Number(matchedStock?.retailPrice) || 0;
+                            const activeSaved = activeMode === 'WHOLESALE' ? savedW : savedR;
+                            const activeCurrent = activeMode === 'WHOLESALE' ? (Number(row.wholesalePrice) || 0) : (Number(row.retailPrice) || 0);
+                            const isAdj = activeSaved > 0 && Math.abs(activeCurrent - activeSaved) > 0.001;
+                            const adjPct = activeSaved > 0 ? ((activeCurrent - activeSaved) / activeSaved) * 100 : 0;
+                            const vsRetailPct = activeMode === 'WHOLESALE' && savedR > 0 ? ((unitSale - savedR) / savedR) * 100 : 0;
+                            const unitProfit = unitSale - unitCost;
+                            const profitOnCostPct = unitCost > 0 ? (unitProfit / unitCost) * 100 : 0;
+                            const marginPct = unitSale > 0 ? (unitProfit / unitSale) * 100 : 0;
+                            if (unitCost <= 0 && !isAdj && !(activeMode === 'WHOLESALE' && savedR > 0)) return null;
+                            return (
+                              <div className="flex items-center justify-between gap-1.5 flex-wrap pt-1.5 border-t border-slate-100 text-[10px] font-bold tabular-nums">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {unitCost > 0 && (
+                                    <span className={`px-1.5 py-0.5 rounded-md ${
+                                      unitProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                                    }`}>
+                                      Profit: {unitProfit >= 0 ? '+' : ''}LKR {unitProfit.toLocaleString()} ({profitOnCostPct >= 0 ? '+' : ''}{profitOnCostPct.toFixed(1)}% on cost • {marginPct.toFixed(1)}% margin)
+                                    </span>
+                                  )}
+                                  {isAdj && (
+                                    <span className={`px-1.5 py-0.5 rounded-md ${
+                                      adjPct >= 0 ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-800'
+                                    }`}>
+                                      {activeMode === 'WHOLESALE' ? 'W.Sale' : 'Retail'} Adj: {adjPct >= 0 ? '+' : ''}{adjPct.toFixed(1)}% (Saved: LKR {activeSaved.toLocaleString()})
+                                    </span>
+                                  )}
+                                  {activeMode === 'WHOLESALE' && savedR > 0 && (
+                                    <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                                      vs Retail: {vsRetailPct >= 0 ? '+' : ''}{vsRetailPct.toFixed(1)}%
+                                    </span>
+                                  )}
+                                </div>
+                                {isAdj && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateRow(
+                                        activeMode === 'WHOLESALE'
+                                          ? { wholesalePrice: savedW }
+                                          : { retailPrice: savedR }
+                                      )
+                                    }
+                                    className="text-[10px] font-extrabold text-indigo-600 hover:underline"
+                                  >
+                                    Reset
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -10421,9 +10627,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       // Deduct sold item qty from Daybook Items & Stock catalog when enabled
       if (validItems.length > 0 && cashbookSyncStockOnSave) {
         const nowIso = new Date().toISOString();
-        const nextStock = [...daybookItems];
+        const nextStock = daybookItemsRef.current.map(s => ({ ...s }));
         validItems.forEach(entryIt => {
           const idx = nextStock.findIndex(s =>
+            (entryIt.id && s.id === entryIt.id) ||
             (entryIt.sku && s.sku && s.sku.toLowerCase() === entryIt.sku.toLowerCase()) ||
             (entryIt.item && s.item.toLowerCase() === entryIt.item.toLowerCase())
           );
@@ -11952,14 +12159,34 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between text-[10px] font-bold pt-1 border-t border-slate-100 text-slate-500 flex-wrap gap-1">
+                        <div className="flex items-center justify-between text-[10px] font-bold pt-1 border-t border-slate-100 text-slate-500 flex-wrap gap-1 tabular-nums">
                           <span>Cost Total: <strong className="text-rose-700">LKR {lineCost.toLocaleString()}</strong></span>
                           <span>Sale Total: <strong className="text-indigo-700">LKR {lineSale.toLocaleString()}</strong></span>
-                          {(row.cost > 0 && unitSale > 0) && (
-                            <span className={lineProfit >= 0 ? 'text-blue-700' : 'text-rose-700'}>
-                              Profit: {lineProfit >= 0 ? '+' : ''}LKR {lineProfit.toLocaleString()}
-                            </span>
-                          )}
+                          {(row.cost > 0 && unitSale > 0) && (() => {
+                            const unitProfitPct = ((unitSale - row.cost) / row.cost) * 100;
+                            const marginPct = (unitSale - row.cost) / unitSale * 100;
+                            return (
+                              <span className={lineProfit >= 0 ? 'text-blue-700' : 'text-rose-700'}>
+                                Profit: {lineProfit >= 0 ? '+' : ''}LKR {lineProfit.toLocaleString()} ({unitProfitPct >= 0 ? '+' : ''}{unitProfitPct.toFixed(1)}% / {marginPct.toFixed(1)}% margin)
+                              </span>
+                            );
+                          })()}
+                          {(() => {
+                            const matchedCbStock = daybookItems.find(
+                              s => (row.sku && s.sku && s.sku.toLowerCase() === row.sku.toLowerCase()) || (row.item && s.item.toLowerCase() === row.item.toLowerCase())
+                            );
+                            if (!matchedCbStock) return null;
+                            const activeCbMode: 'RETAIL' | 'WHOLESALE' = row.priceType || ((Number(row.retailPrice) || 0) > 0 ? 'RETAIL' : 'WHOLESALE');
+                            const savedVal = activeCbMode === 'WHOLESALE' ? (Number(matchedCbStock.wholesalePrice) || 0) : (Number(matchedCbStock.retailPrice) || 0);
+                            const currVal = activeCbMode === 'WHOLESALE' ? (Number(row.wholesalePrice) || 0) : (Number(row.retailPrice) || 0);
+                            if (savedVal <= 0 || Math.abs(currVal - savedVal) <= 0.001) return null;
+                            const adjPct = ((currVal - savedVal) / savedVal) * 100;
+                            return (
+                              <span className={`px-1.5 py-0.5 rounded ${adjPct >= 0 ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-800'}`}>
+                                {activeCbMode === 'WHOLESALE' ? 'W.Sale' : 'Retail'} Adj: {adjPct >= 0 ? '+' : ''}{adjPct.toFixed(1)}%
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
@@ -13437,7 +13664,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       if (!resolvedContact) return;
 
       // 2. Deduct sold quantities from Items & Stock
-      const nextStock = daybookItems.map(s => ({ ...s }));
+      const nextStock = daybookItemsRef.current.map(s => ({ ...s }));
       let stockChanged = false;
       validItems.forEach(soldIt => {
         const idx = nextStock.findIndex(
@@ -13970,7 +14197,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                               type="number"
                               min="0"
                               step="any"
-                              value={unitRate}
+                              value={unitRate === 0 ? '' : unitRate}
+                              placeholder="0"
                               onChange={e => {
                                 const val = parseFloat(e.target.value) || 0;
                                 setSellCartItems(prev =>
@@ -13983,7 +14211,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                   )
                                 );
                               }}
-                              title="Unit Price (LKR)"
+                              title={activeRateTier === 'WHOLESALE' ? 'Wholesale Unit Price (LKR)' : 'Retail Unit Price (LKR)'}
                               className="w-full px-2 py-1 bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-lg text-xs font-bold text-right tabular-nums"
                             />
                           </div>
@@ -13993,6 +14221,69 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             LKR {lineTotal.toLocaleString()}
                           </div>
                         </div>
+
+                        {/* Live Wholesale / Retail Adjustment & Profit Percentage Bar */}
+                        {(() => {
+                          const unitCost = Number(matchedStock?.cost ?? cartItem.cost) || 0;
+                          const savedWholesale = Number(matchedStock?.wholesalePrice) || 0;
+                          const savedRetail = Number(matchedStock?.retailPrice) || 0;
+                          const baseTierPrice = activeRateTier === 'WHOLESALE' ? savedWholesale : savedRetail;
+                          const isManualPrice = baseTierPrice > 0 && Math.abs(unitRate - baseTierPrice) > 0.001;
+                          const manualAdjPct = baseTierPrice > 0 ? ((unitRate - baseTierPrice) / baseTierPrice) * 100 : 0;
+                          const vsRetailPct = activeRateTier === 'WHOLESALE' && savedRetail > 0 ? ((unitRate - savedRetail) / savedRetail) * 100 : 0;
+                          const unitProfit = unitRate - unitCost;
+                          const profitOnCostPct = unitCost > 0 ? (unitProfit / unitCost) * 100 : 0;
+                          const marginPct = unitRate > 0 ? (unitProfit / unitRate) * 100 : 0;
+
+                          return (
+                            <div className="flex items-center justify-between gap-1.5 flex-wrap pt-1.5 border-t border-slate-100 dark:border-[#26354d] text-[10px] font-bold tabular-nums">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {unitCost > 0 && (
+                                  <span className={`px-1.5 py-0.5 rounded-md ${
+                                    unitProfit >= 0
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                                  }`}>
+                                    Cost: {unitCost.toLocaleString()} • Profit: {unitProfit >= 0 ? '+' : ''}{unitProfit.toLocaleString()} ({profitOnCostPct >= 0 ? '+' : ''}{profitOnCostPct.toFixed(1)}% / {marginPct.toFixed(1)}% margin)
+                                  </span>
+                                )}
+                                {isManualPrice && (
+                                  <span className={`px-1.5 py-0.5 rounded-md ${
+                                    manualAdjPct >= 0
+                                      ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
+                                      : 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300'
+                                  }`}>
+                                    {activeRateTier === 'WHOLESALE' ? 'W.Sale' : 'Retail'} Adj: {manualAdjPct >= 0 ? '+' : ''}{manualAdjPct.toFixed(1)}% (was LKR {baseTierPrice.toLocaleString()})
+                                  </span>
+                                )}
+                                {activeRateTier === 'WHOLESALE' && savedRetail > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-[#131b2a] text-slate-600 dark:text-slate-300">
+                                    vs Retail: {vsRetailPct >= 0 ? '+' : ''}{vsRetailPct.toFixed(1)}%
+                                  </span>
+                                )}
+                              </div>
+                              {isManualPrice && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSellCartItems(prev =>
+                                      prev.map((c, i) =>
+                                        i === idx
+                                          ? activeRateTier === 'WHOLESALE'
+                                            ? { ...c, wholesalePrice: savedWholesale }
+                                            : { ...c, retailPrice: savedRetail }
+                                          : c
+                                      )
+                                    )
+                                  }
+                                  className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 hover:underline"
+                                >
+                                  Reset
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -14399,7 +14690,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       const nextRetail = parseFloat(restockRetail) || 0;
       const newQty = (Number(restockingItem.qty) || 0) + addQty;
 
-      const nextItems = daybookItems.map(it =>
+      const nextItems = daybookItemsRef.current.map(it =>
         it.id === restockingItem.id
           ? {
               ...it,
