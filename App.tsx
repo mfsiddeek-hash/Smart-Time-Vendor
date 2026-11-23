@@ -4,11 +4,11 @@ import {
   Check, Languages, ChevronRight, LogOut, ChevronLeft, Share2, Calendar, 
   ChevronDown, Filter, Download, Trash2, Calculator, FilePlus, Loader2, 
   Camera, Eye, EyeOff, Target, MoreVertical, RefreshCw, ArrowDown, ArrowUp, 
-  Search, Plus, FileText, Users, Truck, Building, PlayCircle, CalendarClock,
-  ArrowRight, Database, AlertCircle, History, TrendingUp, TrendingDown, Settings, ShieldAlert, X,
+  Search, Plus, FileText, Users, Building, PlayCircle, CalendarClock,
+  ArrowRight, Database, AlertCircle, History, TrendingUp, Settings, ShieldAlert, X,
   RotateCcw, Wrench, Smartphone, Printer, Key, KeyRound, Lock, Unlock, ShieldCheck, UserPlus, Upload,
   Image as ImageIcon, CheckCircle2, UserCheck, Shield, Copy, ExternalLink, Delete, Hash, Package,
-  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, Minus, Tag, ArrowUpRight, ArrowDownRight,
+  Banknote, CreditCard, Building2, Clock, Landmark, CheckSquare, ArrowUpRight,
   Sun, Moon, AlertTriangle
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
@@ -40,19 +40,6 @@ export const SALE_CATEGORIES = [
   'SIM / Reload',
   'Software / Unlocking',
   'Other Sales'
-] as const;
-
-export const EXPENSE_CATEGORIES = [
-  'Vendor Payment',
-  'Shop Rent',
-  'Electricity / Bills',
-  'Staff Wages / Salary',
-  'Parts Purchase',
-  'Food & Tea',
-  'Transport / Delivery',
-  'Internet / Phone Bills',
-  'Shop Maintenance / Tools',
-  'Other Expense'
 ] as const;
 
 const getItemUnitSalePrice = (
@@ -201,7 +188,7 @@ const formatCashbookItemsSummary = (items?: CashbookEntryItem[]): string => {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<string>('DASHBOARD');
-  const [activeTab, setActiveTab] = useState<ContactType>('VENDOR');
+  const [activeTab, setActiveTab] = useState<ContactType>('CUSTOMER');
   const [isDashboardItemsTab, setIsDashboardItemsTab] = useState<boolean>(false);
   const [isDashboardSalesTab, setIsDashboardSalesTab] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -318,6 +305,8 @@ export default function App() {
   });
   const [daybookItemSearch, setDaybookItemSearch] = useState('');
   const [daybookItemCategoryFilter, setDaybookItemCategoryFilter] = useState<string>('ALL');
+  const [daybookLowStockOnly, setDaybookLowStockOnly] = useState(false);
+  const [dismissLowStockAlert, setDismissLowStockAlert] = useState(false);
   const [isDaybookItemModalOpen, setIsDaybookItemModalOpen] = useState(false);
   const [editingDaybookItem, setEditingDaybookItem] = useState<DaybookStockItem | null>(null);
   const [itemFormName, setItemFormName] = useState('');
@@ -328,6 +317,18 @@ export default function App() {
   const [itemFormCost, setItemFormCost] = useState('');
   const [itemFormWholesalePrice, setItemFormWholesalePrice] = useState('');
   const [itemFormRetailPrice, setItemFormRetailPrice] = useState('');
+
+  const LOW_STOCK_THRESHOLD = 3;
+
+  const alertStockItems = useMemo(() => {
+    return daybookItems
+      .filter(it => (Number(it.qty) || 0) <= LOW_STOCK_THRESHOLD)
+      .sort((a, b) => (Number(a.qty) || 0) - (Number(b.qty) || 0));
+  }, [daybookItems]);
+
+  const outOfStockCount = useMemo(() => {
+    return alertStockItems.filter(it => (Number(it.qty) || 0) <= 0).length;
+  }, [alertStockItems]);
 
   const userItemCategories = useMemo(() => {
     const map = new Map<string, string>();
@@ -351,7 +352,11 @@ export default function App() {
   const [invoiceFormat, setInvoiceFormat] = useState<'POS' | 'A4'>('POS');
 
   const openInvoiceModalForCashbook = (entry: CashbookEntry) => {
-    let matchedContact = contacts.find(c => c.name.toLowerCase() === (entry.contactName || '').toLowerCase());
+    const matchedContact = contacts.find(
+      c =>
+        (entry.contactId && c.id === entry.contactId) ||
+        c.name.toLowerCase() === (entry.contactName || '').toLowerCase()
+    );
     setInvoiceModalItem({
       type: 'CASHBOOK',
       item: entry,
@@ -398,8 +403,34 @@ export default function App() {
     return d.toISOString().slice(0, 10);
   });
   const [cashbookCustomEnd, setCashbookCustomEnd] = useState(() => new Date().toISOString().slice(0, 10));
-  const [cashbookTypeFilter, setCashbookTypeFilter] = useState<'ALL' | 'SALE' | 'EXPENSE'>('ALL');
+  const [cashbookTypeFilter, setCashbookTypeFilter] = useState<'ALL' | 'SALE'>('ALL');
   const [cashbookCategoryFilter, setCashbookCategoryFilter] = useState<string>('ALL');
+
+  // Items & Stock -> Customer Sale & Restock Modal states
+  const [isSellStockModalOpen, setIsSellStockModalOpen] = useState(false);
+  const [sellCustomerMode, setSellCustomerMode] = useState<'EXISTING' | 'NEW'>('EXISTING');
+  const [sellSelectedContactId, setSellSelectedContactId] = useState('');
+  const [sellCustomerSearch, setSellCustomerSearch] = useState('');
+  const [sellNewCustomerName, setSellNewCustomerName] = useState('');
+  const [sellNewCustomerPhone, setSellNewCustomerPhone] = useState('');
+  const [sellNewCustomerCity, setSellNewCustomerCity] = useState('');
+  const [sellCartItems, setSellCartItems] = useState<CashbookEntryItem[]>([]);
+  const [sellDate, setSellDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [sellPaymentMethod, setSellPaymentMethod] = useState<PaymentMethod | 'CREDIT'>('Cash');
+  const [sellCashAmount, setSellCashAmount] = useState('');
+  const [sellChequeNumber, setSellChequeNumber] = useState('');
+  const [sellChequeDate, setSellChequeDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [sellChequeStatus, setSellChequeStatus] = useState<ChequeStatus>('PENDING');
+  const [sellCategory, setSellCategory] = useState<string>('Spare Parts Sale');
+  const [sellNotes, setSellNotes] = useState('');
+  const [sellStockSearch, setSellStockSearch] = useState('');
+  const [sellError, setSellError] = useState('');
+
+  const [restockingItem, setRestockingItem] = useState<DaybookStockItem | null>(null);
+  const [restockQty, setRestockQty] = useState('');
+  const [restockCost, setRestockCost] = useState('');
+  const [restockWholesale, setRestockWholesale] = useState('');
+  const [restockRetail, setRestockRetail] = useState('');
   const [cashbookSearch, setCashbookSearch] = useState('');
   const cashbookDateInputRef = useRef<HTMLInputElement>(null);
   const cashbookCustomStartRef = useRef<HTMLInputElement>(null);
@@ -793,7 +824,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     return urlOrDataUrl;
   };
 
-  const persistDaybookItems = async (nextItems: DaybookStockItem[], uid?: string) => {
+  const persistDaybookItems = async (nextItems: DaybookStockItem[], uid?: string, deletedId?: string) => {
     const targetUid = uid || authUser?.id;
     setDaybookItems(nextItems);
     try {
@@ -803,6 +834,27 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       localStorage.setItem('st_daybook_items', JSON.stringify(nextItems));
     } catch {}
     if (targetUid) {
+      try {
+        if (deletedId) {
+          await supabase.from('daybook_items').delete().eq('id', deletedId).eq('user_id', targetUid);
+        } else if (nextItems.length > 0) {
+          const dbRows = nextItems.map(it => ({
+            id: it.id,
+            user_id: targetUid,
+            item: it.item,
+            sku: it.sku || '',
+            category: it.category || null,
+            qty: Number(it.qty) || 0,
+            cost: Number(it.cost) || 0,
+            wholesale_price: Number(it.wholesalePrice) || 0,
+            retail_price: Number(it.retailPrice) || 0,
+            updated_at: it.updatedAt || new Date().toISOString()
+          }));
+          await supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' });
+        }
+      } catch (dbErr) {
+        console.warn('Daybook items table sync fallback:', dbErr);
+      }
       try {
         const blob = new Blob([JSON.stringify(nextItems)], { type: 'application/json' });
         await supabase.storage
@@ -873,23 +925,75 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
     } catch {}
 
+    let loadedFromTable = false;
     try {
-      const { data: blobData, error } = await supabase.storage
-        .from('shop-logos')
-        .download(`${uid}/daybook-items.json`);
-      if (!error && blobData) {
-        const text = await blobData.text();
-        const cloudParsed = JSON.parse(text);
-        if (Array.isArray(cloudParsed)) {
-          setDaybookItems(cloudParsed);
+      const { data: tableRows, error: tableErr } = await supabase
+        .from('daybook_items')
+        .select('*')
+        .eq('user_id', uid)
+        .order('updated_at', { ascending: false });
+
+      if (!tableErr && Array.isArray(tableRows)) {
+        if (tableRows.length > 0) {
+          const mappedItems: DaybookStockItem[] = tableRows.map((r: any) => ({
+            id: r.id,
+            userId: r.user_id,
+            item: r.item || '',
+            sku: r.sku || '',
+            category: r.category || undefined,
+            qty: Number(r.qty) || 0,
+            cost: Number(r.cost) || 0,
+            wholesalePrice: Number(r.wholesale_price) || 0,
+            retailPrice: Number(r.retail_price) || 0,
+            updatedAt: r.updated_at || new Date().toISOString()
+          }));
+          setDaybookItems(mappedItems);
           try {
-            localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(cloudParsed));
-            localStorage.setItem('st_daybook_items', JSON.stringify(cloudParsed));
+            localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(mappedItems));
+            localStorage.setItem('st_daybook_items', JSON.stringify(mappedItems));
           } catch {}
+          loadedFromTable = true;
         }
       }
     } catch (e) {
-      console.warn('Daybook items cloud load warning:', e);
+      console.warn('daybook_items table query fallback:', e);
+    }
+
+    if (!loadedFromTable) {
+      try {
+        const { data: blobData, error } = await supabase.storage
+          .from('shop-logos')
+          .download(`${uid}/daybook-items.json`);
+        if (!error && blobData) {
+          const text = await blobData.text();
+          const cloudParsed = JSON.parse(text);
+          if (Array.isArray(cloudParsed)) {
+            setDaybookItems(cloudParsed);
+            try {
+              localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(cloudParsed));
+              localStorage.setItem('st_daybook_items', JSON.stringify(cloudParsed));
+            } catch {}
+            // Auto-seed into daybook_items table if available
+            if (cloudParsed.length > 0) {
+              const dbRows = cloudParsed.map((it: any) => ({
+                id: it.id || generateUUID(),
+                user_id: uid,
+                item: it.item || '',
+                sku: it.sku || '',
+                category: it.category || null,
+                qty: Number(it.qty) || 0,
+                cost: Number(it.cost) || 0,
+                wholesale_price: Number(it.wholesalePrice) || 0,
+                retail_price: Number(it.retailPrice) || 0,
+                updated_at: it.updatedAt || new Date().toISOString()
+              }));
+              supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' }).then(() => {}, () => {});
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Daybook items cloud load warning:', e);
+      }
     }
 
     try {
@@ -1006,14 +1110,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handleDeleteDaybookItem = async (id: string) => {
     if (!userCanDelete) {
-      alert("Access Denied: You do not have permission to delete items.");
+      showProfileToast("Access Denied: You do not have permission to delete items.", "error");
       return;
     }
     const target = daybookItems.find(i => i.id === id);
-    if (!window.confirm(`Delete "${target?.item || 'this item'}" from Daybook items?`)) return;
+    if (!window.confirm(`Delete "${target?.item || 'this item'}" from Items & Stock?`)) return;
     const nextItems = daybookItems.filter(i => i.id !== id);
-    await persistDaybookItems(nextItems);
-    showProfileToast('Item deleted from Daybook!');
+    await persistDaybookItems(nextItems, undefined, id);
+    showProfileToast('Item deleted from inventory!');
   };
 
   const stopCameraStream = () => {
@@ -1276,7 +1380,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     
     let filteredTransactions = [];
     if (reportTarget === 'CATEGORY') {
-      const categoryContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER')).map(c => c.id);
+      const categoryContacts = contacts.filter(c => c.type === activeTab).map(c => c.id);
       filteredTransactions = transactions.filter(t => categoryContacts.includes(t.contactId));
     } else if (selectedContact) {
       filteredTransactions = transactions.filter(t => t.contactId === selectedContact.id);
@@ -1306,14 +1410,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const todayCashbookSnapshot = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const todayEntries = cashbookEntries.filter(e => e.date === todayStr && !isPendingCashbookEntry(e));
-    const sales = todayEntries.filter(e => e.type === 'SALE').reduce((s, e) => s + e.amount, 0);
-    const expenses = todayEntries.filter(e => e.type === 'EXPENSE').reduce((s, e) => s + e.amount, 0);
+    const todayEntries = cashbookEntries.filter(e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isPendingCashbookEntry(e));
+    const sales = todayEntries.reduce((s, e) => s + e.amount, 0);
     return {
       count: todayEntries.length,
-      sales,
-      expenses,
-      net: sales - expenses
+      sales
     };
   }, [cashbookEntries]);
 
@@ -1321,7 +1422,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     try {
       const doc = new jsPDF();
       const timestamp = new Date().toLocaleString();
-      const currentContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
+      const currentContacts = contacts.filter(c => c.type === activeTab);
       
       const start = normalizeToLocalMidnight(reportRange.start);
       const end = normalizeToLocalMidnight(reportRange.end);
@@ -1898,10 +1999,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     navigateTo('CONTACT_FORM');
   };
 
-  const generateGeneralInvoicePDF = (
+  const buildGeneralInvoicePDFDoc = (
     data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
-    format: 'POS' | 'A4',
-    action: 'download' | 'print' = 'download'
+    format: 'POS' | 'A4'
   ) => {
     const { item, contact, type } = data;
     const isCashbook = type === 'CASHBOOK';
@@ -1918,12 +2018,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const dateStr = formatDisplayDate(rawDate);
     const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const customerName = item.contactName || contact?.name || 'Valued Customer';
-    const customerPhone = contact?.phone || '-';
+    const customerPhone = item.contactPhone || contact?.phone || '-';
+    const customerCity = contact?.city || '';
     const entryItemsList: CashbookEntryItem[] = Array.isArray(item.items) && item.items.length > 0
       ? item.items
       : extractCashbookItems(item.description).items;
     const parsedTxMeta = isTx ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
-    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Credit Item Sale') : 'Service Order'));
+    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
     const cleanRawDesc = isTx && parsedTxMeta
       ? parsedTxMeta.cleanNotes
       : stripCashbookItems(stripAttachmentToken(item.description || item.cleanNotes));
@@ -1933,16 +2034,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
     const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
-    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? 0) : 0;
-    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
+    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
+    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
     const isPending = isTx ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const totalDue = isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0);
+    const isUnpaidCredit = isTx && item.type === 'CREDIT' && !parsedTxMeta?.method;
+    const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
 
+    let doc: jsPDF;
     if (format === 'POS') {
-      const doc = new jsPDF({
+      const estimatedHeight = Math.max(190, 150 + entryItemsList.length * 10);
+      doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [80, 175]
+        format: [80, estimatedHeight]
       });
 
       let y = 10;
@@ -1956,7 +2060,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
       doc.setFont('courier', 'bold');
       doc.setFontSize(13);
-      doc.text((shopName || 'SMART TIME').toUpperCase(), 40, y, { align: 'center' });
+      doc.text((shopName || 'LEDGER BOOK').toUpperCase(), 40, y, { align: 'center' });
 
       y += 5;
       doc.setFont('courier', 'normal');
@@ -1983,11 +2087,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       y += 4.5;
       doc.text(`Date      : ${dateStr} ${timeStr}`, 6, y);
       y += 4.5;
-      doc.text(`Customer  : ${customerName}`, 6, y);
+      doc.text(`Customer  : ${customerName}${customerCity ? ` (${customerCity})` : ''}`.slice(0, 40), 6, y);
       y += 4.5;
       doc.text(`Phone     : ${customerPhone}`, 6, y);
       y += 4.5;
-      doc.text(`Method    : ${paymentMethod}`, 6, y);
+      doc.text(`Method    : ${isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque' : paymentMethod}`, 6, y);
       if (isSplit) {
         y += 4;
         doc.text(`Cash Paid : LKR ${splitCash.toLocaleString()}`, 6, y);
@@ -2008,7 +2112,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       y += 4;
       doc.setFont('courier', 'bold');
       doc.setFontSize(8.5);
-      doc.text('ITEMS / SERVICE DETAILS', 6, y);
+      doc.text('ITEMS / DETAILS', 6, y);
       doc.text('AMOUNT', 74, y, { align: 'right' });
 
       y += 4.5;
@@ -2018,17 +2122,36 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         entryItemsList.forEach(it => {
           const uPrice = getItemUnitSalePrice(it);
           const lTotal = (Number(it.qty) || 0) * (Number(uPrice) || 0);
-          const itemLabel = `${it.item || it.sku} x${it.qty}`.slice(0, 26);
-          doc.text(itemLabel, 6, y);
+          doc.setFont('courier', 'bold');
+          doc.text(String(it.item || it.sku).slice(0, 26), 6, y);
           doc.text(`LKR ${lTotal.toLocaleString()}`, 74, y, { align: 'right' });
-          y += 4;
+          y += 3.8;
+          doc.setFont('courier', 'normal');
+          doc.setFontSize(7.2);
+          const skuPrefix = it.sku ? `${it.sku} • ` : '';
+          doc.text(`${skuPrefix}${it.qty} pcs x LKR ${uPrice.toLocaleString()} (1 pc)`.slice(0, 42), 6, y);
+          doc.setFontSize(8);
+          y += 4.4;
         });
+        if (cleanRawDesc) {
+          doc.setFontSize(7.2);
+          doc.text(`Note: ${cleanRawDesc}`.slice(0, 40), 6, y);
+          doc.setFontSize(8);
+          y += 4;
+        }
       } else {
-        doc.text(`${categoryName} - ${description}`.slice(0, 26), 6, y);
+        doc.text(`${categoryName}`.slice(0, 26), 6, y);
         doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
+        y += 4;
+        if (description) {
+          doc.setFontSize(7.2);
+          doc.text(description.slice(0, 40), 6, y);
+          doc.setFontSize(8);
+          y += 4;
+        }
       }
 
-      y += 4;
+      y += 3;
       doc.text('------------------------------------------', 40, y, { align: 'center' });
       y += 5;
       doc.setFont('courier', 'bold');
@@ -2036,7 +2159,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text('TOTAL BILL    :', 6, y);
       doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
 
-      if (isSplit) {
+      if (isUnpaidCredit) {
+        y += 5;
+        doc.setFontSize(9.5);
+        doc.text('TOTAL DUE     :', 6, y);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
+      } else if (isSplit) {
         y += 4.5;
         doc.setFont('courier', 'normal');
         doc.setFontSize(8);
@@ -2082,17 +2210,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         doc.text(line, 40, y, { align: 'center' });
         y += 3.8;
       });
-
-      if (action === 'print') {
-        doc.autoPrint();
-        const blobUrl = doc.output('bloburl');
-        window.open(blobUrl, '_blank');
-      } else {
-        doc.save(`Invoice_${invoiceNo}.pdf`);
-      }
     } else {
-      // A4 Format
-      const doc = new jsPDF({
+      doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
         format: 'a4'
@@ -2114,7 +2233,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(16);
       doc.setFont('helvetica', 'bold');
-      doc.text((shopName || 'SMART TIME').toUpperCase(), titleX, 13);
+      doc.text((shopName || 'LEDGER BOOK').toUpperCase(), titleX, 13);
 
       doc.setFontSize(8.5);
       doc.setFont('helvetica', 'normal');
@@ -2135,7 +2254,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.setFont('helvetica', 'normal');
       doc.text(`Date: ${dateStr}`, 196, 22, { align: 'right' });
 
-      // Customer Details Box & Shop Information
       doc.setTextColor(30, 41, 59);
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
@@ -2144,100 +2262,139 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9.5);
-      doc.text(`Customer Name : ${customerName}`, 14, 50);
+      doc.text(`Customer Name : ${customerName}${customerCity ? ` (${customerCity})` : ''}`, 14, 50);
       doc.text(`Phone Number  : ${customerPhone}`, 14, 56);
-      const methodDisplay = isSplit ? `Cash + Cheque (Split)` : paymentMethod;
+      const methodDisplay = isUnpaidCredit ? 'Credit (On Account)' : isSplit ? `Cash + Cheque (Split)` : paymentMethod;
       doc.text(`Payment Method: ${methodDisplay}`, 14, 62);
-      if (parsedTxMeta?.chequeNumber) {
+      let leftMetaY = 67;
+      if (parsedTxMeta?.chequeNumber || parsedTxMeta?.chequeDate || parsedTxMeta?.chequeStatus) {
         doc.setFontSize(8.5);
         doc.setTextColor(100, 116, 139);
-        doc.text(`Cheque #: #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}`, 14, 67);
+        const chqMetaParts = [
+          parsedTxMeta.chequeNumber ? `Cheque #: #${parsedTxMeta.chequeNumber}` : '',
+          parsedTxMeta.chequeDate ? `Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : '',
+          parsedTxMeta.chequeStatus ? `Status: ${parsedTxMeta.chequeStatus}` : ''
+        ].filter(Boolean);
+        doc.text(chqMetaParts.join(' • '), 14, leftMetaY);
         doc.setTextColor(30, 41, 59);
+        leftMetaY += 5;
+      }
+      if (cleanRawDesc && entryItemsList.length > 0) {
+        doc.setFontSize(8.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(`Notes: ${cleanRawDesc}`.slice(0, 58), 14, leftMetaY);
+        doc.setTextColor(30, 41, 59);
+        leftMetaY += 5;
       }
 
       doc.setFontSize(9.5);
-      doc.text(`Store Name : ${shopName || 'SMART TIME'}`, 115, 50);
+      doc.text(`Store Name : ${shopName || 'LEDGER BOOK'}`, 115, 50);
       doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 56);
       doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 62);
+      const statusDisplay = isUnpaidCredit ? 'UNPAID (CREDIT)' : isPending ? 'PENDING CLEARANCE' : 'PAID / SETTLED';
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.text(`Status     : ${statusDisplay}`, 115, 68);
+      doc.setFont('helvetica', 'normal');
 
+      const tableStartY = Math.max(74, leftMetaY + 3);
       autoTable(doc, {
-        startY: 72,
-        head: [['#', 'Item / Category', 'Description', 'Payment Method', 'Total Amount (LKR)']],
+        startY: tableStartY,
+        head: [['#', 'Item & Details', 'Qty', '1 Pc Rate (LKR)', 'Total (LKR)']],
         body: entryItemsList.length > 0
           ? entryItemsList.map((it, idx) => {
               const uPrice = getItemUnitSalePrice(it);
               const lTotal = (Number(it.qty) || 0) * (Number(uPrice) || 0);
+              const detailLines = [
+                it.item || it.sku,
+                [it.sku ? `SKU: ${it.sku}` : '', it.category || categoryName].filter(Boolean).join(' • ')
+              ].filter(Boolean).join('\n');
               return [
                 String(idx + 1),
-                it.category || categoryName,
-                `${it.item || it.sku}${it.sku && it.item ? ` [SKU: ${it.sku}]` : ''} × ${it.qty} @ LKR ${uPrice.toLocaleString()}`,
-                paymentMethod,
+                detailLines,
+                `${it.qty} pcs`,
+                `LKR ${uPrice.toLocaleString()}`,
                 `LKR ${lTotal.toLocaleString()}`
               ];
             })
           : [
-              ['1', categoryName, description, paymentMethod, `LKR ${amount.toLocaleString()}`]
+              ['1', `${categoryName}\n${description}`, '1', `LKR ${amount.toLocaleString()}`, `LKR ${amount.toLocaleString()}`]
             ],
         theme: 'striped',
         headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
-        styles: { fontSize: 10, cellPadding: 4 }
+        styles: { fontSize: 9.5, cellPadding: 3.5, valign: 'middle' },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },
+          2: { cellWidth: 22, halign: 'center', fontStyle: 'bold' },
+          3: { cellWidth: 36, halign: 'right' },
+          4: { cellWidth: 36, halign: 'right', fontStyle: 'bold' }
+        }
       });
 
-      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : 94;
+      const rawFinalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : (tableStartY + 24);
+      let summaryAnchorY = rawFinalY;
+      if (summaryAnchorY + 64 > 282) {
+        doc.addPage();
+        summaryAnchorY = 16;
+      }
 
-      // Summary Box
       const boxHeight = isSplit ? 40 : (parsedTxMeta?.method === 'Cheque' ? 32 : 24);
       doc.setFillColor(248, 250, 252);
-      doc.rect(115, finalY + 8, 81, boxHeight, 'F');
+      doc.rect(115, summaryAnchorY + 8, 81, boxHeight, 'F');
       doc.setDrawColor(226, 232, 240);
-      doc.rect(115, finalY + 8, 81, boxHeight, 'S');
+      doc.rect(115, summaryAnchorY + 8, 81, boxHeight, 'S');
 
-      if (isSplit) {
+      if (isUnpaidCredit) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(225, 29, 72);
+        doc.text('TOTAL DUE:', 119, summaryAnchorY + 22);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 22, { align: 'right' });
+      } else if (isSplit) {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(9);
         doc.setTextColor(71, 85, 105);
-        doc.text('Total Bill:', 119, finalY + 16);
-        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 16, { align: 'right' });
+        doc.text('Total Bill:', 119, summaryAnchorY + 16);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 16, { align: 'right' });
 
         doc.setTextColor(5, 150, 105);
-        doc.text('Cash Amount Paid:', 119, finalY + 22);
-        doc.text(`LKR ${splitCash.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+        doc.text('Cash Amount Paid:', 119, summaryAnchorY + 22);
+        doc.text(`LKR ${splitCash.toLocaleString()}`, 192, summaryAnchorY + 22, { align: 'right' });
 
         doc.setTextColor(180, 83, 9);
-        doc.text(`Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}):`, 119, finalY + 28);
-        doc.text(`LKR ${splitCheque.toLocaleString()}`, 192, finalY + 28, { align: 'right' });
+        doc.text(`Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}):`, 119, summaryAnchorY + 28);
+        doc.text(`LKR ${splitCheque.toLocaleString()}`, 192, summaryAnchorY + 28, { align: 'right' });
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
         doc.setTextColor(totalDue > 0 ? 225 : 5, totalDue > 0 ? 29 : 150, totalDue > 0 ? 72 : 105);
-        doc.text('TOTAL DUE:', 119, finalY + 38);
-        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, finalY + 38, { align: 'right' });
+        doc.text('TOTAL DUE:', 119, summaryAnchorY + 38);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, summaryAnchorY + 38, { align: 'right' });
       } else if (parsedTxMeta?.method === 'Cheque') {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(9);
         doc.setTextColor(71, 85, 105);
-        doc.text('Total Bill:', 119, finalY + 16);
-        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 16, { align: 'right' });
+        doc.text('Total Bill:', 119, summaryAnchorY + 16);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 16, { align: 'right' });
 
         doc.setTextColor(180, 83, 9);
-        doc.text(`Cheque (${isPending ? 'On Hold' : 'Cleared'}):`, 119, finalY + 22);
-        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+        doc.text(`Cheque (${isPending ? 'On Hold' : 'Cleared'}):`, 119, summaryAnchorY + 22);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 22, { align: 'right' });
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
         doc.setTextColor(totalDue > 0 ? 225 : 5, totalDue > 0 ? 29 : 150, totalDue > 0 ? 72 : 105);
-        doc.text('TOTAL DUE:', 119, finalY + 32);
-        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, finalY + 32, { align: 'right' });
+        doc.text('TOTAL DUE:', 119, summaryAnchorY + 32);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, summaryAnchorY + 32, { align: 'right' });
       } else {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
         doc.setTextColor(5, 150, 105);
-        doc.text('TOTAL PAID:', 119, finalY + 22);
-        doc.text(`LKR ${amount.toLocaleString()}`, 192, finalY + 22, { align: 'right' });
+        doc.text('TOTAL PAID:', 119, summaryAnchorY + 22);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 22, { align: 'right' });
       }
 
-      // Terms & Conditions
-      const termsTop = finalY + (isSplit ? 54 : (parsedTxMeta?.method === 'Cheque' ? 46 : 38));
+      const termsTop = summaryAnchorY + (isSplit ? 54 : (parsedTxMeta?.method === 'Cheque' ? 46 : 38));
       doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
@@ -2250,14 +2407,127 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         doc.text(line, 14, termY);
         termY += 5;
       });
+    }
 
-      if (action === 'print') {
-        doc.autoPrint();
-        const blobUrl = doc.output('bloburl');
-        window.open(blobUrl, '_blank');
-      } else {
-        doc.save(`Invoice_${invoiceNo}.pdf`);
+    const fileName = `Invoice_${invoiceNo}_${format}.pdf`;
+    const chequeDetails = parsedTxMeta?.chequeNumber ? ` (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})` : '';
+    const itemsText = entryItemsList.length > 0
+      ? `\n*Items / Products:*\n` + entryItemsList.map(i => {
+          const uPrice = getItemUnitSalePrice(i);
+          const qtyNum = Number(i.qty) || 0;
+          const lTotal = qtyNum * uPrice;
+          const metaParts = [i.sku ? `SKU: ${i.sku}` : '', i.category || ''].filter(Boolean).join(' • ');
+          return `• *${i.item || i.sku}*${metaParts ? ` (${metaParts})` : ''}\n  ${qtyNum} pcs × 1 pc LKR ${uPrice.toLocaleString()} = *LKR ${lTotal.toLocaleString()}*`;
+        }).join('\n') + `\n`
+      : `\n*Details:* ${description}\n`;
+
+    const notesLine = entryItemsList.length > 0 && cleanRawDesc ? `Notes: ${cleanRawDesc}\n` : '';
+
+    const paymentSummaryText = isUnpaidCredit
+      ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+        `⚠️ *Balance Due: LKR ${totalDue.toLocaleString()}*`
+      : isSplit
+      ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+        `💵 *Cash Amount Paid: LKR ${splitCash.toLocaleString()}*\n` +
+        `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${splitCheque.toLocaleString()}*\n` +
+        (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})\n` : '') +
+        `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*` +
+        (totalDue > 0 ? `\n(Balance will become LKR 0 once cheque clears)` : `\n(Fully Settled)`)
+      : parsedTxMeta?.method === 'Cheque'
+      ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+        `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${amount.toLocaleString()}*\n` +
+        (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''})\n` : '') +
+        `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*`
+      : `*Total Amount Paid: LKR ${amount.toLocaleString()}*`;
+
+    const shareText = `🧾 *${(shopName || 'LEDGER BOOK').toUpperCase()} - OFFICIAL RECEIPT*\n` +
+      (shopAddress ? `📍 ${shopAddress}\n` : '') +
+      (shopPhone ? `📞 ${shopPhone}\n` : '') +
+      `-----------------------------------\n` +
+      `Ref #: #${invoiceNo}\n` +
+      `Date: ${dateStr} ${timeStr}\n` +
+      `Customer: ${customerName}` + (customerCity ? ` (${customerCity})` : '') + `\n` +
+      `Phone: ${customerPhone}\n` +
+      `Category: ${categoryName}\n` +
+      `Payment Method: ${isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque (Split)' : paymentMethod}${chequeDetails}\n` +
+      notesLine +
+      itemsText +
+      `-----------------------------------\n` +
+      paymentSummaryText + `\n\n` +
+      (shopReceiptTerms || DEFAULT_RECEIPT_TERMS) + `\n\n` +
+      `Thank you for your business!`;
+
+    const cleanPhone = String(customerPhone || '').replace(/[^0-9]/g, '');
+
+    return { doc, fileName, invoiceNo, shareText, cleanPhone };
+  };
+
+  const generateGeneralInvoicePDF = (
+    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
+    format: 'POS' | 'A4',
+    action: 'download' | 'print' = 'download'
+  ) => {
+    const { doc, fileName } = buildGeneralInvoicePDFDoc(data, format);
+    if (action === 'print') {
+      doc.autoPrint();
+      const blobUrl = doc.output('bloburl');
+      const link = document.createElement('a');
+      link.href = blobUrl.toString();
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      doc.save(fileName);
+    }
+  };
+
+  const shareInvoiceViaWhatsAppWithPDF = async (
+    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
+    format: 'POS' | 'A4' = 'POS'
+  ) => {
+    try {
+      const { doc, fileName, invoiceNo, shareText, cleanPhone } = buildGeneralInvoicePDFDoc(data, format);
+      // Always auto-generate and save the PDF immediately
+      doc.save(fileName);
+
+      // Try native Web Share API with the PDF file attached when supported (mobile / compatible browsers)
+      let sharedViaWebShare = false;
+      try {
+        const pdfBlob = doc.output('blob');
+        const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+        if (typeof navigator !== 'undefined' && typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [pdfFile] })) {
+          await navigator.share({
+            files: [pdfFile],
+            title: `Invoice #${invoiceNo}`,
+            text: shareText
+          });
+          sharedViaWebShare = true;
+        }
+      } catch (shareErr: any) {
+        if (shareErr?.name === 'AbortError') {
+          showProfileToast(`PDF ${fileName} saved to device.`);
+          return;
+        }
       }
+
+      if (!sharedViaWebShare) {
+        const url = cleanPhone.length >= 7
+          ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(shareText)}`
+          : `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+      showProfileToast(`PDF generated (${fileName})! Attach & send in WhatsApp.`);
+    } catch (err) {
+      console.error('WhatsApp PDF share error:', err);
+      showProfileToast('Could not generate PDF for WhatsApp.', 'error');
     }
   };
 
@@ -2281,7 +2551,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       ? item.items
       : extractCashbookItems(item.description).items;
     const parsedTxMeta = type === 'TRANSACTION' ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
-    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Credit Item Sale') : 'Service Order'));
+    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
     const cleanRawDesc = type === 'TRANSACTION' && parsedTxMeta
       ? parsedTxMeta.cleanNotes
       : stripCashbookItems(stripAttachmentToken(item.description || item.cleanNotes));
@@ -2291,52 +2561,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const amount = item.amount || item.totalCost || item.targetAmount || 0;
 
     const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
-    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? 0) : 0;
-    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
+    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
+    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
     const isPending = type === 'TRANSACTION' ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const totalDue = isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0);
+    const isUnpaidCredit = type === 'TRANSACTION' && item.type === 'CREDIT' && !parsedTxMeta?.method;
+    const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
 
     const shareToWhatsApp = () => {
-      const chequeDetails = parsedTxMeta?.chequeNumber ? ` (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})` : '';
-      const itemsText = entryItemsList.length > 0
-        ? `\n*Items / Products:*\n` + entryItemsList.map(i => `• ${i.item || i.sku} (${i.qty} × LKR ${getItemUnitSalePrice(i).toLocaleString()}) = LKR ${(Number(i.qty) * getItemUnitSalePrice(i)).toLocaleString()}`).join('\n') + `\n`
-        : '';
-
-      const paymentSummaryText = isSplit
-        ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
-          `💵 *Cash Amount Paid: LKR ${splitCash.toLocaleString()}*\n` +
-          `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${splitCheque.toLocaleString()}*\n` +
-          (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''}${parsedTxMeta.chequeStatus ? ` • Status: ${parsedTxMeta.chequeStatus}` : ''})\n` : '') +
-          `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*` +
-          (totalDue > 0 ? `\n(Balance will become LKR 0 once cheque clears)` : `\n(Fully Settled)`)
-        : parsedTxMeta?.method === 'Cheque'
-        ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
-          `⏳ *Cheque (${isPending ? 'Pending on Hold' : 'Cleared'}): LKR ${amount.toLocaleString()}*\n` +
-          (parsedTxMeta?.chequeNumber ? `   (Cheque #${parsedTxMeta.chequeNumber}${parsedTxMeta.chequeDate ? ` • Due: ${formatDisplayDate(parsedTxMeta.chequeDate)}` : ''})\n` : '') +
-          `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*`
-        : `*Total Amount Paid: LKR ${amount.toLocaleString()}*`;
-
-      const shareText = `🧾 *${(shopName || 'SMART TIME').toUpperCase()} - OFFICIAL RECEIPT*\n` +
-        (shopAddress ? `📍 ${shopAddress}\n` : '') +
-        (shopPhone ? `📞 ${shopPhone}\n` : '') +
-        `-----------------------------------\n` +
-        `Ref #: #${invoiceNo}\n` +
-        `Date: ${dateStr} ${timeStr}\n` +
-        `Customer: ${customerName}` + (contact?.city ? ` (${contact.city})` : '') + `\n` +
-        `Phone: ${customerPhone}\n` +
-        `Category: ${categoryName}\n` +
-        `Payment Method: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}${chequeDetails}\n` +
-        itemsText +
-        `-----------------------------------\n` +
-        paymentSummaryText + `\n\n` +
-        (shopReceiptTerms || DEFAULT_RECEIPT_TERMS) + `\n\n` +
-        `Thank you for your business!`;
-
-      const cleanPhone = customerPhone.replace(/[^0-9]/g, '');
-      const url = cleanPhone.length >= 7
-        ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(shareText)}`
-        : `https://wa.me/?text=${encodeURIComponent(shareText)}`;
-      window.open(url, '_blank');
+      shareInvoiceViaWhatsAppWithPDF(invoiceModalItem, invoiceFormat);
     };
 
     const copyInvoiceText = () => {
@@ -2452,7 +2684,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                             <div className="pr-2">
                               <p className="font-bold text-slate-900">{it.item || it.sku}</p>
                               <p className="text-[10px] text-slate-500 leading-tight">
-                                {it.sku ? `SKU: ${it.sku} • ` : ''}{it.qty} × LKR {uPrice.toLocaleString()}
+                                {it.sku ? `SKU: ${it.sku} • ` : ''}{it.qty} pcs × LKR {uPrice.toLocaleString()} (1 pc)
                               </p>
                             </div>
                             <span className="font-bold whitespace-nowrap">LKR {lTotal.toLocaleString()}</span>
@@ -2476,7 +2708,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     <span className="text-slate-600 font-bold">TOTAL BILL:</span>
                     <span className="font-extrabold text-slate-900 text-sm">LKR {amount.toLocaleString()}</span>
                   </div>
-                  {isSplit ? (
+                  {isUnpaidCredit ? (
+                    <div className="flex justify-between items-center text-xs font-black pt-1 border-t border-dotted border-slate-300 text-rose-600">
+                      <span>TOTAL DUE (CREDIT):</span>
+                      <span className="text-sm">LKR {totalDue.toLocaleString()}</span>
+                    </div>
+                  ) : isSplit ? (
                     <>
                       <div className="flex justify-between items-center text-[11px] text-emerald-700 font-bold">
                         <span>CASH RECEIVED:</span>
@@ -2541,21 +2778,27 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   <div className="text-right shrink-0">
                     <span className="text-[10px] uppercase tracking-wider font-bold text-blue-300">Invoice</span>
                     <p className="font-mono font-bold text-sm">#{invoiceNo}</p>
+                    <p className="text-[10px] text-slate-300">{dateStr}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3 rounded-xl border border-slate-200">
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Customer</span>
-                    <p className="font-bold text-slate-800 text-xs mt-0.5">{customerName}</p>
+                    <p className="font-bold text-slate-800 text-xs mt-0.5">{customerName}{contact?.city ? ` (${contact.city})` : ''}</p>
                     <p className="text-[11px] text-slate-500">{customerPhone}</p>
+                    {cleanRawDesc && entryItemsList.length > 0 && (
+                      <p className="text-[10px] text-slate-600 mt-1">Note: {cleanRawDesc}</p>
+                    )}
                   </div>
                   <div>
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Store & Payment</span>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Store &amp; Payment</span>
                     <p className="font-bold text-slate-800 text-xs mt-0.5">{shopName || 'Store'}</p>
                     {shopAddress && <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">{shopAddress}</p>}
                     <p className="text-[11px] text-slate-500 mt-0.5">{shopPhone || 'N/A'}</p>
-                    <p className="text-[11px] font-bold text-emerald-700 mt-1">{paymentMethod} Payment</p>
+                    <p className={`text-[11px] font-bold mt-1 ${isUnpaidCredit ? 'text-rose-600' : isPending ? 'text-amber-700' : 'text-emerald-700'}`}>
+                      {isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque (Split)' : `${paymentMethod} Payment`}
+                    </p>
                   </div>
                 </div>
 
@@ -2563,9 +2806,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
                       <tr>
-                        <th className="p-2.5">Category</th>
-                        <th className="p-2.5">Description</th>
-                        <th className="p-2.5 text-right">Amount</th>
+                        <th className="p-2.5">Item &amp; Details</th>
+                        <th className="p-2.5 text-center">Qty</th>
+                        <th className="p-2.5 text-right">1 Pc Rate</th>
+                        <th className="p-2.5 text-right">Total</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2575,23 +2819,27 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                           const lTotal = (Number(it.qty) || 0) * (Number(uPrice) || 0);
                           return (
                             <tr key={it.id || idx}>
-                              <td className="p-2.5 font-bold text-slate-800">{it.category || categoryName}</td>
                               <td className="p-2.5 text-slate-700">
-                                <span className="font-bold text-slate-900">{it.item || it.sku}</span>
-                                {it.sku && <span className="ml-1 font-mono text-[10px] text-indigo-700">[SKU: {it.sku}]</span>}
-                                <span className="block text-[10px] text-slate-500">
-                                  Qty: {it.qty} × LKR {uPrice.toLocaleString()}
+                                <span className="font-bold text-slate-900 block">{it.item || it.sku}</span>
+                                <span className="text-[10px] text-slate-500">
+                                  {[it.sku ? `SKU: ${it.sku}` : '', it.category || categoryName].filter(Boolean).join(' • ')}
                                 </span>
                               </td>
-                              <td className="p-2.5 text-right font-extrabold text-slate-900">LKR {lTotal.toLocaleString()}</td>
+                              <td className="p-2.5 text-center font-bold text-slate-700 whitespace-nowrap">{it.qty} pcs</td>
+                              <td className="p-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">LKR {uPrice.toLocaleString()}</td>
+                              <td className="p-2.5 text-right font-extrabold text-slate-900 whitespace-nowrap">LKR {lTotal.toLocaleString()}</td>
                             </tr>
                           );
                         })
                       ) : (
                         <tr>
-                          <td className="p-2.5 font-bold text-slate-800">{categoryName}</td>
-                          <td className="p-2.5 text-slate-600">{description}</td>
-                          <td className="p-2.5 text-right font-extrabold text-slate-900">LKR {amount.toLocaleString()}</td>
+                          <td className="p-2.5 text-slate-700">
+                            <span className="font-bold text-slate-900 block">{categoryName}</span>
+                            <span className="text-[10px] text-slate-500">{description}</span>
+                          </td>
+                          <td className="p-2.5 text-center font-bold text-slate-700">1</td>
+                          <td className="p-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">LKR {amount.toLocaleString()}</td>
+                          <td className="p-2.5 text-right font-extrabold text-slate-900 whitespace-nowrap">LKR {amount.toLocaleString()}</td>
                         </tr>
                       )}
                     </tbody>
@@ -2604,7 +2852,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       <span>Total Bill:</span>
                       <span>LKR {amount.toLocaleString()}</span>
                     </div>
-                    {isSplit ? (
+                    {isUnpaidCredit ? (
+                      <div className="border-t border-slate-300 pt-1.5 flex justify-between text-sm font-black text-rose-600">
+                        <span>Total Due (Credit):</span>
+                        <span>LKR {totalDue.toLocaleString()}</span>
+                      </div>
+                    ) : isSplit ? (
                       <>
                         <div className="flex justify-between text-xs font-bold text-emerald-700">
                           <span>Cash Amount Paid:</span>
@@ -3113,7 +3366,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         return; 
       }
       setCurrentView(state.view || 'DASHBOARD');
-      if (state.tab === 'CUSTOMER' || state.tab === 'VENDOR') setActiveTab(state.tab);
+      if (state.tab === 'CUSTOMER' || state.tab === 'RENT' || state.tab === 'SERVICE') setActiveTab(state.tab);
       setIsDashboardItemsTab(Boolean(state.itemsTab));
       setIsDashboardSalesTab(Boolean(state.salesTab));
       if (state.contactId) {
@@ -3170,41 +3423,43 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       let mappedCb: CashbookEntry[] = [];
 
       if (contactsRes.data) {
-        mappedContacts = contactsRes.data.map((c: any) => {
-          let parsedStatus = 'Pending';
-          let parsedAdvance = 0;
-          let parsedAdvDate = '';
-          let parsedOrderDate = '';
-          let parsedCollectedItems: string[] = [];
-          let parsedOtherCollectedItems = '';
-          let parsedDeviceIssue = '';
-          let parsedCity = '';
-          if (c.end_date) {
-            try {
-              if (c.end_date.startsWith('{')) {
-                const parsed = JSON.parse(c.end_date);
-                parsedStatus = parsed.status || 'Pending';
-                parsedAdvance = parsed.advance || 0;
-                parsedAdvDate = parsed.advanceDate || '';
-                parsedOrderDate = parsed.orderDate || '';
-                parsedCollectedItems = Array.isArray(parsed.collectedItems) ? parsed.collectedItems : [];
-                parsedOtherCollectedItems = parsed.otherCollectedItems || '';
-                parsedDeviceIssue = parsed.deviceIssue || '';
-                parsedCity = parsed.city || '';
-              } else {
+        mappedContacts = contactsRes.data
+          .filter((c: any) => c.type !== 'VENDOR' && c.type !== 'SUPPLIER')
+          .map((c: any) => {
+            let parsedStatus = 'Pending';
+            let parsedAdvance = 0;
+            let parsedAdvDate = '';
+            let parsedOrderDate = '';
+            let parsedCollectedItems: string[] = [];
+            let parsedOtherCollectedItems = '';
+            let parsedDeviceIssue = '';
+            let parsedCity = '';
+            if (c.end_date) {
+              try {
+                if (c.end_date.startsWith('{')) {
+                  const parsed = JSON.parse(c.end_date);
+                  parsedStatus = parsed.status || 'Pending';
+                  parsedAdvance = parsed.advance || 0;
+                  parsedAdvDate = parsed.advanceDate || '';
+                  parsedOrderDate = parsed.orderDate || '';
+                  parsedCollectedItems = Array.isArray(parsed.collectedItems) ? parsed.collectedItems : [];
+                  parsedOtherCollectedItems = parsed.otherCollectedItems || '';
+                  parsedDeviceIssue = parsed.deviceIssue || '';
+                  parsedCity = parsed.city || '';
+                } else {
+                  parsedStatus = c.end_date;
+                }
+              } catch {
                 parsedStatus = c.end_date;
               }
-            } catch {
-              parsedStatus = c.end_date;
             }
-          }
-          return {
-            id: c.id, 
-            userId: c.user_id,
-            name: c.name, 
-            phone: c.phone || '', 
-            city: c.city || parsedCity || '',
-            type: c.type === 'SUPPLIER' ? 'VENDOR' : c.type,
+            return {
+              id: c.id,
+              userId: c.user_id,
+              name: c.name,
+              phone: c.phone || '',
+              city: c.city || parsedCity || '',
+              type: c.type,
             balance: c.balance || 0, 
             targetAmount: c.target_amount != null ? Number(c.target_amount) : (c.type === 'RENT' ? 30000 : undefined),
             phoneModel: c.start_date || '',
@@ -3299,32 +3554,32 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
 
       if (cashbookRes.data) {
-        mappedCb = cashbookRes.data.map((c: any) => {
-          let cbType: CashbookEntryType = (c.type === 'EXPENSE' ? 'EXPENSE' : 'SALE');
-          if (c.category === 'Shop Rent' && c.description?.toLowerCase().includes('withdrawal')) {
-            cbType = 'SALE';
-          }
-          const extracted = extractCashbookItems(c.description || '');
-          return {
-            id: c.id,
-            userId: c.user_id,
-            type: cbType,
-            amount: Number(c.amount) || 0,
-            date: c.date,
-            category: c.category || 'General',
-            description: c.description || '',
-            paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
-            referenceNo: c.reference_no || '',
-            contactName: c.contact_name || '',
-            items: extracted.items.length > 0 ? extracted.items : undefined,
-            createdAt: c.created_at
-          };
-        });
+        mappedCb = cashbookRes.data
+          .filter((c: any) => c.type !== 'EXPENSE')
+          .map((c: any) => {
+            const extracted = extractCashbookItems(c.description || '');
+            const jsonItems = Array.isArray(c.items_json) && c.items_json.length > 0 ? c.items_json : extracted.items;
+            return {
+              id: c.id,
+              userId: c.user_id,
+              type: 'SALE' as CashbookEntryType,
+              amount: Number(c.amount) || 0,
+              date: c.date,
+              category: c.category || 'General',
+              description: c.description || '',
+              paymentMethod: (c.payment_method || 'Cash') as PaymentMethod,
+              referenceNo: c.reference_no || '',
+              contactName: c.contact_name || '',
+              contactId: c.contact_id || undefined,
+              items: jsonItems.length > 0 ? jsonItems : undefined,
+              createdAt: c.created_at
+            };
+          });
 
-        // Hydrate Daybook Items catalog from localStorage + Supabase Storage
+        // Hydrate Daybook Items catalog from daybook_items table + Supabase Storage
         loadDaybookItemsCloud(activeUid).catch(() => {});
 
-        // Auto-link any customer (Sales), vendor (Expenses), rent deposits (Expenses) / rent withdrawals (Sales), or service (Sales) payments if missing in Cashbook
+        // Auto-link any customer or service sales payments if missing in Sales Daybook
         const existingCbIds = new Set(mappedCb.map(c => c.id));
         const allContactsMap = new Map(mappedContacts.map(c => [c.id, c]));
         const missingCbEntries: CashbookEntry[] = [];
@@ -3332,42 +3587,24 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         for (const tx of mappedTx) {
           if (!allContactsMap.has(tx.contactId) || existingCbIds.has(tx.id) || !tx.amount || tx.amount <= 0) continue;
           const contact = allContactsMap.get(tx.contactId)!;
-          const shouldAutoSync = tx.type === 'PAYMENT' || (contact.type === 'RENT' && tx.type === 'CREDIT');
+          const shouldAutoSync =
+            ((contact.type === 'CUSTOMER' || contact.type === 'SERVICE') && tx.type === 'PAYMENT') ||
+            (contact.type === 'RENT' && tx.type === 'CREDIT');
 
           if (shouldAutoSync) {
             const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
             const method = (tx.paymentMethod || parsed.method || 'Cash') as PaymentMethod;
             const parsedDesc = parsed.cleanNotes || stripAttachmentToken(tx.description) || 'Payment';
 
-            let entryType: CashbookEntryType = 'SALE';
             let category = 'Customer Payment';
             let refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
-            let desc = `Customer Payment - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
+            let desc = `Payment Received - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
 
-            if (contact.type === 'CUSTOMER') {
-              entryType = 'SALE';
-              category = 'Customer Payment';
-              refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
-              desc = `Payment Received - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
-            } else if (contact.type === 'VENDOR') {
-              entryType = 'EXPENSE';
-              category = 'Vendor Payment';
-              refNo = `VEND-${contact.id.slice(0, 6).toUpperCase()}`;
-              desc = `Payment to Vendor - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
-            } else if (contact.type === 'RENT') {
-              if (tx.type === 'CREDIT') {
-                entryType = 'SALE';
-                category = 'Shop Rent';
-                refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
-                desc = `Rent Withdrawal - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
-              } else {
-                entryType = 'EXPENSE';
-                category = 'Shop Rent';
-                refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
-                desc = `Rent Deposit / Payment - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
-              }
+            if (contact.type === 'RENT') {
+              category = 'Shop Rent';
+              refNo = `RENT-${contact.id.slice(0, 6).toUpperCase()}`;
+              desc = `Rent Withdrawal - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
             } else if (contact.type === 'SERVICE') {
-              entryType = 'SALE';
               category = 'Repair Charges';
               refNo = `SO-${contact.id.slice(0, 6).toUpperCase()}`;
               const isAdv = parsedDesc.toLowerCase().includes('advance');
@@ -3379,7 +3616,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             const newCb: CashbookEntry = {
               id: tx.id,
               userId: activeUid,
-              type: entryType,
+              type: 'SALE',
               amount: tx.amount,
               date: tx.date,
               category: category,
@@ -3387,6 +3624,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               paymentMethod: method,
               referenceNo: refNo,
               contactName: contact.name,
+              contactId: contact.id,
               createdAt: new Date().toISOString()
             };
             missingCbEntries.push(newCb);
@@ -3553,7 +3791,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handleBack = () => { window.history.back(); };
 
-  // Helper: Automatically link Customer payments to Sales, Vendor payments to Expenses, Rent deposits to Expenses / withdrawals to Sales, and Service payments to Sales
+  // Helper: Automatically link Customer, Service & Rent Withdrawal payments to Sales Daybook
   const recordOrUpdateLinkedCashbookEntry = async (params: {
     txId: string;
     contactId: string;
@@ -3571,17 +3809,18 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     isItemCreditSale?: boolean;
   }) => {
     if (!params.amount || params.amount <= 0) return;
+    if (params.contactType === 'RENT' && params.txType !== 'CREDIT') return;
+
     const method = (params.paymentMethod || 'Cash') as PaymentMethod;
     const cleanNote = stripCashbookItems(stripAttachmentToken(params.descriptionNote));
     const hasItems = Array.isArray(params.items) && params.items.length > 0;
 
-    let entryType: CashbookEntryType = 'SALE';
+    const entryType: CashbookEntryType = 'SALE';
     let category = 'Customer Payment';
     let refPrefix = 'CUST';
     let desc = '';
 
     if (params.contactType === 'CUSTOMER') {
-      entryType = 'SALE';
       if (params.isItemCreditSale) {
         category = params.categoryOverride || params.items?.[0]?.category || 'Spare Parts Sale';
         refPrefix = 'CUST';
@@ -3591,25 +3830,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         refPrefix = 'CUST';
         desc = `Payment Received - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
       }
-    } else if (params.contactType === 'VENDOR') {
-      entryType = 'EXPENSE';
-      category = 'Vendor Payment';
-      refPrefix = 'VEND';
-      desc = `Payment to Vendor - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
     } else if (params.contactType === 'RENT') {
-      if (params.txType === 'CREDIT') {
-        entryType = 'SALE';
-        category = 'Shop Rent';
-        refPrefix = 'RENT';
-        desc = `Rent Withdrawal - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
-      } else {
-        entryType = 'EXPENSE';
-        category = 'Shop Rent';
-        refPrefix = 'RENT';
-        desc = `Rent Deposit / Payment - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
-      }
+      category = 'Shop Rent';
+      refPrefix = 'RENT';
+      desc = `Rent Withdrawal - ${params.contactName}${cleanNote ? ' (' + cleanNote + ')' : ''}`;
     } else if (params.contactType === 'SERVICE') {
-      entryType = 'SALE';
       category = 'Repair Charges';
       refPrefix = 'SO';
       const descPrefix = params.isAdvance ? 'Advance Payment' : 'Service Payment';
@@ -3624,7 +3849,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     const orderNo = `${refPrefix}-${params.contactId.slice(0, 6).toUpperCase()}`;
 
-    const entryPayload = {
+    const entryPayload: any = {
       id: params.txId,
       user_id: authUser?.id,
       type: entryType,
@@ -3634,7 +3859,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       description: desc,
       payment_method: method,
       reference_no: orderNo,
-      contact_name: params.contactName
+      contact_name: params.contactName,
+      contact_id: params.contactId,
+      items_json: hasItems ? params.items : null
     };
 
     const newEntry: CashbookEntry = {
@@ -3648,11 +3875,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       paymentMethod: method,
       referenceNo: orderNo,
       contactName: params.contactName,
+      contactId: params.contactId,
       items: hasItems ? params.items : undefined,
       createdAt: new Date().toISOString()
     };
 
-    // 1. Supabase upsert / insert / update
     try {
       const { data: existing } = await supabase.from('cashbook_entries').select('id').eq('id', params.txId).maybeSingle();
       if (existing) {
@@ -3664,12 +3891,32 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           description: desc,
           payment_method: method,
           contact_name: params.contactName,
+          contact_id: params.contactId,
+          items_json: hasItems ? params.items : null,
           reference_no: orderNo
         }).eq('id', params.txId);
         if (authUser?.id) q = q.eq('user_id', authUser.id);
-        await q;
+        const updRes = await q;
+        if (updRes.error && (updRes.error.code === 'PGRST204' || updRes.error.code === '42703' || updRes.error.message?.includes('column'))) {
+          let fb = supabase.from('cashbook_entries').update({
+            type: entryType,
+            amount: params.amount,
+            date: params.date,
+            category: category,
+            description: desc,
+            payment_method: method,
+            contact_name: params.contactName,
+            reference_no: orderNo
+          }).eq('id', params.txId);
+          if (authUser?.id) fb = fb.eq('user_id', authUser.id);
+          await fb;
+        }
       } else {
-        await supabase.from('cashbook_entries').insert([entryPayload]);
+        const insRes = await supabase.from('cashbook_entries').insert([entryPayload]);
+        if (insRes.error && (insRes.error.code === 'PGRST204' || insRes.error.code === '42703' || insRes.error.message?.includes('column'))) {
+          const { contact_id: _cid, items_json: _ij, ...basePayload } = entryPayload;
+          await supabase.from('cashbook_entries').insert([basePayload]);
+        }
       }
     } catch (err) {
       console.warn('Supabase cashbook sync warning:', err);
@@ -3847,7 +4094,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           name: savedData.name,
           phone: savedData.phone || '',
           city: savedData.city || cleanCity || '',
-          type: savedData.type === 'SUPPLIER' ? 'VENDOR' : savedData.type,
+          type: savedData.type,
           balance: savedData.balance || 0,
           targetAmount: isRent ? (rentTargetVal || 30000) : (savedData.target_amount != null ? Number(savedData.target_amount) : costVal),
           phoneModel: savedData.start_date || '',
@@ -4447,7 +4694,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           const isPendingChq = (transPaymentMethod === 'Cheque' || isSplitMethod) && transChequeStatus === 'PENDING';
           if (isPendingChq && !isSplitMethod) {
             await removeLinkedCashbookEntry(saved.id);
-            showProfileToast("Cheque saved as Pending (Will show in Sales/Expenses once passed)");
+            showProfileToast("Cheque saved as Pending (Will show in Sales once passed)");
           } else if (isPendingChq && isSplitMethod) {
             if (splitCashNum > 0) {
               await recordOrUpdateLinkedCashbookEntry({
@@ -4492,8 +4739,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             const toastMsg = shouldLinkItemSale
               ? "Items sold, stock updated & linked to Sales!"
               : selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
-                selectedContact.type === 'VENDOR' ? "Vendor payment saved & linked to Expenses (- Expense)!" :
-                selectedContact.type === 'RENT' ? (transType === 'CREDIT' ? "Rent withdrawal saved & linked to Sales (+ Sale)!" : "Rent deposit saved & linked to Expenses (Shop Rent)!") :
+                selectedContact.type === 'RENT' ? (transType === 'CREDIT' ? "Rent withdrawal saved & linked to Sales (+ Sale)!" : "Rent deposit saved!") :
                 "Service payment saved & linked to Sales (Repair Charges)!";
             showProfileToast(toastMsg);
           }
@@ -4519,7 +4765,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const contact = contacts.find(c => c.id === tx.contactId);
     const parsed = parsePaymentMethod(tx.description, tx.paymentMethod, tx.chequeStatus, tx.chequeDate);
     const effectiveChequeDate = parsed.chequeDate || tx.chequeDate || new Date().toISOString().slice(0, 10);
-    const sectionName = contact?.type === 'VENDOR' ? 'Expenses' : (contact?.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+    const sectionName = contact?.type === 'RENT' ? 'Rent Ledger' : 'Sales';
     const isSplit = tx.paymentMethod === 'Cash + Cheque' || parsed.method === 'Cash + Cheque';
 
     let updatedDesc = tx.description || '';
@@ -4656,44 +4902,44 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     if (!isReportModalOpen) return null;
     return (
       <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-6 backdrop-blur-md">
-        <div className="bg-white w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-          <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-sm rounded-[2rem] overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] animate-in zoom-in-95 duration-200">
+          <div className="p-6 border-b border-slate-200 dark:border-[#1e2a3c] flex justify-between items-center bg-slate-50 dark:bg-[#0e1626]">
             <div>
-              <h3 className="font-bold text-lg">Generate Report</h3>
+              <h3 className="font-bold text-lg text-slate-900 dark:text-white">Generate Report</h3>
               <p className="text-[10px] text-slate-400 font-bold uppercase">{reportTarget === 'CATEGORY' ? activeTab : selectedContact?.name}</p>
             </div>
-            <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm"><X size={18} /></button>
+            <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-white dark:bg-[#1a2538] text-slate-700 dark:text-slate-200 rounded-full shadow-sm"><X size={18} /></button>
           </div>
           <div className="p-6 flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Start Date</label>
-                <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+                <input type="date" value={reportRange.start} onChange={e => setReportRange({ ...reportRange, start: e.target.value })} className="w-full border border-slate-200 dark:border-[#26354d] dark:bg-[#1a2538] dark:text-white rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">End Date</label>
-                <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
+                <input type="date" value={reportRange.end} onChange={e => setReportRange({ ...reportRange, end: e.target.value })} className="w-full border border-slate-200 dark:border-[#26354d] dark:bg-[#1a2538] dark:text-white rounded-xl p-3 font-semibold text-sm outline-none focus:border-blue-500" />
               </div>
             </div>
 
-            <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
+            <div className="bg-slate-50 dark:bg-[#1a2538] border border-slate-100 dark:border-[#26354d] rounded-2xl p-4 flex flex-col gap-3 mt-2 shadow-inner">
                <div className="flex justify-between items-center">
-                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight">
                    {reportTarget === 'CONTACT' ? 
-                     (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'CUSTOMER' ? 'Total Credit' : (selectedContact?.type === 'SERVICE' ? 'Total Charges' : 'Total Items'))) :
-                     (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'CUSTOMER' ? 'Total Credit' : (activeTab === 'SERVICE' ? 'Total Charges' : 'Total Items')))
+                     (selectedContact?.type === 'RENT' ? 'Total Withdrawals' : (selectedContact?.type === 'SERVICE' ? 'Total Charges' : 'Total Credit')) :
+                     (activeTab === 'RENT' ? 'Total Withdrawals' : (activeTab === 'SERVICE' ? 'Total Charges' : 'Total Credit'))
                    }
                  </span>
-                 <span className="font-bold text-red-600 text-sm">LKR {reportTotals.totalCredit.toLocaleString()}</span>
+                 <span className="font-bold text-red-600 text-sm tabular-nums">LKR {reportTotals.totalCredit.toLocaleString()}</span>
                </div>
                <div className="flex justify-between items-center">
-                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight">
                    {reportTarget === 'CONTACT' ? 
-                     (selectedContact?.type === 'RENT' ? 'Total Deposits' : (selectedContact?.type === 'CUSTOMER' ? 'Total Received' : (selectedContact?.type === 'SERVICE' ? 'Total Received' : 'Total Paid'))) :
-                     (activeTab === 'RENT' ? 'Total Deposits' : (activeTab === 'CUSTOMER' ? 'Total Received' : (activeTab === 'SERVICE' ? 'Total Received' : 'Total Paid')))
+                     (selectedContact?.type === 'RENT' ? 'Total Deposits' : 'Total Received') :
+                     (activeTab === 'RENT' ? 'Total Deposits' : 'Total Received')
                    }
                  </span>
-                 <span className="font-bold text-green-600 text-sm">LKR {reportTotals.totalPaid.toLocaleString()}</span>
+                 <span className="font-bold text-green-600 text-sm tabular-nums">LKR {reportTotals.totalPaid.toLocaleString()}</span>
                </div>
             </div>
 
@@ -4710,9 +4956,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   };
 
   const renderDashboard = () => {
-    const currentTabContacts = contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER'));
+    const currentTabContacts = contacts.filter(c => c.type === activeTab);
 
-    // Compute pending cheques count & total strictly for contacts in the CURRENT active tab (Customer or Vendor)
+    // Compute pending cheques count & total strictly for contacts in the CURRENT active tab
     const contactsWithPendingCheques = currentTabContacts.filter(c => {
       const s = contactStats[c.id];
       return s && s.pendingChequesCount > 0;
@@ -4721,8 +4967,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const pendingChequesCountTotal = contactsWithPendingCheques.reduce((sum, c) => sum + (contactStats[c.id]?.pendingChequesCount || 0), 0);
     const pendingChequesAmountTotal = contactsWithPendingCheques.reduce((sum, c) => sum + (contactStats[c.id]?.pendingChequesAmount || 0), 0);
 
-    const tabNounSingular = activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'account' : 'order';
-    const tabNounPlural = activeTab === 'VENDOR' ? 'vendors' : activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
+    const tabNounSingular = activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'account' : 'order';
+    const tabNounPlural = activeTab === 'CUSTOMER' ? 'customers' : activeTab === 'RENT' ? 'accounts' : 'orders';
 
     // Date range helpers for SERVICE orders
     const isServiceDateInRange = (dateStr: string | null | undefined) => {
@@ -4914,18 +5160,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             <div className="flex gap-6 overflow-x-auto no-scrollbar pt-1 border-t border-slate-100 dark:border-[#1e2a3c]">
               <button 
                 onClick={() => { setActiveTab('CUSTOMER'); setIsDashboardItemsTab(false); setIsDashboardSalesTab(false); setFilterNeedsAttention(false); }} 
-                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${!isDashboardItemsTab && !isDashboardSalesTab && activeTab === 'CUSTOMER' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
+                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 whitespace-nowrap ${!isDashboardItemsTab && !isDashboardSalesTab && activeTab === 'CUSTOMER' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
               >
                 <Users size={17} />
                 <span>Customers</span>
-              </button>
-
-              <button 
-                onClick={() => { setActiveTab('VENDOR'); setIsDashboardItemsTab(false); setIsDashboardSalesTab(false); setFilterNeedsAttention(false); }} 
-                className={`flex items-center gap-2 pb-2.5 border-b-2 font-bold text-sm transition-all shrink-0 ${!isDashboardItemsTab && !isDashboardSalesTab && activeTab === 'VENDOR' ? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}
-              >
-                <Truck size={17} />
-                <span>Vendors</span>
               </button>
 
               <button 
@@ -4941,6 +5179,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       : 'bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-400'
                   }`}>
                     {daybookItems.length}
+                  </span>
+                )}
+                {alertStockItems.length > 0 && (
+                  <span className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded-full ${
+                    outOfStockCount > 0
+                      ? 'bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                      : 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                  }`}>
+                    {alertStockItems.length} Low
                   </span>
                 )}
               </button>
@@ -4969,7 +5216,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         {dbStatus === 'needs_tables' && !dismissDbAlert && (
           <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2 text-xs flex items-center justify-between shadow-xs animate-in fade-in duration-200">
             <div className="flex items-center gap-2">
-              <Database size={15} className="shrink-0 animate-pulse text-amber-200" />
+              <Database size={15} className="shrink-0 text-amber-200" />
               <div>
                 <span className="font-bold">Supabase: {SUPABASE_PROJECT_NAME}</span>
                 <span className="hidden sm:inline opacity-90 ml-1.5">• Tables need to be initialized in your Supabase SQL Editor.</span>
@@ -4993,6 +5240,54 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           </div>
         )}
 
+        {/* Global Low Stock Alert Banner */}
+        {alertStockItems.length > 0 && !dismissLowStockAlert && !isDashboardItemsTab && (
+          <div className={`px-4 py-2 text-xs flex items-center justify-between gap-2 shadow-xs border-b ${
+            outOfStockCount > 0
+              ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-900 dark:text-rose-200 border-rose-200 dark:border-rose-800/60'
+              : 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60'
+          }`}>
+            <div className="flex items-center gap-2 overflow-hidden">
+              <AlertTriangle size={15} className={`shrink-0 ${outOfStockCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400'}`} />
+              <div className="truncate">
+                <span className="font-extrabold">
+                  Low Stock Alert: {alertStockItems.length} item{alertStockItems.length === 1 ? '' : 's'}
+                </span>
+                <span className="hidden sm:inline ml-1.5 opacity-85">
+                  ({outOfStockCount > 0 ? `${outOfStockCount} out of stock • ` : ''}
+                  {alertStockItems.slice(0, 3).map(i => `${i.item} (${i.qty})`).join(', ')}
+                  {alertStockItems.length > 3 ? ` +${alertStockItems.length - 3} more` : ''})
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDashboardItemsTab(true);
+                  setIsDashboardSalesTab(false);
+                  setDaybookLowStockOnly(true);
+                }}
+                className={`font-bold px-2.5 py-1 rounded-lg text-[11px] shadow-2xs active:scale-95 transition-all ${
+                  outOfStockCount > 0
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                    : 'bg-amber-600 hover:bg-amber-700 text-white'
+                }`}
+              >
+                Restock ({alertStockItems.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setDismissLowStockAlert(true)}
+                className="p-1 opacity-70 hover:opacity-100"
+                title="Dismiss alert"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Main Content Area */}
         {isDashboardItemsTab ? (
           <div className="p-4 sm:p-6 flex flex-col gap-5 max-w-7xl mx-auto w-full">
@@ -5009,11 +5304,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               <div className="flex items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={() => handleOpenCashbookModal('SALE')}
-                  className="bg-slate-100 hover:bg-slate-200 dark:bg-[#1a2332] dark:hover:bg-[#222e42] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#2b3950] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs active:scale-95"
+                  onClick={() => handleOpenSellStockModal()}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
                 >
-                  <ArrowUpRight size={15} className="text-emerald-600" />
-                  <span>+ Record sale</span>
+                  <ArrowUpRight size={15} />
+                  <span>Sell to Customer</span>
                 </button>
                 <button
                   type="button"
@@ -5021,7 +5316,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
                 >
                   <Plus size={15} />
-                  <span>+ Add item</span>
+                  <span>Add item</span>
                 </button>
               </div>
             </div>
@@ -5047,7 +5342,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm active:scale-95 transition-all"
                 >
                   <Plus size={15} />
-                  <span>+ Add Sale</span>
+                  <span>Add Sale</span>
                 </button>
               </div>
             </div>
@@ -5056,16 +5351,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           </div>
         ) : (
         <div className="p-4 sm:p-6 flex flex-col gap-5 max-w-7xl mx-auto w-full">
-          {/* View Heading & Primary Action Buttons (matching image attachment) */}
+          {/* View Heading & Primary Action Buttons */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-                {activeTab === 'VENDOR' ? 'Vendors' : activeTab === 'CUSTOMER' ? 'Customers' : activeTab === 'RENT' ? 'Shop Rent' : 'Service orders'}
+                {activeTab === 'CUSTOMER' ? 'Customers' : activeTab === 'RENT' ? 'Shop Rent' : 'Service orders'}
               </h1>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                {activeTab === 'VENDOR' ? 'Track balances, payments, and supplier follow-ups.' : 
-                 activeTab === 'CUSTOMER' ? 'Track customer credit, payments, and histories.' : 
-                 activeTab === 'RENT' ? 'Manage rent savings, monthly target, and expense sync.' : 
+                {activeTab === 'CUSTOMER' ? 'Track customer credit, payments, and histories.' : 
+                 activeTab === 'RENT' ? 'Manage rent savings, monthly target, and ledger history.' : 
                  'Track device repairs, service progress, and invoices.'}
               </p>
             </div>
@@ -5076,7 +5370,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 className="bg-slate-100 hover:bg-slate-200 dark:bg-[#1a2332] dark:hover:bg-[#222e42] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#2b3950] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs active:scale-95"
               >
                 <Plus size={15} />
-                <span>+ Add {activeTab === 'VENDOR' ? 'vendor' : activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'rent account' : 'order'}</span>
+                <span>Add {activeTab === 'CUSTOMER' ? 'customer' : activeTab === 'RENT' ? 'rent account' : 'order'}</span>
               </button>
 
               <button 
@@ -5294,7 +5588,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900 dark:text-white leading-tight">
-                  {activeTab === 'VENDOR' ? 'Vendor balances' : activeTab === 'CUSTOMER' ? 'Customer balances' : activeTab === 'RENT' ? 'Rent Accounts' : 'Service Order List'}
+                  {activeTab === 'CUSTOMER' ? 'Customer balances' : activeTab === 'RENT' ? 'Rent Accounts' : 'Service Order List'}
                 </h2>
                 <div className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5 flex items-center gap-2 flex-wrap">
                   <span>
@@ -5709,13 +6003,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 }))}
               </div>
             ) : (
-              /* High quality Table & Cards for Vendor / Customer / Rent matching image_f55cac7e.png */
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-[#1e2a3c] text-[11px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                      <th className="py-3 px-3">{activeTab === 'VENDOR' ? 'VENDOR' : activeTab === 'CUSTOMER' ? 'CUSTOMER' : 'ACCOUNT'}</th>
-                      <th className="py-3 px-3 text-right">{activeTab === 'RENT' ? 'SAVED TARGET' : (activeTab === 'VENDOR' ? 'AMOUNT RECEIVED' : 'CREDIT GIVEN')}</th>
+                      <th className="py-3 px-3">{activeTab === 'CUSTOMER' ? 'CUSTOMER' : 'ACCOUNT'}</th>
+                      <th className="py-3 px-3 text-right">{activeTab === 'RENT' ? 'SAVED TARGET' : 'CREDIT GIVEN'}</th>
                       <th className="py-3 px-3 text-right">{activeTab === 'RENT' ? 'SAVED THIS CYCLE' : 'PAID'}</th>
                       <th className="py-3 px-3 text-right">BALANCE DUE</th>
                       <th className="py-3 px-3">UPCOMING PAYMENT</th>
@@ -5774,21 +6067,21 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                               <div>
                                 <h3 className="font-bold text-slate-900 dark:text-white text-sm leading-tight">{c.name}</h3>
                                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium">
-                                  {isRentAccount ? 'Rent Account' : (activeTab === 'VENDOR' ? 'Vendor' : 'Customer')} • {c.phone || 'No phone'}
+                                  {isRentAccount ? 'Rent Account' : 'Customer'} • {c.phone || 'No phone'}
                                 </p>
                               </div>
                             </div>
                           </td>
 
-                          <td className="py-3.5 px-3 text-right font-bold text-slate-800 dark:text-slate-200">
+                          <td className="py-3.5 px-3 text-right font-bold text-slate-800 dark:text-slate-200 tabular-nums">
                             LKR {(isRentAccount ? rentTarget : stats.totalCredit).toLocaleString()}
                           </td>
 
-                          <td className="py-3.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400">
+                          <td className="py-3.5 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
                             LKR {(isRentAccount ? rentSavedThisCycle : stats.totalPayment).toLocaleString()}
                           </td>
 
-                          <td className={`py-3.5 px-3 text-right font-black text-sm ${displayBal <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                          <td className={`py-3.5 px-3 text-right font-black text-sm tabular-nums ${displayBal <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                             LKR {Math.abs(displayBal).toLocaleString()}
                           </td>
 
@@ -5837,7 +6130,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
             {/* Table Footer */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-3 border-t border-slate-100 dark:border-[#1e2a3c] text-xs text-slate-400 dark:text-slate-500 font-semibold">
-              <span>Showing {filtered.length} of {contacts.filter(c => c.type === activeTab || (activeTab === 'VENDOR' && c.type as any === 'SUPPLIER')).length} {activeTab.toLowerCase()}s</span>
+              <span>Showing {filtered.length} of {contacts.filter(c => c.type === activeTab).length} {activeTab.toLowerCase()}s</span>
               <span>Tip: select a {activeTab.toLowerCase()} to see their full payment history.</span>
             </div>
           </div>
@@ -5858,8 +6151,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const target = selectedContact.targetAmount || 30000;
     const isTargetAchieved = isRent && balance >= target;
 
-    const labelLeft = isRent ? "WITHDRAW" : (selectedContact.type === 'VENDOR' ? "GOT ITEMS" : (isService ? "SERVICE CHARGE" : "GAVE ITEMS"));
-    const labelRight = isRent ? "DEPOSIT" : (selectedContact.type === 'VENDOR' ? "PAID MONEY" : (isService ? "PAYMENT RECEIVED" : "GOT MONEY"));
+    const labelLeft = isRent ? "WITHDRAW" : (isService ? "SERVICE CHARGE" : "GAVE ITEMS");
+    const labelRight = isRent ? "DEPOSIT" : (isService ? "PAYMENT RECEIVED" : "GOT MONEY");
     
     const contactTransactions = transactions
       .filter(t => t.contactId === selectedContact.id)
@@ -6274,7 +6567,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     Cheque Maturity Date Passed / Due ({dueOrPassedCheques.length})
                   </h4>
                   <p className="text-[10px] text-slate-500 font-medium">
-                    Maturity date arrived. Pass cheque to clear and update {selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales')} date.
+                    Maturity date arrived. Pass cheque to clear and update {selectedContact.type === 'RENT' ? 'Shop Rent' : 'Sales'} date.
                   </p>
                 </div>
               </div>
@@ -6300,7 +6593,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 const cashAmt = getTransactionCashAmount(chq, parsed);
                 const isSplit = parsed.method === 'Cash + Cheque' || chq.paymentMethod === 'Cash + Cheque';
                 const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
-                const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+                const targetSection = selectedContact.type === 'RENT' ? 'Shop Rent' : 'Sales';
                 return (
                   <div key={chq.id} className="bg-white/95 rounded-xl p-2.5 border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
                     <div className="overflow-hidden">
@@ -6365,7 +6658,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 const cashAmt = getTransactionCashAmount(chq, parsed);
                 const isSplit = parsed.method === 'Cash + Cheque' || chq.paymentMethod === 'Cash + Cheque';
                 const chqDate = parsed.chequeDate || chq.chequeDate || chq.date;
-                const targetSection = selectedContact.type === 'VENDOR' ? 'Expenses' : (selectedContact.type === 'RENT' ? 'Expenses (Shop Rent)' : 'Sales');
+                const targetSection = selectedContact.type === 'RENT' ? 'Shop Rent' : 'Sales';
                 const daysLeft = getDaysRemaining(chqDate, todayStr);
                 return (
                   <div key={chq.id} className="bg-white/95 rounded-xl p-2.5 border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
@@ -6701,28 +6994,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </span>
               </div>
             )}
-            {selectedContact.type === 'VENDOR' && (
-              <div className="px-4 py-2.5 bg-rose-50/80 border-b border-rose-100 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2 text-rose-900 font-semibold">
-                  <ArrowDownRight size={15} className="text-rose-600 stroke-[2.5]" />
-                  <span>Vendor payments automatically sync to <strong>Cashbook Expenses (- Expense)</strong></span>
+            {selectedContact.type === 'RENT' && (
+              <div className="px-4 py-2.5 bg-amber-50/80 border-b border-amber-100 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 text-amber-950 font-semibold">
+                  <Building size={15} className="text-amber-700" />
+                  <span>Rent deposits &amp; withdrawals track in <strong>Shop Rent</strong> &amp; sync withdrawals to <strong>Sales (+ Sale)</strong></span>
                 </div>
-                <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full uppercase">
-                  Linked to Expenses
+                <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full uppercase">
+                  Shop Rent
                 </span>
               </div>
             )}
-              {selectedContact.type === 'RENT' && (
-                <div className="px-4 py-2.5 bg-amber-50/80 border-b border-amber-100 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 text-amber-950 font-semibold">
-                    <Building size={15} className="text-amber-700" />
-                    <span>Rent deposits sync to <strong>Expenses (Shop Rent)</strong> & withdrawals sync to <strong>Sales (+ Sale)</strong></span>
-                  </div>
-                  <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-full uppercase">
-                    Shop Rent
-                  </span>
-                </div>
-              )}
 
             {computedWithBalance.map(t => (
               <TransactionRow 
@@ -6769,7 +7051,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
              <div className="flex items-center gap-1.5">
                <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
                <span className="text-[9px] bg-white/25 text-white px-1.5 py-0.2 rounded font-extrabold uppercase">
-                 {selectedContact.type === 'CUSTOMER' ? '→ Sales' : (selectedContact.type === 'VENDOR' ? '→ Expenses' : (selectedContact.type === 'RENT' ? '→ Shop Rent' : '→ Sales'))}
+                 {selectedContact.type === 'RENT' ? '→ Shop Rent' : '→ Sales'}
                </span>
              </div>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowUp size={14} /></span>
@@ -7240,12 +7522,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   <span>Customer Payment: Automatically links to <strong>Sales Details (+ Sale)</strong></span>
                 </div>
               )}
-              {selectedContact.type === 'VENDOR' && (
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200">
-                  <ArrowDownRight size={14} className="text-rose-600 stroke-[2.5]" />
-                  <span>Vendor Payment: Automatically links to <strong>Cashbook Expenses (- Expense)</strong></span>
-                </div>
-              )}
               {selectedContact.type === 'RENT' && (
                 <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border ${
                   transType === 'CREDIT' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-900 border-amber-200'
@@ -7253,8 +7529,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   <Building size={14} className={transType === 'CREDIT' ? 'text-emerald-600' : 'text-amber-700'} />
                   <span>
                     {transType === 'CREDIT' 
-                      ? 'Rent Withdrawal: Automatically links to Cashbook Sales (+ Sale)' 
-                      : 'Rent Deposit: Automatically links to Cashbook Expenses (Shop Rent)'}
+                      ? 'Rent Withdrawal: Automatically links to Sales Daybook (+ Sale)' 
+                      : 'Rent Deposit: Recorded in Shop Rent Savings Ledger'}
                   </span>
                 </div>
               )}
@@ -7685,105 +7961,129 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                       className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-amber-600 transition-colors"
                     />
                   </div>
+                </div>
+              )}
 
-                  {/* Cheque or Invoice Photo Upload & Camera Capture */}
-                  <div className="pt-2 border-t border-amber-200/80 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <label className="text-[10px] font-bold text-amber-950 uppercase tracking-wider flex items-center gap-1.5">
-                        <ImageIcon size={13} className="text-amber-700" />
-                        <span>Attach Cheque or Invoice (Optional)</span>
-                      </label>
-                      <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-amber-200">
-                        {(['Cheque', 'Invoice'] as const).map(docType => (
-                          <button
-                            key={docType}
-                            type="button"
-                            onClick={() => setTransAttachmentDocType(docType)}
-                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all ${
-                              transAttachmentDocType === docType
-                                ? 'bg-amber-600 text-white shadow-2xs'
-                                : 'text-slate-600 hover:text-slate-900'
-                            }`}
-                          >
-                            {docType}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Hidden File & Native Camera Inputs */}
-                    <input
-                      ref={transUploadInputRef}
-                      type="file"
-                      accept="image/*,application/pdf"
-                      onChange={handleTransAttachmentFileChange}
-                      className="hidden"
-                    />
-                    <input
-                      ref={transCameraInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handleTransAttachmentFileChange}
-                      className="hidden"
-                    />
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => transUploadInputRef.current?.click()}
-                        className="py-2.5 px-3 bg-white hover:bg-amber-100/60 text-amber-950 border border-amber-300 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-2xs active:scale-95 transition-all"
-                      >
-                        <Upload size={15} className="text-amber-700" />
-                        <span>Upload {transAttachmentDocType}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleOpenCamera}
-                        className="py-2.5 px-3 bg-amber-700 hover:bg-amber-800 text-white border border-amber-800 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm active:scale-95 transition-all"
-                      >
-                        <Camera size={15} />
-                        <span>Camera {transAttachmentDocType}</span>
-                      </button>
-                    </div>
-
-                    {/* Attachment Preview Card */}
-                    {transAttachmentUrl && (
-                      <div className="bg-white border border-amber-300 rounded-xl p-2.5 flex items-center justify-between gap-3 shadow-2xs">
-                        <div
-                          onClick={() => setViewingAttachment({ url: transAttachmentUrl, title: `${transAttachmentDocType} Photo` })}
-                          className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1"
-                        >
-                          {isImageAttachment(transAttachmentUrl) ? (
-                            <img
-                              src={transAttachmentUrl}
-                              alt={`${transAttachmentDocType} preview`}
-                              className="w-12 h-12 rounded-lg object-cover border border-amber-200 shrink-0"
-                            />
-                          ) : (
-                            <div className="w-12 h-12 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0">
-                              <FileText size={20} />
-                            </div>
-                          )}
-                          <div className="overflow-hidden">
-                            <p className="text-xs font-bold text-slate-800 truncate">{transAttachmentDocType} Attached</p>
-                            <p className="text-[10px] text-amber-700 font-semibold flex items-center gap-1">
-                              <Eye size={11} /> Tap to view full size
-                            </p>
-                          </div>
-                        </div>
+              {/* Cheque / Invoice Photo Upload & Camera Capture (bottom of Split Payment & Cheque Management) */}
+              {!transIsUnpaidCredit && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque') && (
+                <div className={`mt-3 p-3.5 rounded-2xl border space-y-2.5 animate-in fade-in duration-150 ${
+                  transPaymentMethod === 'Cash + Cheque'
+                    ? 'bg-indigo-50/70 border-indigo-200/90'
+                    : 'bg-amber-50/70 border-amber-200/90'
+                }`}>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className={`text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
+                      transPaymentMethod === 'Cash + Cheque' ? 'text-indigo-950' : 'text-amber-950'
+                    }`}>
+                      <ImageIcon size={13} className={transPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700' : 'text-amber-700'} />
+                      <span>Attach Cheque or Invoice (Optional)</span>
+                    </label>
+                    <div className={`flex items-center gap-1 bg-white p-0.5 rounded-lg border ${
+                      transPaymentMethod === 'Cash + Cheque' ? 'border-indigo-200' : 'border-amber-200'
+                    }`}>
+                      {(['Cheque', 'Invoice'] as const).map(docType => (
                         <button
+                          key={docType}
                           type="button"
-                          onClick={() => setTransAttachmentUrl(null)}
-                          className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg active:scale-95 transition-all shrink-0"
-                          title="Remove attachment"
+                          onClick={() => setTransAttachmentDocType(docType)}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all ${
+                            transAttachmentDocType === docType
+                              ? transPaymentMethod === 'Cash + Cheque'
+                                ? 'bg-indigo-600 text-white shadow-2xs'
+                                : 'bg-amber-600 text-white shadow-2xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
                         >
-                          <Trash2 size={15} />
+                          {docType}
                         </button>
-                      </div>
-                    )}
+                      ))}
+                    </div>
                   </div>
+
+                  {/* Hidden File & Native Camera Inputs */}
+                  <input
+                    ref={transUploadInputRef}
+                    type="file"
+                    accept="image/*,application/pdf"
+                    onChange={handleTransAttachmentFileChange}
+                    className="hidden"
+                  />
+                  <input
+                    ref={transCameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleTransAttachmentFileChange}
+                    className="hidden"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => transUploadInputRef.current?.click()}
+                      className={`py-2.5 px-3 bg-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-2xs active:scale-95 transition-all border ${
+                        transPaymentMethod === 'Cash + Cheque'
+                          ? 'hover:bg-indigo-100/60 text-indigo-950 border-indigo-300'
+                          : 'hover:bg-amber-100/60 text-amber-950 border-amber-300'
+                      }`}
+                    >
+                      <Upload size={15} className={transPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700' : 'text-amber-700'} />
+                      <span>Upload {transAttachmentDocType}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleOpenCamera}
+                      className={`py-2.5 px-3 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm active:scale-95 transition-all border ${
+                        transPaymentMethod === 'Cash + Cheque'
+                          ? 'bg-indigo-700 hover:bg-indigo-800 border-indigo-800'
+                          : 'bg-amber-700 hover:bg-amber-800 border-amber-800'
+                      }`}
+                    >
+                      <Camera size={15} />
+                      <span>Camera {transAttachmentDocType}</span>
+                    </button>
+                  </div>
+
+                  {/* Attachment Preview Card */}
+                  {transAttachmentUrl && (
+                    <div className={`bg-white rounded-xl p-2.5 flex items-center justify-between gap-3 shadow-2xs border ${
+                      transPaymentMethod === 'Cash + Cheque' ? 'border-indigo-300' : 'border-amber-300'
+                    }`}>
+                      <div
+                        onClick={() => setViewingAttachment({ url: transAttachmentUrl, title: `${transAttachmentDocType} Photo` })}
+                        className="flex items-center gap-2.5 cursor-pointer overflow-hidden flex-1"
+                      >
+                        {isImageAttachment(transAttachmentUrl) ? (
+                          <img
+                            src={transAttachmentUrl}
+                            alt={`${transAttachmentDocType} preview`}
+                            className="w-12 h-12 rounded-lg object-cover border border-slate-200 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0">
+                            <FileText size={20} />
+                          </div>
+                        )}
+                        <div className="overflow-hidden">
+                          <p className="text-xs font-bold text-slate-800 truncate">{transAttachmentDocType} Attached</p>
+                          <p className={`text-[10px] font-semibold flex items-center gap-1 ${
+                            transPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700' : 'text-amber-700'
+                          }`}>
+                            <Eye size={11} /> Tap to view full size
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTransAttachmentUrl(null)}
+                        className="p-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg active:scale-95 transition-all shrink-0"
+                        title="Remove attachment"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -8941,13 +9241,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const renderSqlModal = () => {
     if (!isSqlModalOpen) return null;
     const sqlScript = `-- ==============================================================================
--- SUPABASE DATABASE MIGRATION & RLS SCHEMA FOR "LEDGER BOOK"
+-- SUPABASE DATABASE SCHEMA FOR "LEDGER BOOK" (5 TABLES - NO VENDORS/EXPENSES)
 -- Project ID: actfubmcannmqvbsmmgv
--- Project URL: https://actfubmcannmqvbsmmgv.supabase.co
--- Run this in your Supabase Dashboard -> SQL Editor
 -- ==============================================================================
 
--- 1. Create Profiles Table (Shop Profile & First-Time Setup State)
+-- 1. Profiles Table (Shop Settings & First-Time Setup)
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL DEFAULT '',
@@ -8963,14 +9261,14 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS receipt_terms TEXT;
 
--- 2. Create Contacts Table with Multi-Tenant user_id
+-- 2. Contacts Table ('CUSTOMER' | 'RENT' | 'SERVICE')
 CREATE TABLE IF NOT EXISTS public.contacts (
     id TEXT PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     name TEXT NOT NULL,
     phone TEXT,
     city TEXT,
-    type TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('CUSTOMER', 'RENT', 'SERVICE')),
     balance NUMERIC DEFAULT 0,
     target_amount NUMERIC,
     start_date TEXT,
@@ -8979,24 +9277,47 @@ CREATE TABLE IF NOT EXISTS public.contacts (
 );
 ALTER TABLE public.contacts ADD COLUMN IF NOT EXISTS city TEXT;
 
--- 3. Create Transactions Table with Multi-Tenant user_id
+-- 3. Daybook Items & Stock Table (Inventory Catalog)
+CREATE TABLE IF NOT EXISTS public.daybook_items (
+    id TEXT PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    item TEXT NOT NULL,
+    sku TEXT DEFAULT '',
+    category TEXT,
+    qty NUMERIC NOT NULL DEFAULT 0,
+    cost NUMERIC NOT NULL DEFAULT 0,
+    wholesale_price NUMERIC NOT NULL DEFAULT 0,
+    retail_price NUMERIC NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Transactions Table (Customer & Service Ledgers + Cheques)
 CREATE TABLE IF NOT EXISTS public.transactions (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     contact_id TEXT NOT NULL REFERENCES public.contacts(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
-    type TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('CREDIT', 'PAYMENT')),
     description TEXT,
+    payment_method TEXT,
+    cheque_status TEXT,
+    cheque_number TEXT,
+    cheque_date TEXT,
     balance_after NUMERIC DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS cheque_status TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS cheque_number TEXT;
+ALTER TABLE public.transactions ADD COLUMN IF NOT EXISTS cheque_date TEXT;
 
--- 4. Create Cashbook Entries Table with Multi-Tenant user_id
+-- 5. Sales Daybook Table (cashbook_entries - Sales Only)
 CREATE TABLE IF NOT EXISTS public.cashbook_entries (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    type TEXT NOT NULL,
+    contact_id TEXT REFERENCES public.contacts(id) ON DELETE SET NULL,
+    type TEXT NOT NULL DEFAULT 'SALE' CHECK (type = 'SALE'),
     amount NUMERIC NOT NULL DEFAULT 0,
     date TEXT NOT NULL,
     category TEXT NOT NULL,
@@ -9004,46 +9325,44 @@ CREATE TABLE IF NOT EXISTS public.cashbook_entries (
     payment_method TEXT DEFAULT 'Cash',
     reference_no TEXT,
     contact_name TEXT,
+    items_json JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE public.cashbook_entries ADD COLUMN IF NOT EXISTS contact_id TEXT REFERENCES public.contacts(id) ON DELETE SET NULL;
+ALTER TABLE public.cashbook_entries ADD COLUMN IF NOT EXISTS items_json JSONB;
 
--- 5. Create Performance Indexes
-CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON public.contacts(user_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON public.transactions(user_id);
-CREATE INDEX IF NOT EXISTS idx_cashbook_user_id ON public.cashbook_entries(user_id);
+-- 6. Composite Indexes
+CREATE INDEX IF NOT EXISTS idx_contacts_user_type ON public.contacts(user_id, type);
+CREATE INDEX IF NOT EXISTS idx_daybook_items_user_id ON public.daybook_items(user_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_contact ON public.transactions(user_id, contact_id);
+CREATE INDEX IF NOT EXISTS idx_cashbook_user_date ON public.cashbook_entries(user_id, date DESC);
 
--- 6. Enable Row Level Security (RLS) on All Tables
+-- 7. Row Level Security (RLS)
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.daybook_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cashbook_entries ENABLE ROW LEVEL SECURITY;
 
--- 7. Strict Multi-Tenant Policies (auth.uid() = user_id)
 DROP POLICY IF EXISTS "Users can manage own profile" ON public.profiles;
-CREATE POLICY "Users can manage own profile" ON public.profiles
-    FOR ALL TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
-
+CREATE POLICY "Users can manage own profile" ON public.profiles FOR ALL TO authenticated USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 DROP POLICY IF EXISTS "Users can manage own contacts" ON public.contacts;
-CREATE POLICY "Users can manage own contacts" ON public.contacts
-    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-
+CREATE POLICY "Users can manage own contacts" ON public.contacts FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own daybook_items" ON public.daybook_items;
+CREATE POLICY "Users can manage own daybook_items" ON public.daybook_items FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 DROP POLICY IF EXISTS "Users can manage own transactions" ON public.transactions;
-CREATE POLICY "Users can manage own transactions" ON public.transactions
-    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-
+CREATE POLICY "Users can manage own transactions" ON public.transactions FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 DROP POLICY IF EXISTS "Users can manage own cashbook" ON public.cashbook_entries;
-CREATE POLICY "Users can manage own cashbook" ON public.cashbook_entries
-    FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can manage own cashbook" ON public.cashbook_entries FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- 8. Storage Bucket for Shop Logos
+-- 8. Storage Bucket for Shop Logos & Attachments
 INSERT INTO storage.buckets (id, name, public) VALUES ('shop-logos', 'shop-logos', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 `;
 
     return (
       <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
-          {/* Header */}
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[90vh]">
           <div className="bg-slate-900 text-white p-5 flex justify-between items-center shrink-0">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white">
@@ -9062,14 +9381,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </button>
           </div>
 
-          {/* Body */}
-          <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 flex-1">
-            <div className="bg-emerald-50 p-3.5 rounded-2xl border border-emerald-200 text-emerald-900 space-y-1.5">
+          <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600 dark:text-slate-300 flex-1">
+            <div className="bg-emerald-50 dark:bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-200 dark:border-emerald-800/50 text-emerald-900 dark:text-emerald-200 space-y-1.5">
               <p className="font-bold flex items-center gap-1.5">
-                <CheckCircle2 size={15} className="text-emerald-700" />
-                Initialize Tables in 3 Easy Steps:
+                <CheckCircle2 size={15} className="text-emerald-700 dark:text-emerald-400" />
+                Initialize 5 Tables in 3 Easy Steps:
               </p>
-              <ol className="list-decimal list-inside space-y-1 text-[11px] text-emerald-800 font-medium pl-1">
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium pl-1">
                 <li>Click <strong>Copy SQL Script</strong> below.</li>
                 <li>In your Supabase project dashboard, open <strong>SQL Editor</strong>.</li>
                 <li>Paste and click <strong>Run</strong>. Then tap <strong>Re-test Sync</strong>!</li>
@@ -9078,7 +9396,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                <span>SQL Script (Contacts & Transactions)</span>
+                <span>SQL Script (5 Tables)</span>
                 <button
                   type="button"
                   onClick={() => {
@@ -9782,9 +10100,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   };
 
   // ==========================================
-  // CASHBOOK / SALES & EXPENSES MODULE
+  // CASHBOOK / SALES DAYBOOK MODULE
   // ==========================================
-  // Base entries filtered by Date Period, Category, and Search (EXCLUDES pending cheques)
+  // Base entries filtered by Date Period, Category, and Search (EXCLUDES pending cheques & legacy expenses)
   const baseFilteredCashbookEntries = useMemo(() => {
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
@@ -9800,7 +10118,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     return cashbookEntries.filter(entry => {
-      // 1. Pending cheques do NOT show in Sales & Expense Daybook until passed
+      if ((entry.type as string) === 'EXPENSE') return false;
+
+      // 1. Pending cheques do NOT show in Sales Daybook until passed
       if (isPendingCashbookEntry(entry)) return false;
 
       // 2. Category filter
@@ -9841,72 +10161,68 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     });
   }, [cashbookEntries, cashbookCategoryFilter, cashbookSearch, cashbookDateFilter, cashbookCustomStart, cashbookCustomEnd]);
 
-  // Entries filtered by Type tab (All / Sales / Expenses) for list view display
   const filteredCashbookEntries = useMemo(() => {
-    return baseFilteredCashbookEntries.filter(entry => {
-      if (cashbookTypeFilter !== 'ALL' && entry.type !== cashbookTypeFilter) return false;
-      return true;
-    }).sort((a, b) => {
+    return [...baseFilteredCashbookEntries].sort((a, b) => {
       const timeA = new Date(a.date).getTime();
       const timeB = new Date(b.date).getTime();
       if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeB - timeA;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
-  }, [baseFilteredCashbookEntries, cashbookTypeFilter]);
+  }, [baseFilteredCashbookEntries]);
 
   const cashbookTotals = useMemo(() => {
     let totalSales = 0;
-    let totalExpenses = 0;
     let cashSales = 0;
-    let cashExpenses = 0;
     let bankSales = 0;
-    let bankExpenses = 0;
     let cardSales = 0;
-    let cardExpenses = 0;
     let chequeSales = 0;
-    let chequeExpenses = 0;
+    let totalItemsSoldQty = 0;
+    let totalItemProfit = 0;
 
     baseFilteredCashbookEntries.forEach(e => {
-      if (e.type === 'SALE') {
-        totalSales += e.amount;
-        if (e.paymentMethod === 'Cash') cashSales += e.amount;
-        else if (e.paymentMethod === 'Bank Transfer') bankSales += e.amount;
-        else if (e.paymentMethod === 'Card') cardSales += e.amount;
-        else if (e.paymentMethod === 'Cheque') chequeSales += e.amount;
-      } else {
-        totalExpenses += e.amount;
-        if (e.paymentMethod === 'Cash') cashExpenses += e.amount;
-        else if (e.paymentMethod === 'Bank Transfer') bankExpenses += e.amount;
-        else if (e.paymentMethod === 'Card') cardExpenses += e.amount;
-        else if (e.paymentMethod === 'Cheque') chequeExpenses += e.amount;
-      }
+      const amt = Number(e.amount) || 0;
+      totalSales += amt;
+      if (e.paymentMethod === 'Cash') cashSales += amt;
+      else if (e.paymentMethod === 'Bank Transfer') bankSales += amt;
+      else if (e.paymentMethod === 'Card') cardSales += amt;
+      else if (e.paymentMethod === 'Cheque') chequeSales += amt;
+
+      const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      entryItems.forEach(it => {
+        const q = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        totalItemsSoldQty += q;
+        if (cost > 0 && unitSale > 0) {
+          totalItemProfit += (unitSale - cost) * q;
+        }
+      });
     });
 
-    const netBalance = totalSales - totalExpenses;
     return {
       totalSales,
-      totalExpenses,
-      netBalance,
-      cashInHand: cashSales - cashExpenses,
-      bankBalance: bankSales - bankExpenses,
-      cardBalance: cardSales - cardExpenses,
-      chequeBalance: chequeSales - chequeExpenses,
-      hasBank: bankSales > 0 || bankExpenses > 0,
-      hasCard: cardSales > 0 || cardExpenses > 0,
-      hasCheque: chequeSales > 0 || chequeExpenses > 0
+      cashSales,
+      bankSales,
+      cardSales,
+      chequeSales,
+      totalItemsSoldQty,
+      totalItemProfit,
+      hasBank: bankSales > 0,
+      hasCard: cardSales > 0,
+      hasCheque: chequeSales > 0
     };
   }, [baseFilteredCashbookEntries]);
 
   const existingCategories = useMemo(() => {
     const set = new Set<string>();
     cashbookEntries.forEach(e => {
-      if (e.category) set.add(e.category);
+      if ((e.type as string) !== 'EXPENSE' && e.category) set.add(e.category);
     });
     return Array.from(set);
   }, [cashbookEntries]);
 
   const groupedCashbookEntries = useMemo(() => {
-    const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number; dayExpenses: number }> = [];
+    const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number }> = [];
     const dateMap: Record<string, CashbookEntry[]> = {};
     
     filteredCashbookEntries.forEach(e => {
@@ -9916,31 +10232,30 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     Object.keys(dateMap).sort((a, b) => new Date(b).getTime() - new Date(a).getTime()).forEach(date => {
       const items = dateMap[date];
-      const daySales = items.filter(i => i.type === 'SALE').reduce((s, i) => s + i.amount, 0);
-      const dayExpenses = items.filter(i => i.type === 'EXPENSE').reduce((s, i) => s + i.amount, 0);
-      groups.push({ date, entries: items, daySales, dayExpenses });
+      const daySales = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+      groups.push({ date, entries: items, daySales });
     });
 
     return groups;
   }, [filteredCashbookEntries]);
 
   const handleOpenCashbookModal = (
-    type: CashbookEntryType = 'SALE',
+    _type: CashbookEntryType = 'SALE',
     entryToEdit: CashbookEntry | null = null,
     prefillItem?: DaybookStockItem
   ) => {
     if (entryToEdit) {
       if (!userCanEdit) {
-        alert("Access Denied: You do not have permission to edit records.");
+        showProfileToast('Access Denied: You do not have permission to edit records.', 'error');
         return;
       }
       const extracted = extractCashbookItems(entryToEdit.description || '');
       const existingItems = entryToEdit.items && entryToEdit.items.length > 0 ? entryToEdit.items : extracted.items;
       setEditingCashbookEntry(entryToEdit);
-      setCashbookType(entryToEdit.type);
+      setCashbookType('SALE');
       setCashbookAmount(entryToEdit.amount.toString());
       setCashbookDate(entryToEdit.date || new Date().toISOString().slice(0, 10));
-      setCashbookCategory(entryToEdit.category);
+      setCashbookCategory(entryToEdit.category || SALE_CATEGORIES[0]);
       setCashbookCustomCategory('');
       setCashbookDesc(extracted.cleanDesc || '');
       setCashbookPaymentMethod(entryToEdit.paymentMethod || 'Cash');
@@ -9951,9 +10266,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       setCashbookSyncStockOnSave(false);
     } else {
       setEditingCashbookEntry(null);
-      setCashbookType(type);
+      setCashbookType('SALE');
       setCashbookDate(new Date().toISOString().slice(0, 10));
-      setCashbookCategory(type === 'SALE' ? SALE_CATEGORIES[0] : EXPENSE_CATEGORIES[0]);
+      setCashbookCategory(SALE_CATEGORIES[0]);
       setCashbookCustomCategory('');
       setCashbookDesc('');
       setCashbookPaymentMethod('Cash');
@@ -9971,9 +10286,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           retailPrice: prefillItem.retailPrice || 0,
           priceType: (prefillItem.retailPrice || 0) > 0 ? 'RETAIL' : 'WHOLESALE'
         };
-        const unitAmt = type === 'SALE'
-          ? getItemUnitSalePrice(lineItem)
-          : (prefillItem.cost || getItemUnitSalePrice(lineItem) || 0);
+        const unitAmt = getItemUnitSalePrice(lineItem);
         setCashbookEntryItems([lineItem]);
         setCashbookAmount(unitAmt > 0 ? unitAmt.toString() : '');
         setCashbookAutoCalcAmount(true);
@@ -10002,21 +10315,19 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       .filter(it => it.item || it.sku);
 
     const computedItemsAmt = validItems.reduce((sum, it) => {
-      const unitPrice = cashbookType === 'SALE'
-        ? getItemUnitSalePrice(it)
-        : (it.cost > 0 ? it.cost : getItemUnitSalePrice(it));
+      const unitPrice = getItemUnitSalePrice(it);
       return sum + (it.qty * unitPrice);
     }, 0);
 
     const parsedAmt = parseFloat(cashbookAmount);
     const amountVal = (!isNaN(parsedAmt) && parsedAmt > 0) ? parsedAmt : computedItemsAmt;
     if (!amountVal || isNaN(amountVal) || amountVal <= 0) {
-      alert("Please enter a valid amount greater than 0");
+      showProfileToast('Please enter a valid amount greater than 0', 'error');
       return;
     }
     const finalCategory = (cashbookCategory === 'Other' && cashbookCustomCategory.trim())
       ? cashbookCustomCategory.trim()
-      : (cashbookCategory || 'General').trim();
+      : (cashbookCategory || 'General Sale').trim();
 
     const cleanUserDesc = stripCashbookItems(cashbookDesc.trim());
     const dbDescription = validItems.length > 0
@@ -10027,27 +10338,34 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     try {
       const entryPayload: any = {
         user_id: authUser?.id,
-        type: cashbookType,
+        type: 'SALE' as CashbookEntryType,
         amount: amountVal,
         date: cashbookDate || new Date().toISOString().slice(0, 10),
         category: finalCategory,
         description: dbDescription,
         payment_method: cashbookPaymentMethod,
         reference_no: cashbookRefNo.trim(),
-        contact_name: cashbookContactName.trim()
+        contact_name: cashbookContactName.trim(),
+        items_json: validItems.length > 0 ? validItems : null
       };
 
       if (editingCashbookEntry) {
         try {
           let q = supabase.from('cashbook_entries').update(entryPayload).eq('id', editingCashbookEntry.id);
           if (authUser?.id) q = q.eq('user_id', authUser.id);
-          await q;
+          const updRes = await q;
+          if (updRes.error && (updRes.error.code === 'PGRST204' || updRes.error.code === '42703' || updRes.error.message?.includes('column'))) {
+            const { items_json: _ij, ...basePayload } = entryPayload;
+            let fb = supabase.from('cashbook_entries').update(basePayload).eq('id', editingCashbookEntry.id);
+            if (authUser?.id) fb = fb.eq('user_id', authUser.id);
+            await fb;
+          }
         } catch (e) {
           console.warn('Supabase cashbook update fallback:', e);
         }
         const updatedEntries = cashbookEntries.map(e => e.id === editingCashbookEntry.id ? {
           ...e,
-          type: cashbookType,
+          type: 'SALE' as CashbookEntryType,
           amount: amountVal,
           date: entryPayload.date,
           category: finalCategory,
@@ -10063,13 +10381,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           localStorage.setItem(cacheKey, JSON.stringify(updatedEntries));
           localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); 
         } catch {}
-        showProfileToast(`${cashbookType === 'SALE' ? 'Sale' : 'Expense'} updated successfully!`);
+        showProfileToast('Sale updated successfully!');
       } else {
         const newId = generateUUID();
         const newEntry: CashbookEntry = {
           id: newId,
           userId: authUser?.id,
-          type: cashbookType,
+          type: 'SALE',
           amount: amountVal,
           date: entryPayload.date,
           category: finalCategory,
@@ -10082,7 +10400,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         };
 
         try {
-          await supabase.from('cashbook_entries').insert([{ id: newId, ...entryPayload }]);
+          const insRes = await supabase.from('cashbook_entries').insert([{ id: newId, ...entryPayload }]);
+          if (insRes.error && (insRes.error.code === 'PGRST204' || insRes.error.code === '42703' || insRes.error.message?.includes('column'))) {
+            const { items_json: _ij, ...basePayload } = entryPayload;
+            await supabase.from('cashbook_entries').insert([{ id: newId, ...basePayload }]);
+          }
         } catch (e) {
           console.warn('Supabase cashbook insert fallback:', e);
         }
@@ -10093,10 +10415,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           localStorage.setItem(cacheKey, JSON.stringify(updatedEntries));
           localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedEntries)); 
         } catch {}
-        showProfileToast(`New ${cashbookType === 'SALE' ? 'Sale (+)' : 'Expense (-)'} recorded!`);
+        showProfileToast('New Sale recorded!');
       }
 
-      // Sync items into Daybook Items & Stock catalog when enabled
+      // Deduct sold item qty from Daybook Items & Stock catalog when enabled
       if (validItems.length > 0 && cashbookSyncStockOnSave) {
         const nowIso = new Date().toISOString();
         const nextStock = [...daybookItems];
@@ -10107,13 +10429,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           );
           if (idx >= 0) {
             const existing = nextStock[idx];
-            const delta = cashbookType === 'SALE' ? -(entryIt.qty || 0) : (entryIt.qty || 0);
             nextStock[idx] = {
               ...existing,
               item: entryIt.item || existing.item,
               sku: entryIt.sku || existing.sku,
               category: entryIt.category || existing.category,
-              qty: Math.max(0, (existing.qty || 0) + delta),
+              qty: Math.max(0, (existing.qty || 0) - (entryIt.qty || 0)),
               cost: entryIt.cost > 0 ? entryIt.cost : existing.cost,
               wholesalePrice: entryIt.wholesalePrice > 0 ? entryIt.wholesalePrice : existing.wholesalePrice,
               retailPrice: (entryIt.retailPrice || 0) > 0 ? (entryIt.retailPrice || 0) : (existing.retailPrice || 0),
@@ -10126,7 +10447,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               item: entryIt.item || entryIt.sku || 'Item',
               sku: entryIt.sku || '',
               category: entryIt.category || undefined,
-              qty: cashbookType === 'EXPENSE' ? (entryIt.qty || 0) : 0,
+              qty: 0,
               cost: entryIt.cost || 0,
               wholesalePrice: entryIt.wholesalePrice || 0,
               retailPrice: entryIt.retailPrice || 0,
@@ -10147,7 +10468,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       setEditingCashbookEntry(null);
       setCashbookEntryItems([]);
     } catch (err: any) {
-      alert("Error saving entry: " + err.message);
+      showProfileToast('Error saving entry: ' + (err?.message || 'Unknown error'), 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -10156,7 +10477,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   const handleCreateInstantInvoice = async (targetFormat: 'POS' | 'A4' | 'WHATSAPP' | 'SAVE_ONLY' = 'POS') => {
     const amountVal = parseFloat(instInvAmount);
     if (!amountVal || isNaN(amountVal) || amountVal <= 0) {
-      alert("Please enter a valid invoice amount greater than 0");
+      showProfileToast('Please enter a valid invoice amount greater than 0', 'error');
       return;
     }
     const customer = instInvCustomerName.trim() || 'Walk-in Customer';
@@ -10177,8 +10498,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       const newEntryId = generateUUID();
       const dateVal = instInvDate || new Date().toISOString().slice(0, 10);
 
+      let matchedContact = instInvSelectedContactId
+        ? contacts.find(c => c.id === instInvSelectedContactId)
+        : contacts.find(c => c.name.toLowerCase() === customer.toLowerCase());
+
       // 1. Link & Save to Daybook Sales (cashbookEntries & Supabase)
-      const daybookPayload = {
+      const daybookPayload: any = {
         user_id: authUser?.id,
         type: 'SALE' as CashbookEntryType,
         amount: amountVal,
@@ -10187,7 +10512,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         description: `${finalDesc} [${invNo}]`,
         payment_method: instInvPaymentMethod,
         reference_no: invNo,
-        contact_name: customer
+        contact_name: customer,
+        contact_id: matchedContact?.id || null
       };
 
       const newCashbookEntry: CashbookEntry = {
@@ -10201,11 +10527,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         paymentMethod: instInvPaymentMethod,
         referenceNo: invNo,
         contactName: customer,
+        contactId: matchedContact?.id,
         createdAt: new Date().toISOString()
       };
 
       try {
-        await supabase.from('cashbook_entries').insert([{ id: newEntryId, ...daybookPayload }]);
+        const insRes = await supabase.from('cashbook_entries').insert([{ id: newEntryId, ...daybookPayload }]);
+        if (insRes.error && (insRes.error.code === 'PGRST204' || insRes.error.code === '42703' || insRes.error.message?.includes('column'))) {
+          const { contact_id: _cid, ...basePayload } = daybookPayload;
+          await supabase.from('cashbook_entries').insert([{ id: newEntryId, ...basePayload }]);
+        }
       } catch (e) {
         console.warn('Supabase cashbook insert error:', e);
       }
@@ -10218,11 +10549,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedCashbook));
       } catch {}
 
-      // 2. Link to Customer Credit Book if customer matched or selected
-      let matchedContact = instInvSelectedContactId
-        ? contacts.find(c => c.id === instInvSelectedContactId)
-        : contacts.find(c => c.name.toLowerCase() === customer.toLowerCase());
-
+      // 2. Link to Customer Credit Book if customer matched
       if (matchedContact && instInvLinkToLedger) {
         const txId = generateUUID();
         const txPayload = {
@@ -10269,7 +10596,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
       showProfileToast(`Invoice #${invNo} created & linked to Sales (+ LKR ${amountVal.toLocaleString()})!`);
 
-      // Prepare invoice item before resetting form fields
       const invoiceData = {
         type: 'CASHBOOK' as const,
         item: {
@@ -10296,28 +10622,13 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       setIsInstantInvoiceModalOpen(false);
 
       if (targetFormat === 'WHATSAPP') {
-        const dateStr = formatDisplayDate(dateVal);
-        const shareText = `🧾 *${shopName.toUpperCase()} - INVOICE / RECEIPT*\n` +
-          `Ref #: #${invNo}\n` +
-          `Date: ${dateStr}\n` +
-          `Customer: ${customer}\n` +
-          `Category: ${finalCategory}\n` +
-          `Details: ${finalDesc}\n` +
-          `Payment Method: ${instInvPaymentMethod}\n` +
-          `Total Amount: LKR ${amountVal.toLocaleString()}\n\n` +
-          `Thank you for your business!`;
-
-        const cleanPhone = (instInvCustomerPhone || matchedContact?.phone || '').replace(/[^0-9]/g, '');
-        const url = cleanPhone.length >= 7
-          ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(shareText)}`
-          : `https://wa.me/?text=${encodeURIComponent(shareText)}`;
-        window.open(url, '_blank');
+        await shareInvoiceViaWhatsAppWithPDF(invoiceData, 'POS');
       } else if (targetFormat !== 'SAVE_ONLY') {
         setInvoiceModalItem(invoiceData);
         setInvoiceFormat(targetFormat);
       }
     } catch (err: any) {
-      alert("Error creating invoice: " + err.message);
+      showProfileToast('Error creating invoice: ' + (err?.message || 'Unknown error'), 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -10325,11 +10636,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
   const handleDeleteCashbookEntry = async (id: string) => {
     if (!userCanDelete) {
-      alert("Access Denied: You do not have permission to delete data. Only authorized users can delete records.");
+      showProfileToast('Access Denied: You do not have permission to delete records.', 'error');
       return;
     }
     const entry = cashbookEntries.find(e => e.id === id);
-    if (!window.confirm(`Delete this ${entry?.type === 'SALE' ? 'Sale' : 'Expense'} entry of LKR ${entry?.amount.toLocaleString()}?`)) return;
+    if (!window.confirm(`Delete this sale entry of LKR ${entry?.amount.toLocaleString()}?`)) return;
     setIsSubmitting(true);
     try {
       try {
@@ -10348,7 +10659,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       } catch {}
       showProfileToast('Entry deleted successfully');
     } catch (err: any) {
-      alert("Failed to delete entry: " + err.message);
+      showProfileToast('Failed to delete entry: ' + (err?.message || 'Unknown error'), 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -10372,16 +10683,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.text('Sales & Expense Daybook Statement', 14, 40);
+      doc.text('Sales Daybook Statement', 14, 40);
 
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.text(`Period Filter: ${cashbookDateFilter} | Date: ${cashbookDateFilter === 'CUSTOM' ? `${cashbookCustomStart} to ${cashbookCustomEnd}` : 'Standard Period'} | Generated: ${timestamp}`, 14, 46);
 
       // Summary KPIs Box
-      doc.setFillColor(248, 250, 252);
+      doc.setFillColor(240, 253, 244);
       doc.roundedRect(14, 50, 182, 22, 2, 2, 'F');
-      doc.setDrawColor(226, 232, 240);
+      doc.setDrawColor(187, 247, 208);
       doc.roundedRect(14, 50, 182, 22, 2, 2, 'D');
 
       doc.setFontSize(9);
@@ -10389,11 +10700,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       doc.setTextColor(21, 128, 61);
       doc.text(`TOTAL SALES: LKR ${cashbookTotals.totalSales.toLocaleString()}`, 20, 62);
 
-      doc.setTextColor(185, 28, 28);
-      doc.text(`TOTAL EXPENSES: LKR ${cashbookTotals.totalExpenses.toLocaleString()}`, 82, 62);
+      doc.setTextColor(30, 41, 59);
+      doc.text(`ITEMS SOLD: ${cashbookTotals.totalItemsSoldQty} pcs`, 92, 62);
 
-      doc.setTextColor(cashbookTotals.netBalance >= 0 ? 21 : 185, cashbookTotals.netBalance >= 0 ? 128 : 28, cashbookTotals.netBalance >= 0 ? 61 : 28);
-      doc.text(`NET CASH FLOW: LKR ${cashbookTotals.netBalance.toLocaleString()}`, 142, 62);
+      doc.setTextColor(37, 99, 235);
+      doc.text(`EST. PROFIT: LKR ${cashbookTotals.totalItemProfit.toLocaleString()}`, 142, 62);
 
       doc.setTextColor(30, 41, 59);
 
@@ -10403,29 +10714,29 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         const fullDesc = [cleanDesc, itemsSum].filter(Boolean).join(' • ') || e.contactName || '-';
         return [
           e.date,
-          e.type === 'SALE' ? 'SALE (+)' : 'EXPENSE (-)',
           e.category,
           fullDesc,
+          e.contactName || '-',
           e.paymentMethod,
           e.referenceNo || '-',
-          e.type === 'SALE' ? `+ LKR ${e.amount.toLocaleString()}` : `- LKR ${e.amount.toLocaleString()}`
+          `+ LKR ${e.amount.toLocaleString()}`
         ];
       });
 
       autoTable(doc, {
         startY: 78,
-        head: [['Date', 'Type', 'Category', 'Description / Party', 'Payment Mode', 'Ref / Cheque #', 'Amount']],
-        body: rows.length > 0 ? rows : [['-', '-', 'No entries found for this period', '-', '-', '-', '0']],
+        head: [['Date', 'Category', 'Description / Items', 'Customer', 'Payment Mode', 'Ref #', 'Amount']],
+        body: rows.length > 0 ? rows : [['-', '-', 'No sales found for this period', '-', '-', '-', '0']],
         theme: 'striped',
-        headStyles: { fillColor: [30, 41, 59], fontStyle: 'bold' },
+        headStyles: { fillColor: [5, 150, 105], fontStyle: 'bold' },
         foot: [[
           'Total Summary', 
-          `${filteredCashbookEntries.filter(e => e.type === 'SALE').length} Sales | ${filteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} Exp`,
+          `${filteredCashbookEntries.length} Sales`,
+          `Items Sold: ${cashbookTotals.totalItemsSoldQty}`,
           '-',
           '-',
-          '-',
-          'Net Balance',
-          `LKR ${cashbookTotals.netBalance.toLocaleString()}`
+          'Total Sales',
+          `LKR ${cashbookTotals.totalSales.toLocaleString()}`
         ]],
         footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold' },
         styles: { fontSize: 8.5, cellPadding: 3 },
@@ -10434,11 +10745,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         }
       });
 
-      doc.save(`${shopName.replace(/[^a-z0-9]/gi, '_')}_sales_expense_${new Date().toISOString().slice(0, 10)}.pdf`);
-      showProfileToast('Sales & Expense PDF Report downloaded!');
+      doc.save(`${shopName.replace(/[^a-z0-9]/gi, '_')}_sales_daybook_${new Date().toISOString().slice(0, 10)}.pdf`);
+      showProfileToast('Sales Daybook PDF Report downloaded!');
     } catch (err) {
       console.error(err);
-      alert("Failed to export PDF report");
+      showProfileToast('Failed to export PDF report', 'error');
     }
   };
 
@@ -10451,7 +10762,6 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       amount: number;
       contactName: string;
       chequeDate: string;
-      type: 'SALE' | 'EXPENSE';
       chequeNumber?: string;
     }> = [];
 
@@ -10462,26 +10772,22 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       amount: number;
       contactName: string;
       chequeDate: string;
-      type: 'SALE' | 'EXPENSE';
       chequeNumber?: string;
     }> = [];
 
-    // 1. Pending cheques from transactions
+    // 1. Pending cheques from customer/service/rent transactions
     transactions.forEach(t => {
       if (isPendingCheque(t)) {
         const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
         const chqDate = parsed.chequeDate || t.chequeDate || t.date;
         const contact = contacts.find(c => c.id === t.contactId);
-        const contactType = contact?.type || 'CUSTOMER';
-        const type: 'SALE' | 'EXPENSE' = (contactType === 'VENDOR' || contactType === 'RENT') ? 'EXPENSE' : 'SALE';
         const chqAmt = getTransactionChequeAmount(t, parsed);
         const item = {
           id: t.id,
           tx: t,
           amount: chqAmt,
-          contactName: contact?.name || 'Party',
+          contactName: contact?.name || 'Customer',
           chequeDate: chqDate,
-          type,
           chequeNumber: parsed.chequeNumber
         };
         if (chqDate <= todayDateStr) {
@@ -10492,18 +10798,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       }
     });
 
-    // 2. Pending cheques from cashbookEntries (if any legacy entries)
+    // 2. Pending cheques from cashbookEntries
     cashbookEntries.forEach(e => {
-      if (isPendingCashbookEntry(e) && !duePendingCheques.some(item => item.id === e.id) && !upcomingPendingCheques.some(item => item.id === e.id)) {
+      if ((e.type as string) !== 'EXPENSE' && isPendingCashbookEntry(e) && !duePendingCheques.some(item => item.id === e.id) && !upcomingPendingCheques.some(item => item.id === e.id)) {
         const match = e.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
         const chqDate = match ? match[1] : e.date;
         const item = {
           id: e.id,
           entry: e,
           amount: e.amount,
-          contactName: e.contactName || 'Party',
+          contactName: e.contactName || 'Customer',
           chequeDate: chqDate,
-          type: e.type,
           chequeNumber: ''
         };
         if (chqDate <= todayDateStr) {
@@ -10531,12 +10836,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <ChevronLeft size={22} />
               </button>
               <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold shadow-sm">
+                <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-sm">
                   <Wallet size={18} />
                 </div>
                 <div>
-                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Sales & Expense</h1>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName} • Daybook</p>
+                  <h1 className="text-lg font-black text-slate-800 dark:text-white leading-tight">Sales Daybook</h1>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">{shopName} • Sales &amp; Stock</p>
                 </div>
               </div>
             </div>
@@ -10562,31 +10867,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               <button
                 onClick={() => handleOpenDaybookItemModal()}
                 className="px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1 text-xs font-bold"
-                title="Add Item (Item, SKU, Qty, Cost, Wholesale Price)"
+                title="Add Item (Item, SKU, Qty, Cost, Wholesale & Retail Price)"
               >
                 <Package size={15} />
                 <span className="hidden sm:inline">+ Item</span>
               </button>
 
               <button
-                onClick={() => handleOpenCashbookModal('SALE')}
+                onClick={() => handleOpenSellStockModal()}
                 className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1 text-xs font-bold"
               >
                 <Plus size={15} />
-                <span>Add Sale</span>
-              </button>
-
-              <button
-                onClick={() => handleOpenCashbookModal('EXPENSE')}
-                className="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-all shadow-sm active:scale-95 flex items-center gap-1 text-xs font-bold"
-              >
-                <Minus size={15} />
-                <span>Add Expense</span>
+                <span>Sell Stock</span>
               </button>
             </div>
           </div>
 
-          {/* Daybook Section Tabs: Daybook Entries vs Items & Stock */}
+          {/* Daybook Section Tabs: Sales Entries vs Items & Stock */}
           <div className="grid grid-cols-2 gap-2 mt-3 p-1 bg-slate-100 dark:bg-[#131b2a] rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c]">
             <button
               type="button"
@@ -10598,7 +10895,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               }`}
             >
               <Wallet size={14} />
-              <span>Daybook Entries ({baseFilteredCashbookEntries.length})</span>
+              <span>Sales Entries ({baseFilteredCashbookEntries.length})</span>
             </button>
             <button
               type="button"
@@ -10630,7 +10927,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 onClick={() => setCashbookDateFilter(filter.id as any)}
                 className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all shrink-0 border ${
                   cashbookDateFilter === filter.id
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
                     : 'bg-slate-100 dark:bg-[#131b2a] text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-[#1e2a3c] hover:bg-slate-200 dark:hover:bg-[#1a2332]'
                 }`}
               >
@@ -10640,7 +10937,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
           )}
 
-          {/* Custom Date Pickers (if CUSTOM is selected) */}
+          {/* Custom Date Pickers */}
           {cashbookSubTab === 'ENTRIES' && cashbookDateFilter === 'CUSTOM' && (
             <div className="mt-2.5 p-3 bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/90 dark:border-blue-800/50 rounded-2xl flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
               <div className="flex items-center gap-2 flex-1 min-w-[140px]">
@@ -10672,80 +10969,76 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
         ) : (
         <div className="p-4 max-w-4xl mx-auto w-full space-y-4">
-          {/* Top KPI Cards (Sales, Expense, Net) */}
+          {/* Top KPI Cards (Total Sales, Payment Breakdown, Items Sold & Est. Profit) */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Total Sales Card */}
-            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-emerald-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+            <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white rounded-2xl p-4 border border-emerald-500 shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Total Sales (Cash In)</span>
-                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                <span className="text-[10px] font-extrabold text-white/85 uppercase tracking-wider">Total Sales</span>
+                <div className="w-8 h-8 rounded-xl bg-white/20 text-white flex items-center justify-center">
                   <TrendingUp size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                <h3 className="text-2xl font-black text-white tabular-nums">
                   + LKR {cashbookTotals.totalSales.toLocaleString()}
                 </h3>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                  {baseFilteredCashbookEntries.filter(e => e.type === 'SALE').length} sales recorded
+                <p className="text-[10px] text-white/85 font-semibold mt-0.5">
+                  {baseFilteredCashbookEntries.length} sales recorded
                 </p>
               </div>
             </div>
 
-            {/* Total Expenses Card */}
-            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-rose-100 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
+            {/* Payment Breakdown Card */}
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Total Expenses (Cash Out)</span>
-                <div className="w-8 h-8 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center">
-                  <TrendingDown size={16} />
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Payment Breakdown</span>
+                <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <Banknote size={16} />
                 </div>
               </div>
-              <div className="mt-2">
-                <h3 className="text-2xl font-black text-rose-600 dark:text-rose-400">
-                  - LKR {cashbookTotals.totalExpenses.toLocaleString()}
-                </h3>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
-                  {baseFilteredCashbookEntries.filter(e => e.type === 'EXPENSE').length} expenses recorded
-                </p>
+              <div className="mt-2 space-y-1 text-xs font-bold tabular-nums">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 dark:text-slate-400">Cash:</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">LKR {cashbookTotals.cashSales.toLocaleString()}</span>
+                </div>
+                {(cashbookTotals.hasBank || cashbookTotals.hasCard || cashbookTotals.hasCheque) ? (
+                  <div className="flex items-center gap-2 flex-wrap text-[10px] text-slate-500 dark:text-slate-400 font-semibold pt-0.5">
+                    {cashbookTotals.hasBank && <span>Bank: LKR {cashbookTotals.bankSales.toLocaleString()}</span>}
+                    {cashbookTotals.hasCard && <span>• Card: LKR {cashbookTotals.cardSales.toLocaleString()}</span>}
+                    {cashbookTotals.hasCheque && <span>• Cheque: LKR {cashbookTotals.chequeSales.toLocaleString()}</span>}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold">All cash settlements</p>
+                )}
               </div>
             </div>
 
-            {/* Net Balance / Cash In Hand */}
-            <div className={`rounded-2xl p-4 border shadow-xs flex flex-col justify-between ${
-              cashbookTotals.netBalance >= 0 
-                ? 'bg-gradient-to-br from-emerald-600 to-teal-700 text-white border-emerald-500' 
-                : 'bg-gradient-to-br from-rose-600 to-red-700 text-white border-rose-500'
-            }`}>
+            {/* Items Sold & Estimated Profit */}
+            <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-4 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs flex flex-col justify-between">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-white/80 uppercase tracking-wider">Net Cash Flow (Profit)</span>
-                <div className="w-8 h-8 rounded-xl bg-white/20 text-white flex items-center justify-center">
-                  <Wallet size={16} />
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Items Sold &amp; Profit</span>
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
+                  <Package size={16} />
                 </div>
               </div>
               <div className="mt-2">
-                <h3 className="text-2xl font-black text-white">
-                  {cashbookTotals.netBalance >= 0 ? '+' : ''}LKR {cashbookTotals.netBalance.toLocaleString()}
+                <h3 className="text-2xl font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
+                  {cashbookTotals.totalItemsSoldQty > 0 ? `${cashbookTotals.totalItemsSoldQty} pcs` : `${baseFilteredCashbookEntries.length} sales`}
                 </h3>
-                <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/90 font-semibold mt-1">
-                  <span>Cash: LKR {cashbookTotals.cashInHand.toLocaleString()}</span>
-                  {(cashbookTotals.hasBank || cashbookTotals.bankBalance !== 0) && (
-                    <>
-                      <span>•</span>
-                      <span>Bank: LKR {cashbookTotals.bankBalance.toLocaleString()}</span>
-                    </>
-                  )}
-                  {(cashbookTotals.hasCard || cashbookTotals.cardBalance !== 0) && (
-                    <>
-                      <span>•</span>
-                      <span>Card: LKR {cashbookTotals.cardBalance.toLocaleString()}</span>
-                    </>
-                  )}
-                  {(cashbookTotals.hasCheque || cashbookTotals.chequeBalance !== 0) && (
-                    <>
-                      <span>•</span>
-                      <span>Cheque: LKR {cashbookTotals.chequeBalance.toLocaleString()}</span>
-                    </>
-                  )}
+                <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] tabular-nums">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Cost</span>
+                    <span className="text-xs sm:text-sm font-extrabold text-rose-600 dark:text-rose-400">
+                      LKR {cashbookTotals.totalItemCost.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Profit</span>
+                    <span className="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400">
+                      {cashbookTotals.totalItemProfit >= 0 ? '+' : ''}LKR {cashbookTotals.totalItemProfit.toLocaleString()}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -10755,18 +11048,18 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           {(duePendingCheques.length > 0 || upcomingPendingCheques.length > 0) && (
             <div className="space-y-3">
               {duePendingCheques.length > 0 && (
-                <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 border-2 border-emerald-400 rounded-2xl shadow-xs space-y-2">
+                <div className="p-3.5 bg-gradient-to-r from-amber-50 via-emerald-50 to-blue-50 dark:from-amber-950/30 dark:via-emerald-950/25 dark:to-blue-950/25 border-2 border-emerald-400 dark:border-emerald-700/60 rounded-2xl shadow-xs space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
                         <Landmark size={16} />
                       </div>
                       <div>
-                        <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                        <h3 className="text-xs sm:text-sm font-black text-slate-800 dark:text-white">
                           Cheque Maturity Date Passed / Due ({duePendingCheques.length})
                         </h3>
-                        <p className="text-[11px] text-slate-600 font-medium">
-                          Post-dated cheques have reached maturity date. Clear them to update the Sales or Expenses date.
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 font-medium">
+                          Post-dated customer cheques have reached maturity date. Clear them to update Sales.
                         </p>
                       </div>
                     </div>
@@ -10787,97 +11080,89 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
-                    {duePendingCheques.map(item => {
-                      const isSale = item.type === 'SALE';
-                      return (
-                        <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
-                          <div className="overflow-hidden">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
-                                isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
-                              }`}>
-                                {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70 dark:border-[#1e2a3c]">
+                    {duePendingCheques.map(item => (
+                      <div key={item.id} className="bg-white dark:bg-[#131b2a] p-2.5 rounded-xl border border-slate-200 dark:border-[#1e2a3c] flex items-center justify-between gap-2 shadow-2xs">
+                        <div className="overflow-hidden">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                              Customer (+ Sale)
+                            </span>
+                            <span className="font-extrabold text-xs text-slate-800 dark:text-white tabular-nums">
+                              LKR {item.amount.toLocaleString()}
+                            </span>
+                            {item.chequeNumber && (
+                              <span className="font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-1 py-0.5 rounded">
+                                #{item.chequeNumber}
                               </span>
-                              <span className="font-extrabold text-xs text-slate-800">
-                                LKR {item.amount.toLocaleString()}
-                              </span>
-                              {item.chequeNumber && (
-                                <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1 py-0.5 rounded">
-                                  #{item.chequeNumber}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
-                              Party: {item.contactName}
-                            </p>
-                            <p className="text-[10px] text-amber-800 font-bold mt-0.5 flex items-center gap-1">
-                              <Clock size={10} /> Cheque Date: {formatDisplayDate(item.chequeDate)} &rarr; will update {isSale ? 'Sales' : 'Expenses'}
-                            </p>
+                            )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (item.tx) handleQuickPassCheque(item.tx);
-                              else if (item.entry) handlePassChequeFromCashbook(item.entry);
-                            }}
-                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
-                          >
-                            <CheckCircle2 size={12} />
-                            <span>Pass</span>
-                          </button>
+                          <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300 truncate mt-0.5">
+                            Customer: {item.contactName}
+                          </p>
+                          <p className="text-[10px] text-amber-800 dark:text-amber-300 font-bold mt-0.5 flex items-center gap-1">
+                            <Clock size={10} /> Cheque Date: {formatDisplayDate(item.chequeDate)} &rarr; will update Sales
+                          </p>
                         </div>
-                      );
-                    })}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (item.tx) handleQuickPassCheque(item.tx);
+                            else if (item.entry) handlePassChequeFromCashbook(item.entry);
+                          }}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all shrink-0"
+                        >
+                          <CheckCircle2 size={12} />
+                          <span>Pass</span>
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
 
               {upcomingPendingCheques.length > 0 && (
-                <div className="p-3.5 bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 border-2 border-indigo-400 rounded-2xl shadow-xs space-y-2">
+                <div className="p-3.5 bg-gradient-to-r from-blue-50 via-indigo-50 to-slate-50 dark:from-blue-950/30 dark:via-indigo-950/25 dark:to-slate-900/50 border-2 border-indigo-400 dark:border-indigo-700/60 rounded-2xl shadow-xs space-y-2">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
                         <Calendar size={16} />
                       </div>
                       <div>
-                        <h3 className="text-xs sm:text-sm font-black text-slate-800">
+                        <h3 className="text-xs sm:text-sm font-black text-slate-800 dark:text-white">
                           Upcoming Cheque Due Dates ({upcomingPendingCheques.length})
                         </h3>
-                        <p className="text-[11px] text-slate-600 font-medium">
-                          Post-dated cheques with future maturity dates. Will automatically prompt for passing when due date arrives.
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 font-medium">
+                          Post-dated cheques with future maturity dates. Will prompt for passing when due date arrives.
                         </p>
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-slate-200/70 dark:border-[#1e2a3c]">
                     {upcomingPendingCheques.map(item => {
-                      const isSale = item.type === 'SALE';
                       const daysLeft = getDaysRemaining(item.chequeDate, todayDateStr);
                       return (
-                        <div key={item.id} className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 shadow-2xs">
+                        <div key={item.id} className="bg-white dark:bg-[#131b2a] p-2.5 rounded-xl border border-slate-200 dark:border-[#1e2a3c] flex items-center justify-between gap-2 shadow-2xs">
                           <div className="overflow-hidden">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase ${
-                                isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
-                              }`}>
-                                {isSale ? 'Customer (+ Sale)' : 'Vendor (- Expense)'}
+                              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                                Customer (+ Sale)
                               </span>
-                              <span className="font-extrabold text-xs text-slate-800">
+                              <span className="font-extrabold text-xs text-slate-800 dark:text-white tabular-nums">
                                 LKR {item.amount.toLocaleString()}
                               </span>
                               {item.chequeNumber && (
-                                <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1 py-0.5 rounded">
+                                <span className="font-mono text-[10px] font-bold bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 px-1 py-0.5 rounded">
                                   #{item.chequeNumber}
                                 </span>
                               )}
                             </div>
-                            <p className="text-[11px] font-medium text-slate-600 truncate mt-0.5">
-                              Party: {item.contactName}
+                            <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300 truncate mt-0.5">
+                              Customer: {item.contactName}
                             </p>
                             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                              <p className="text-[10px] text-indigo-900 font-bold flex items-center gap-1">
+                              <p className="text-[10px] text-indigo-900 dark:text-indigo-300 font-bold flex items-center gap-1">
                                 <Calendar size={10} /> Due Date: {formatDisplayDate(item.chequeDate)}
                               </p>
                               {daysLeft && (
@@ -10908,17 +11193,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
           )}
 
-          {/* Search & Filter Bar */}
-          <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs space-y-2.5">
+          {/* Search & Category Filter Bar */}
+          <div className="bg-white dark:bg-[#131b2a] p-3 rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
             <div className="flex items-center gap-2">
-              <div className="bg-slate-100 rounded-xl px-3 py-2 flex items-center flex-1 border border-transparent focus-within:border-blue-400 focus-within:bg-white transition-all">
+              <div className="bg-slate-100 dark:bg-[#1a2538] rounded-xl px-3 py-2 flex items-center flex-1 border border-transparent focus-within:border-emerald-400 focus-within:bg-white dark:focus-within:bg-[#131b2a] transition-all">
                 <Search size={16} className="text-slate-400 mr-2 shrink-0" />
                 <input
                   type="text"
-                  placeholder="Search by category, party, ref #, or notes..."
+                  placeholder="Search sales by category, customer, item, SKU, or ref #..."
                   value={cashbookSearch}
                   onChange={e => setCashbookSearch(e.target.value)}
-                  className="bg-transparent outline-none text-xs w-full text-slate-800 placeholder:text-slate-400 font-medium"
+                  className="bg-transparent outline-none text-xs w-full text-slate-800 dark:text-slate-100 placeholder:text-slate-400 font-medium"
                 />
                 {cashbookSearch && (
                   <button onClick={() => setCashbookSearch('')} className="text-slate-400 hover:text-slate-600 p-0.5">
@@ -10932,7 +11217,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <select
                   value={cashbookCategoryFilter}
                   onChange={e => setCashbookCategoryFilter(e.target.value)}
-                  className="bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-2.5 py-2 outline-none focus:border-blue-500"
+                  className="bg-slate-100 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] text-slate-700 dark:text-slate-200 text-xs font-bold rounded-xl px-2.5 py-2 outline-none focus:border-emerald-500"
                 >
                   <option value="ALL">All Categories</option>
                   {existingCategories.map(cat => (
@@ -10941,107 +11226,63 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 </select>
               </div>
             </div>
-
-            {/* Type Filter Buttons */}
-            <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
-              <button
-                onClick={() => setCashbookTypeFilter('ALL')}
-                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                  cashbookTypeFilter === 'ALL'
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                All Entries ({baseFilteredCashbookEntries.length})
-              </button>
-
-              <button
-                onClick={() => setCashbookTypeFilter('SALE')}
-                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1 ${
-                  cashbookTypeFilter === 'SALE'
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                    : 'bg-white text-emerald-700 border-slate-200 hover:bg-emerald-50'
-                }`}
-              >
-                <ArrowUpRight size={13} />
-                <span>Sales ({baseFilteredCashbookEntries.filter(e => e.type === 'SALE').length})</span>
-              </button>
-
-              <button
-                onClick={() => setCashbookTypeFilter('EXPENSE')}
-                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1 ${
-                  cashbookTypeFilter === 'EXPENSE'
-                    ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
-                    : 'bg-white text-rose-700 border-slate-200 hover:bg-rose-50'
-                }`}
-              >
-                <ArrowDownRight size={13} />
-                <span>Expenses ({baseFilteredCashbookEntries.filter(e => e.type === 'EXPENSE').length})</span>
-              </button>
-            </div>
           </div>
 
-          {/* Grouped Entries List */}
+          {/* Grouped Sales List */}
           {groupedCashbookEntries.length === 0 ? (
-            <div className="bg-white rounded-3xl p-8 border border-slate-200/90 text-center space-y-4 shadow-xs">
-              <div className="w-16 h-16 rounded-3xl bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
+            <div className="bg-white dark:bg-[#131b2a] rounded-3xl p-8 border border-slate-200/90 dark:border-[#1e2a3c] text-center space-y-4 shadow-xs">
+              <div className="w-16 h-16 rounded-3xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 mx-auto flex items-center justify-center">
                 <Wallet size={32} />
               </div>
               <div>
-                <h3 className="font-bold text-base text-slate-800">No Sales or Expenses Recorded</h3>
-                <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
-                  Start logging your daily sales, repair charges, accessories income, rent, and store expenses.
+                <h3 className="font-bold text-base text-slate-800 dark:text-slate-100">No Sales Recorded Yet</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto mt-1">
+                  Start selling stock items linked to customers or record direct shop sales &amp; repair receipts.
                 </p>
               </div>
-              <div className="flex items-center justify-center gap-3 pt-2">
+              <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
                 <button
-                  onClick={() => handleOpenCashbookModal('SALE')}
+                  onClick={() => handleOpenSellStockModal()}
                   className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center gap-1.5"
                 >
-                  <Plus size={15} /> Add First Sale
+                  <Package size={15} /> Sell Stock to Customer
                 </button>
                 <button
-                  onClick={() => handleOpenCashbookModal('EXPENSE')}
-                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center gap-1.5"
+                  onClick={() => handleOpenCashbookModal('SALE')}
+                  className="px-4 py-2.5 bg-slate-900 dark:bg-[#1a2538] hover:bg-black text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center gap-1.5"
                 >
-                  <Minus size={15} /> Add First Expense
+                  <Plus size={15} /> Quick Sale
                 </button>
               </div>
             </div>
           ) : (
             <div className="space-y-4">
               {groupedCashbookEntries.map(group => (
-                <div key={group.date} className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+                <div key={group.date} className="bg-white dark:bg-[#131b2a] rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs overflow-hidden">
                   {/* Group Header */}
-                  <div className="bg-slate-50/90 px-4 py-2.5 border-b border-slate-100 flex items-center justify-between">
+                  <div className="bg-slate-50/90 dark:bg-[#162032] px-4 py-2.5 border-b border-slate-100 dark:border-[#1e2a3c] flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Calendar size={14} className="text-slate-500" />
-                      <span className="font-extrabold text-xs text-slate-800">
+                      <Calendar size={14} className="text-emerald-600 dark:text-emerald-400" />
+                      <span className="font-extrabold text-xs text-slate-800 dark:text-white">
                         {formatDisplayDate(group.date)}
                       </span>
                       <span className="text-[10px] text-slate-400 font-semibold">
-                        ({group.entries.length} transaction{group.entries.length > 1 ? 's' : ''})
+                        ({group.entries.length} sale{group.entries.length > 1 ? 's' : ''})
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-2 text-[11px] font-bold">
+                    <div className="flex items-center gap-2 text-[11px] font-bold tabular-nums">
                       {group.daySales > 0 && (
-                        <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/60">
+                        <span className="text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-md border border-emerald-200/60 dark:border-emerald-800/50">
                           + LKR {group.daySales.toLocaleString()}
-                        </span>
-                      )}
-                      {group.dayExpenses > 0 && (
-                        <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200/60">
-                          - LKR {group.dayExpenses.toLocaleString()}
                         </span>
                       )}
                     </div>
                   </div>
 
                   {/* Group Items */}
-                  <div className="divide-y divide-slate-100">
+                  <div className="divide-y divide-slate-100 dark:divide-[#1e2a3c]">
                     {group.entries.map(entry => {
-                      const isSale = entry.type === 'SALE';
                       const isCheque = entry.paymentMethod === 'Cheque';
                       const isPendingChequeEntry = isCheque && (
                         entry.description?.includes('[PENDING]') ||
@@ -11055,21 +11296,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       return (
                         <div
                           key={entry.id}
-                          className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 transition-colors group"
+                          className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 dark:hover:bg-[#182235] transition-colors group"
                         >
-                          {/* Left: Type Icon & Details */}
+                          {/* Left: Sale Icon & Details */}
                           <div className="flex items-center gap-3 overflow-hidden">
-                            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 shadow-xs ${
-                              isSale ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
-                            }`}>
-                              {isSale ? <ArrowUpRight size={20} className="stroke-[2.5]" /> : <ArrowDownRight size={20} className="stroke-[2.5]" />}
+                            <div className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 shadow-xs bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400">
+                              <ArrowUpRight size={20} className="stroke-[2.5]" />
                             </div>
 
                             <div className="overflow-hidden">
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider ${
-                                  isSale ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
-                                }`}>
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
                                   {entry.category}
                                 </span>
 
@@ -11081,7 +11318,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                     ? 'bg-purple-50 text-purple-700 border-purple-200'
                                     : entry.paymentMethod === 'Cheque'
                                     ? 'bg-amber-50 text-amber-800 border-amber-300'
-                                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                                    : 'bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
                                 }`}>
                                   {entry.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
                                    entry.paymentMethod === 'Card' ? <CreditCard size={10} /> :
@@ -11092,7 +11329,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
                                 {isPendingChequeEntry && (
                                   <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
-                                    isChequeMatured ? 'bg-amber-100 text-amber-900 border-amber-300 animate-pulse' : 'bg-amber-50 text-amber-900 border-amber-200'
+                                    isChequeMatured ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-amber-50 text-amber-900 border-amber-200'
                                   }`}>
                                     <Clock size={10} />
                                     {isChequeMatured ? `Maturity Reached (Due: ${formatDisplayDate(chequeDueDate)})` : `On Hold (Due: ${formatDisplayDate(chequeDueDate)})`}
@@ -11110,15 +11347,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                       ? 'bg-blue-50 text-blue-700 border border-blue-200'
                                       : entry.referenceNo.startsWith('CUST-')
                                       ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                      : entry.referenceNo.startsWith('VEND-')
-                                      ? 'bg-rose-50 text-rose-800 border border-rose-200'
                                       : entry.referenceNo.startsWith('RENT-')
                                       ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                      : 'text-slate-500 bg-slate-100'
+                                      : 'text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-[#1a2538]'
                                   }`}>
                                     {entry.referenceNo.startsWith('SO-') && <Wrench size={10} className="text-blue-600" />}
                                     {entry.referenceNo.startsWith('CUST-') && <Users size={10} className="text-emerald-600" />}
-                                    {entry.referenceNo.startsWith('VEND-') && <Truck size={10} className="text-rose-600" />}
                                     {entry.referenceNo.startsWith('RENT-') && <Building size={10} className="text-amber-600" />}
                                     #{entry.referenceNo}
                                   </span>
@@ -11131,8 +11365,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                 const entryItems = entry.items && entry.items.length > 0 ? entry.items : extracted.items;
                                 return (
                                   <>
-                                    <p className="font-bold text-xs text-slate-900 mt-1 truncate">
-                                      {cleanDesc || (entryItems.length > 0 ? formatCashbookItemsSummary(entryItems) : (entry.contactName || (isSale ? 'General Sale' : 'Store Expense')))}
+                                    <p className="font-bold text-xs text-slate-900 dark:text-white mt-1 truncate">
+                                      {cleanDesc || (entryItems.length > 0 ? formatCashbookItemsSummary(entryItems) : (entry.contactName || 'General Sale'))}
                                     </p>
 
                                     {entryItems.length > 0 && (
@@ -11143,39 +11377,29 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                           return (
                                             <div
                                               key={it.id}
-                                              className="inline-flex items-center gap-1.5 flex-wrap px-2 py-1 rounded-lg bg-slate-50 border border-slate-200/90 text-[10px] font-semibold text-slate-700"
+                                              className="inline-flex items-center gap-1.5 flex-wrap px-2 py-1 rounded-lg bg-slate-50 dark:bg-[#1a2538] border border-slate-200/90 dark:border-[#26354d] text-[10px] font-semibold text-slate-700 dark:text-slate-300"
                                             >
-                                              <span className="font-extrabold text-slate-900">{it.item || 'Item'}</span>
+                                              <span className="font-extrabold text-slate-900 dark:text-white">{it.item || 'Item'}</span>
                                               {it.category && (
-                                                <span className="text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded font-bold">
+                                                <span className="text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 px-1.5 py-0.2 rounded font-bold">
                                                   {it.category}
                                                 </span>
                                               )}
                                               {it.sku && (
-                                                <span className="font-mono text-indigo-700 bg-indigo-50 px-1 rounded">
+                                                <span className="font-mono text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/50 px-1 rounded">
                                                   SKU:{it.sku}
                                                 </span>
                                               )}
-                                              <span className="bg-white px-1.5 py-0.2 rounded border border-slate-200 font-bold">
+                                              <span className="bg-white dark:bg-[#131b2a] px-1.5 py-0.2 rounded border border-slate-200 dark:border-[#26354d] font-bold">
                                                 Qty: {it.qty}
                                               </span>
-                                              {it.cost > 0 && (
-                                                <span className="text-rose-700 font-bold">
-                                                  Cost: {it.cost.toLocaleString()}
+                                              {salePrice > 0 && (
+                                                <span className="text-emerald-700 dark:text-emerald-300 font-bold">
+                                                  Rate: {salePrice.toLocaleString()}
                                                 </span>
                                               )}
-                                              {it.wholesalePrice > 0 && (
-                                                <span className="text-emerald-700 font-bold">
-                                                  W.Sale: {it.wholesalePrice.toLocaleString()}
-                                                </span>
-                                              )}
-                                              {(it.retailPrice || 0) > 0 && (
-                                                <span className="text-indigo-700 font-bold">
-                                                  Retail: {(it.retailPrice || 0).toLocaleString()}
-                                                </span>
-                                              )}
-                                              {isSale && it.cost > 0 && salePrice > 0 && (
-                                                <span className={`font-extrabold ${profit >= 0 ? 'text-blue-700' : 'text-rose-700'}`}>
+                                              {it.cost > 0 && salePrice > 0 && (
+                                                <span className={`font-extrabold ${profit >= 0 ? 'text-blue-700 dark:text-blue-300' : 'text-rose-700'}`}>
                                                   ({profit >= 0 ? '+' : ''}{profit.toLocaleString()})
                                                 </span>
                                               )}
@@ -11185,8 +11409,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                       </div>
                                     )}
 
-                                    {entry.contactName && cleanDesc && (
-                                      <p className="text-[10px] text-slate-400 truncate mt-0.5">Party: {entry.contactName}</p>
+                                    {entry.contactName && (
+                                      <p className="text-[10px] text-slate-400 truncate mt-0.5">Customer: {entry.contactName}</p>
                                     )}
                                   </>
                                 );
@@ -11196,10 +11420,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
                           {/* Right: Amount & Actions */}
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className={`font-black text-sm sm:text-base ${
-                              isSale ? 'text-emerald-700' : 'text-rose-700'
-                            }`}>
-                              {isSale ? '+ ' : '- '}LKR {entry.amount.toLocaleString()}
+                            <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
+                              + LKR {entry.amount.toLocaleString()}
                             </span>
 
                             <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
@@ -11224,7 +11446,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                     handlePassChequeFromCashbook(entry);
                                   }}
                                   className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition-all"
-                                  title={`Pass Cheque and update ${isSale ? 'Sales' : 'Expenses'} date to ${formatDisplayDate(chequeDueDate)}`}
+                                  title={`Pass Cheque and update Sales date to ${formatDisplayDate(chequeDueDate)}`}
                                 >
                                   <CheckCircle2 size={12} />
                                   <span className="hidden sm:inline">Pass Cheque</span>
@@ -11232,9 +11454,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                               )}
 
                               <button
-                                onClick={() => handleOpenCashbookModal(entry.type, entry)}
-                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                title="Edit Entry"
+                                onClick={() => handleOpenCashbookModal('SALE', entry)}
+                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors"
+                                title="Edit Sale"
                               >
                                 <Pencil size={14} />
                               </button>
@@ -11242,8 +11464,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                               {userCanDelete && (
                                 <button
                                   onClick={() => handleDeleteCashbookEntry(entry.id)}
-                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                  title="Delete Entry"
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors"
+                                  title="Delete Sale"
                                 >
                                   <Trash2 size={14} />
                                 </button>
@@ -11262,33 +11484,39 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         )}
 
         {/* Floating Quick Action Buttons on Mobile */}
-        <div className="fixed bottom-16 left-0 right-0 p-3 bg-gradient-to-t from-white via-white/90 to-transparent pointer-events-none z-10 flex justify-center">
+        <div className="fixed bottom-16 left-0 right-0 p-3 bg-gradient-to-t from-white dark:from-[#080d16] via-white/90 dark:via-[#080d16]/90 to-transparent pointer-events-none z-10 flex justify-center">
           {cashbookSubTab === 'ITEMS' ? (
             <div className="flex items-center gap-2 pointer-events-auto max-w-sm w-full">
+              <button
+                onClick={() => handleOpenSellStockModal()}
+                className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
+              >
+                <ArrowUpRight size={16} />
+                <span>Sell to Customer</span>
+              </button>
               <button
                 onClick={() => handleOpenDaybookItemModal()}
                 className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
               >
                 <Package size={16} />
-                <span>+ Add Daybook Item</span>
+                <span>+ Add Item</span>
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-2 pointer-events-auto max-w-sm w-full">
               <button
-                onClick={() => handleOpenCashbookModal('SALE')}
+                onClick={() => handleOpenSellStockModal()}
                 className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
               >
-                <Plus size={16} />
-                <span>+ Add Sale</span>
+                <Package size={16} />
+                <span>Sell Stock</span>
               </button>
-
               <button
-                onClick={() => handleOpenCashbookModal('EXPENSE')}
-                className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
+                onClick={() => handleOpenCashbookModal('SALE')}
+                className="py-3 px-4 bg-slate-900 dark:bg-[#1a2538] hover:bg-black active:scale-95 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center justify-center gap-1.5 transition-all"
               >
-                <Minus size={16} />
-                <span>- Add Expense</span>
+                <Plus size={16} />
+                <span>Quick Sale</span>
               </button>
             </div>
           )}
@@ -11302,22 +11530,18 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   const renderCashbookModal = () => {
     if (!isCashbookModalOpen) return null;
 
-    const categoriesList = cashbookType === 'SALE' ? SALE_CATEGORIES : EXPENSE_CATEGORIES;
-
     return (
       <div className="fixed inset-0 bg-black/70 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200 flex flex-col max-h-[92vh]">
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[92vh]">
           {/* Modal Header */}
-          <div className={`p-4 text-white flex justify-between items-center shrink-0 ${
-            cashbookType === 'SALE' ? 'bg-emerald-700' : 'bg-rose-700'
-          }`}>
+          <div className="p-4 text-white flex justify-between items-center shrink-0 bg-emerald-700">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
-                {cashbookType === 'SALE' ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}
+                <ArrowUpRight size={18} />
               </div>
               <div>
                 <h3 className="font-extrabold text-base">
-                  {editingCashbookEntry ? `Edit ${cashbookType === 'SALE' ? 'Sale' : 'Expense'}` : (cashbookType === 'SALE' ? 'Record Sale (Cash In)' : 'Record Expense (Cash Out)')}
+                  {editingCashbookEntry ? 'Edit Sale Entry' : 'Record Sale (Cash In)'}
                 </h3>
                 <p className="text-[11px] text-white/80">Sales &amp; Stock Record</p>
               </div>
@@ -11331,59 +11555,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
 
           {/* Modal Form */}
-          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
-            {/* Type Selector Toggle (Sale vs Expense) */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
-              <button
-                type="button"
-                onClick={() => {
-                  setCashbookType('SALE');
-                  setCashbookCategory(SALE_CATEGORIES[0]);
-                  if (cashbookAutoCalcAmount && cashbookEntryItems.length > 0) {
-                    const total = cashbookEntryItems.reduce((s, r) => {
-                      const p = getItemUnitSalePrice(r);
-                      return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                    }, 0);
-                    setCashbookAmount(total > 0 ? total.toString() : '');
-                  }
-                }}
-                className={`py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all ${
-                  cashbookType === 'SALE'
-                    ? 'bg-emerald-600 text-white shadow-md'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ArrowUpRight size={15} />
-                <span>Sale (Income)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setCashbookType('EXPENSE');
-                  setCashbookCategory(EXPENSE_CATEGORIES[0]);
-                  if (cashbookAutoCalcAmount && cashbookEntryItems.length > 0) {
-                    const total = cashbookEntryItems.reduce((s, r) => {
-                      const p = r.cost > 0 ? r.cost : getItemUnitSalePrice(r);
-                      return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                    }, 0);
-                    setCashbookAmount(total > 0 ? total.toString() : '');
-                  }
-                }}
-                className={`py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all ${
-                  cashbookType === 'EXPENSE'
-                    ? 'bg-rose-600 text-white shadow-md'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ArrowDownRight size={15} />
-                <span>Expense (Spend)</span>
-              </button>
-            </div>
-
+          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-slate-800 dark:text-slate-100">
             {/* Amount Input */}
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                 Amount (LKR) *
               </label>
               <div className="relative">
@@ -11397,20 +11572,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   value={cashbookAmount}
                   onChange={e => setCashbookAmount(e.target.value)}
                   placeholder="0.00"
-                  className={`w-full pl-14 pr-4 py-3 bg-slate-50 border-2 rounded-2xl text-2xl font-black outline-none transition-all ${
-                    cashbookType === 'SALE'
-                      ? 'border-emerald-200 focus:border-emerald-600 text-emerald-700 bg-emerald-50/30'
-                      : 'border-rose-200 focus:border-rose-600 text-rose-700 bg-rose-50/30'
-                  }`}
+                  className="w-full pl-14 pr-4 py-3 border-2 rounded-2xl text-2xl font-black outline-none transition-all border-emerald-200 dark:border-emerald-700/60 focus:border-emerald-600 text-emerald-700 dark:text-emerald-400 bg-emerald-50/30 dark:bg-emerald-950/20 tabular-nums"
                 />
               </div>
             </div>
 
             {/* Date Selection */}
             <div className="space-y-1.5">
-              <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 <span>Date</span>
-                <span className="text-slate-800 font-bold">{formatDisplayDate(cashbookDate)}</span>
+                <span className="text-slate-800 dark:text-slate-200 font-bold">{formatDisplayDate(cashbookDate)}</span>
               </div>
               <div className="flex gap-2">
                 <button
@@ -11418,8 +11589,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   onClick={() => setCashbookDate(new Date().toISOString().slice(0, 10))}
                   className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                     cashbookDate === new Date().toISOString().slice(0, 10)
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      ? 'bg-slate-900 dark:bg-emerald-600 text-white border-slate-900 dark:border-emerald-600'
+                      : 'bg-white dark:bg-[#1a2538] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-[#26354d] hover:bg-slate-50'
                   }`}
                 >
                   Today
@@ -11433,8 +11604,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   }}
                   className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all border ${
                     cashbookDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10)
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      ? 'bg-slate-900 dark:bg-emerald-600 text-white border-slate-900 dark:border-emerald-600'
+                      : 'bg-white dark:bg-[#1a2538] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-[#26354d] hover:bg-slate-50'
                   }`}
                 >
                   Yesterday
@@ -11442,7 +11613,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 <button
                   type="button"
                   onClick={() => cashbookDateInputRef.current?.showPicker()}
-                  className="flex-1 py-1.5 rounded-xl text-xs font-bold bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 flex items-center justify-center gap-1 transition-all"
+                  className="flex-1 py-1.5 rounded-xl text-xs font-bold bg-white dark:bg-[#1a2538] text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 hover:bg-blue-50 flex items-center justify-center gap-1 transition-all"
                 >
                   <Calendar size={13} />
                   <span>Pick Date</span>
@@ -11453,17 +11624,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 type="date"
                 value={cashbookDate}
                 onChange={e => setCashbookDate(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none"
+                className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none"
               />
             </div>
 
             {/* Category Presets & Custom Input */}
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                 Category
               </label>
-              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 rounded-2xl border border-slate-200/80">
-                {categoriesList.map(cat => {
+              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-1 bg-slate-50 dark:bg-[#1a2538] rounded-2xl border border-slate-200/80 dark:border-[#26354d]">
+                {SALE_CATEGORIES.map(cat => {
                   const isSelected = cashbookCategory === cat;
                   return (
                     <button
@@ -11472,8 +11643,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       onClick={() => setCashbookCategory(cat)}
                       className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                         isSelected
-                          ? (cashbookType === 'SALE' ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs' : 'bg-rose-600 text-white border-rose-600 shadow-xs')
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                          : 'bg-white dark:bg-[#131b2a] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-100'
                       }`}
                     >
                       {cat}
@@ -11486,7 +11657,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   className={`py-1 px-2.5 rounded-xl text-xs font-bold transition-all border ${
                     cashbookCategory === 'Other'
                       ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                      : 'bg-white dark:bg-[#131b2a] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-100'
                   }`}
                 >
                   + Custom / Other
@@ -11500,7 +11671,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     value={cashbookCustomCategory}
                     onChange={e => setCashbookCustomCategory(e.target.value)}
                     placeholder="Type custom category name..."
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-300 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
                   />
                 </div>
               )}
@@ -11618,16 +11789,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       ];
                       setCashbookEntryItems(next);
                       if (cashbookAutoCalcAmount) {
-                        const total = next.reduce((s, r) => {
-                          const p = cashbookType === 'SALE'
-                            ? getItemUnitSalePrice(r)
-                            : (r.cost > 0 ? r.cost : getItemUnitSalePrice(r));
-                          return s + ((Number(r.qty) || 0) * p);
-                        }, 0);
+                        const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                         if (total > 0) setCashbookAmount(total.toString());
                       }
                     }}
-                    className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500"
+                    className="w-full bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 outline-none focus:border-indigo-500"
                   >
                     <option value="">+ Quick pick saved item (auto-fills SKU, Cost, W.Sale &amp; Retail)...</option>
                     {daybookItems.map(it => (
@@ -11646,12 +11812,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       const next = cashbookEntryItems.map((r, i) => i === idx ? { ...r, ...patch } : r);
                       setCashbookEntryItems(next);
                       if (cashbookAutoCalcAmount) {
-                        const total = next.reduce((s, r) => {
-                          const p = cashbookType === 'SALE'
-                            ? getItemUnitSalePrice(r)
-                            : (r.cost > 0 ? r.cost : getItemUnitSalePrice(r));
-                          return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                        }, 0);
+                        const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                         setCashbookAmount(total > 0 ? total.toString() : '');
                       }
                     };
@@ -11662,23 +11823,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     const lineProfit = lineSale - lineCost;
 
                     return (
-                      <div key={row.id} className="bg-white rounded-xl p-2.5 border border-slate-200 space-y-2 shadow-2xs">
+                      <div key={row.id} className="bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-slate-200 dark:border-[#26354d] space-y-2 shadow-2xs">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-extrabold text-indigo-600 uppercase">Item #{idx + 1}</span>
+                          <span className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 uppercase">Item #{idx + 1}</span>
                           <div className="flex items-center gap-1.5">
-                            {cashbookType === 'SALE' && ((row.retailPrice || 0) > 0 || (row.wholesalePrice || 0) > 0) && (
-                              <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-[10px] font-bold">
+                            {((row.retailPrice || 0) > 0 || (row.wholesalePrice || 0) > 0) && (
+                              <div className="inline-flex rounded-lg border border-slate-200 dark:border-[#26354d] overflow-hidden text-[10px] font-bold">
                                 <button
                                   type="button"
                                   onClick={() => updateItemRow({ priceType: 'RETAIL' })}
-                                  className={`px-2 py-0.5 transition-colors ${(row.priceType || ((row.retailPrice || 0) > 0 ? 'RETAIL' : 'WHOLESALE')) === 'RETAIL' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600'}`}
+                                  className={`px-2 py-0.5 transition-colors ${(row.priceType || ((row.retailPrice || 0) > 0 ? 'RETAIL' : 'WHOLESALE')) === 'RETAIL' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-[#1a2538] text-slate-600 dark:text-slate-300'}`}
                                 >
                                   Retail
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => updateItemRow({ priceType: 'WHOLESALE' })}
-                                  className={`px-2 py-0.5 transition-colors ${(row.priceType || ((row.retailPrice || 0) > 0 ? 'RETAIL' : 'WHOLESALE')) === 'WHOLESALE' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600'}`}
+                                  className={`px-2 py-0.5 transition-colors ${(row.priceType || ((row.retailPrice || 0) > 0 ? 'RETAIL' : 'WHOLESALE')) === 'WHOLESALE' ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-[#1a2538] text-slate-600 dark:text-slate-300'}`}
                                 >
                                   W.Sale
                                 </button>
@@ -11691,12 +11852,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                 setCashbookEntryItems(next);
                                 if (cashbookAutoCalcAmount) {
                                   if (next.length > 0) {
-                                    const total = next.reduce((s, r) => {
-                                      const p = cashbookType === 'SALE'
-                                        ? getItemUnitSalePrice(r)
-                                        : (r.cost > 0 ? r.cost : getItemUnitSalePrice(r));
-                                      return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                                    }, 0);
+                                    const total = next.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                                     setCashbookAmount(total > 0 ? total.toString() : '');
                                   } else {
                                     setCashbookAmount('');
@@ -11810,21 +11966,16 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   })}
 
                   {/* Summary & Stock Sync Options */}
-                  <div className="bg-indigo-50/70 border border-indigo-200/80 rounded-xl p-2.5 space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px] font-extrabold text-slate-800 flex-wrap gap-2">
+                  <div className="bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/50 rounded-xl p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-extrabold text-slate-800 dark:text-slate-100 flex-wrap gap-2">
                       <span>Total Qty: {cashbookEntryItems.reduce((s, r) => s + (Number(r.qty) || 0), 0)}</span>
-                      <span>
-                        {cashbookType === 'SALE' ? 'Sale Total' : 'Cost Total'}: LKR{' '}
-                        {cashbookEntryItems.reduce((s, r) => {
-                          const p = cashbookType === 'SALE'
-                            ? getItemUnitSalePrice(r)
-                            : (r.cost > 0 ? r.cost : getItemUnitSalePrice(r));
-                          return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                        }, 0).toLocaleString()}
+                      <span className="tabular-nums">
+                        Sale Total: LKR{' '}
+                        {cashbookEntryItems.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0).toLocaleString()}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-indigo-200/60">
-                      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-700 cursor-pointer">
+                    <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-indigo-200/60 dark:border-indigo-800/40">
+                      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-700 dark:text-slate-300 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={cashbookAutoCalcAmount}
@@ -11832,12 +11983,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                             const checked = e.target.checked;
                             setCashbookAutoCalcAmount(checked);
                             if (checked) {
-                              const total = cashbookEntryItems.reduce((s, r) => {
-                                const p = cashbookType === 'SALE'
-                                  ? getItemUnitSalePrice(r)
-                                  : (r.cost > 0 ? r.cost : getItemUnitSalePrice(r));
-                                return s + ((Number(r.qty) || 0) * (Number(p) || 0));
-                              }, 0);
+                              const total = cashbookEntryItems.reduce((s, r) => s + ((Number(r.qty) || 0) * getItemUnitSalePrice(r)), 0);
                               if (total > 0) setCashbookAmount(total.toString());
                             }
                           }}
@@ -11845,14 +11991,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         />
                         <span>Auto-fill Amount from items</span>
                       </label>
-                      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-700 cursor-pointer">
+                      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-700 dark:text-slate-300 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={cashbookSyncStockOnSave}
                           onChange={e => setCashbookSyncStockOnSave(e.target.checked)}
                           className="rounded border-slate-300 text-indigo-600"
                         />
-                        <span>Save items &amp; update stock qty</span>
+                        <span>Deduct sold qty from stock</span>
                       </label>
                     </div>
                   </div>
@@ -11862,25 +12008,25 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
             {/* Description / Notes */}
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
                 Description / Notes (Optional)
               </label>
               <textarea
                 rows={2}
                 value={cashbookDesc}
                 onChange={e => setCashbookDesc(e.target.value)}
-                placeholder="Details of the sale or expense..."
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-blue-500 focus:bg-white resize-none"
+                placeholder="Details of the sale..."
+                className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-medium text-slate-800 dark:text-white outline-none focus:border-emerald-500 resize-none"
               />
             </div>
           </div>
 
           {/* Modal Footer Actions */}
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex gap-2.5 shrink-0">
+          <div className="p-4 bg-slate-50 dark:bg-[#0e1626] border-t border-slate-200 dark:border-[#1e2a3c] flex gap-2.5 shrink-0">
             <button
               type="button"
               onClick={() => setIsCashbookModalOpen(false)}
-              className="flex-1 py-3 bg-white border border-slate-200 text-slate-700 font-bold text-xs rounded-xl active:scale-95 transition-all"
+              className="flex-1 py-3 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl active:scale-95 transition-all"
             >
               Cancel
             </button>
@@ -11888,16 +12034,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               type="button"
               disabled={isSubmitting || !cashbookAmount || parseFloat(cashbookAmount) <= 0}
               onClick={handleSaveCashbookEntry}
-              className={`flex-1 py-3 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 ${
-                cashbookType === 'SALE' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'
-              }`}
+              className="flex-1 py-3 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700"
             >
               {isSubmitting ? (
                 <Loader2 size={16} className="animate-spin" />
               ) : (
                 <>
                   <Check size={16} />
-                  <span>{editingCashbookEntry ? 'Update Entry' : (cashbookType === 'SALE' ? 'Save Sale' : 'Save Expense')}</span>
+                  <span>{editingCashbookEntry ? 'Update Sale' : 'Save Sale'}</span>
                 </>
               )}
             </button>
@@ -11921,6 +12065,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const availableCategories = Object.keys(categoryCounts).sort((a, b) => a.localeCompare(b));
 
     const filteredItems = daybookItems.filter(it => {
+      if (daybookLowStockOnly && (Number(it.qty) || 0) > LOW_STOCK_THRESHOLD) return false;
       if (daybookItemCategoryFilter !== 'ALL') {
         const itemCat = (it.category || '').trim() || 'Uncategorized';
         if (itemCat !== daybookItemCategoryFilter) return false;
@@ -11964,6 +12109,72 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
         </div>
 
+        {/* Low Stock Alert Card */}
+        {alertStockItems.length > 0 && (
+          <div className={`rounded-2xl p-3.5 border space-y-2.5 ${
+            outOfStockCount > 0
+              ? 'bg-rose-50/90 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800/60'
+              : 'bg-amber-50/90 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/60'
+          }`}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${
+                  outOfStockCount > 0
+                    ? 'bg-rose-100 dark:bg-rose-900/60 text-rose-600 dark:text-rose-300'
+                    : 'bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300'
+                }`}>
+                  <AlertTriangle size={15} />
+                </div>
+                <div>
+                  <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    Low Stock Alert ({alertStockItems.length} item{alertStockItems.length === 1 ? '' : 's'} &le; {LOW_STOCK_THRESHOLD} pcs)
+                  </h4>
+                  <p className="text-[10px] text-slate-600 dark:text-slate-300 font-semibold">
+                    {outOfStockCount > 0 ? `${outOfStockCount} out of stock • ` : ''}Tap an item below to restock immediately
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDaybookLowStockOnly(v => !v)}
+                className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-all ${
+                  daybookLowStockOnly
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-slate-900'
+                    : 'bg-white dark:bg-[#131b2a] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-[#26354d]'
+                }`}
+              >
+                {daybookLowStockOnly ? 'Show All Items' : 'Filter Low Stock Only'}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {alertStockItems.slice(0, 8).map(low => {
+                const isZero = (Number(low.qty) || 0) <= 0;
+                return (
+                  <button
+                    key={low.id}
+                    type="button"
+                    onClick={() => handleOpenRestockModal(low)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 transition-all active:scale-95 ${
+                      isZero
+                        ? 'bg-white dark:bg-[#131b2a] border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300 hover:bg-rose-100/60'
+                        : 'bg-white dark:bg-[#131b2a] border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 hover:bg-amber-100/60'
+                    }`}
+                  >
+                    <span className="truncate max-w-[140px]">{low.item}</span>
+                    <span className={`px-1.5 py-0.2 rounded text-[10px] font-black tabular-nums ${
+                      isZero ? 'bg-rose-100 dark:bg-rose-900/70 text-rose-700 dark:text-rose-200' : 'bg-amber-100 dark:bg-amber-900/70 text-amber-800 dark:text-amber-200'
+                    }`}>
+                      {isZero ? 'OUT' : `${low.qty} left`}
+                    </span>
+                    <Plus size={11} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Search & Add Item Bar */}
         <div className="bg-white dark:bg-[#131b2a] p-3 rounded-2xl border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs space-y-2.5">
           <div className="flex items-center gap-2">
@@ -11994,19 +12205,33 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             )}
           </div>
 
-          {availableCategories.length > 0 && (
+          {(availableCategories.length > 0 || alertStockItems.length > 0) && (
             <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
               <button
                 type="button"
-                onClick={() => setDaybookItemCategoryFilter('ALL')}
+                onClick={() => { setDaybookItemCategoryFilter('ALL'); setDaybookLowStockOnly(false); }}
                 className={`py-1 px-2.5 rounded-xl text-[11px] font-bold transition-all shrink-0 border ${
-                  daybookItemCategoryFilter === 'ALL'
+                  daybookItemCategoryFilter === 'ALL' && !daybookLowStockOnly
                     ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
                     : 'bg-slate-50 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-100'
                 }`}
               >
                 All ({daybookItems.length})
               </button>
+              {alertStockItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setDaybookLowStockOnly(v => !v)}
+                  className={`py-1 px-2.5 rounded-xl text-[11px] font-bold transition-all shrink-0 border flex items-center gap-1 ${
+                    daybookLowStockOnly
+                      ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
+                      : 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/50 hover:bg-amber-100'
+                  }`}
+                >
+                  <AlertTriangle size={11} />
+                  <span>Low Stock ({alertStockItems.length})</span>
+                </button>
+              )}
               {availableCategories.map(cat => (
                 <button
                   key={cat}
@@ -12108,7 +12333,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
                     <button
                       type="button"
-                      onClick={() => handleOpenCashbookModal('SALE', null, it)}
+                      onClick={() => handleOpenSellStockModal(it)}
                       className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs active:scale-95 transition-all"
                     >
                       <ArrowUpRight size={13} />
@@ -12116,10 +12341,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleOpenCashbookModal('EXPENSE', null, it)}
-                      className="px-2.5 py-1.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/50 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95 transition-all"
+                      onClick={() => handleOpenRestockModal(it)}
+                      className="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/50 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95 transition-all"
                     >
-                      <ArrowDownRight size={13} />
+                      <Plus size={13} />
                       <span>Restock</span>
                     </button>
                     <button
@@ -12173,6 +12398,25 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     const yesterdaySalesEntries = allCompletedSales.filter(e => e.date === yesterdayStr);
     const todayTotalAmount = todaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
     const yesterdayTotalAmount = yesterdaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+    let todayItemsQty = 0;
+    let todayItemCost = 0;
+    let todayItemProfit = 0;
+    todaySalesEntries.forEach(e => {
+      const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      entryItems.forEach(it => {
+        const qty = Number(it.qty) || 0;
+        const cost = Number(it.cost) || 0;
+        const unitSale = getItemUnitSalePrice(it);
+        todayItemsQty += qty;
+        if (cost > 0) {
+          todayItemCost += cost * qty;
+          if (unitSale > 0) {
+            todayItemProfit += (unitSale - cost) * qty;
+          }
+        }
+      });
+    });
 
     const dateFilteredSales = allCompletedSales.filter(entry => {
       const entryD = normalizeToLocalMidnight(entry.date);
@@ -12451,10 +12695,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </span>
             </div>
             <div className="mt-1.5">
-              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">LKR {todayTotalAmount.toLocaleString()}</p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 font-semibold mt-0.5">
-                {todaySalesEntries.length} sale{todaySalesEntries.length === 1 ? '' : 's'} today
-              </p>
+              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">LKR {todayTotalAmount.toLocaleString()}</p>
+              <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-xs font-bold tabular-nums">
+                <span className="text-slate-600 dark:text-slate-300">
+                  {todayItemsQty > 0 ? `${todayItemsQty} pcs sold` : `${todaySalesEntries.length} sale${todaySalesEntries.length === 1 ? '' : 's'}`}
+                </span>
+                {todayItemCost > 0 && (
+                  <span className={`font-extrabold ${todayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                    Profit: {todayItemProfit >= 0 ? '+' : ''}LKR {todayItemProfit.toLocaleString()}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -12474,8 +12725,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </span>
             </div>
             <div className="mt-1.5">
-              <p className="text-2xl font-black text-slate-900 dark:text-white">LKR {yesterdayTotalAmount.toLocaleString()}</p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 font-semibold mt-0.5">
+              <p className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">LKR {yesterdayTotalAmount.toLocaleString()}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1">
                 {yesterdaySalesEntries.length} sale{yesterdaySalesEntries.length === 1 ? '' : 's'} yesterday
               </p>
             </div>
@@ -12490,16 +12741,31 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               </div>
             </div>
             <div className="mt-1.5">
-              <p className="text-2xl font-black text-indigo-600 dark:text-indigo-400">
+              <p className="text-2xl font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
                 {totalItemsQtySold > 0 ? `${totalItemsQtySold} pcs` : `${filteredSales.length} tx`}
               </p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 font-semibold mt-0.5">
-                {totalItemCost > 0
-                  ? `Cost: LKR ${totalItemCost.toLocaleString()} • Profit: ${totalItemProfit >= 0 ? '+' : ''}LKR ${totalItemProfit.toLocaleString()}`
-                  : pendingSaleCheques.length > 0
-                  ? `${pendingSaleCheques.length} pending cheque on hold`
-                  : 'Across filtered sales'}
-              </p>
+              {totalItemCost > 0 ? (
+                <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] tabular-nums">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Cost</span>
+                    <span className="text-xs sm:text-sm font-extrabold text-rose-600 dark:text-rose-400">
+                      LKR {totalItemCost.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Profit</span>
+                    <span className={`text-sm sm:text-base font-black ${totalItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
+                      {totalItemProfit >= 0 ? '+' : ''}LKR {totalItemProfit.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-1">
+                  {pendingSaleCheques.length > 0
+                    ? `${pendingSaleCheques.length} pending cheque on hold`
+                    : 'Across filtered sales'}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -13011,6 +13277,1257 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             >
               <Check size={15} />
               <span>{editingDaybookItem ? 'Update Item' : 'Save Item'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const handleOpenSellStockModal = (prefillItem?: DaybookStockItem) => {
+    setSellError('');
+    setSellCustomerMode('EXISTING');
+    setSellSelectedContactId('');
+    setSellCustomerSearch('');
+    setSellNewCustomerName('');
+    setSellNewCustomerPhone('');
+    setSellNewCustomerCity('');
+    setSellDate(new Date().toISOString().slice(0, 10));
+    setSellPaymentMethod('Cash');
+    setSellCashAmount('');
+    setSellChequeNumber('');
+    setSellChequeDate(new Date().toISOString().slice(0, 10));
+    setSellChequeStatus('PENDING');
+    setSellCategory(prefillItem?.category || 'Spare Parts Sale');
+    setSellNotes('');
+    setSellStockSearch('');
+    setTransAttachmentUrl(null);
+    setTransAttachmentDocType('Cheque');
+    if (prefillItem) {
+      setSellCartItems([
+        {
+          id: prefillItem.id,
+          item: prefillItem.item,
+          sku: prefillItem.sku,
+          category: prefillItem.category,
+          qty: 1,
+          cost: Number(prefillItem.cost) || 0,
+          wholesalePrice: Number(prefillItem.wholesalePrice) || 0,
+          retailPrice: Number(prefillItem.retailPrice) || 0,
+          priceType: 'RETAIL'
+        }
+      ]);
+    } else {
+      setSellCartItems([]);
+    }
+    setIsSellStockModalOpen(true);
+  };
+
+  const handleCompleteStockSale = async (afterAction: 'NONE' | 'INVOICE' | 'WHATSAPP' = 'NONE') => {
+    if (isSubmitting) return;
+    setSellError('');
+
+    const validItems: CashbookEntryItem[] = sellCartItems
+      .map(it => ({
+        ...it,
+        item: (it.item || '').trim(),
+        sku: (it.sku || '').trim(),
+        category: it.category?.trim() || undefined,
+        qty: Number(it.qty) || 0,
+        cost: Number(it.cost) || 0,
+        wholesalePrice: Number(it.wholesalePrice) || 0,
+        retailPrice: Number(it.retailPrice) || 0,
+        priceType: it.priceType || 'RETAIL'
+      }))
+      .filter(it => (it.item || it.sku) && it.qty > 0);
+
+    if (validItems.length === 0) {
+      setSellError('Please add at least one stock item with quantity greater than 0.');
+      return;
+    }
+
+    const saleTotal = validItems.reduce((sum, it) => sum + it.qty * getItemUnitSalePrice(it), 0);
+    if (saleTotal <= 0) {
+      setSellError('Total sale amount must be greater than LKR 0.');
+      return;
+    }
+
+    let resolvedContact: Contact | undefined;
+    if (sellCustomerMode === 'EXISTING') {
+      resolvedContact = contacts.find(c => c.id === sellSelectedContactId);
+      if (!resolvedContact) {
+        setSellError('Please select an existing customer or switch to "+ New Customer".');
+        return;
+      }
+    } else {
+      if (!sellNewCustomerName.trim()) {
+        setSellError('Please enter the new customer name.');
+        return;
+      }
+    }
+
+    const isSplitMethod = sellPaymentMethod === 'Cash + Cheque';
+    const isChequeMethod = sellPaymentMethod === 'Cheque';
+    const isCreditSale = sellPaymentMethod === 'CREDIT';
+    const splitCashNum = isSplitMethod ? (parseFloat(sellCashAmount) || 0) : 0;
+    if (isSplitMethod && (splitCashNum < 0 || splitCashNum > saleTotal)) {
+      setSellError('Cash received must be between LKR 0 and the total bill amount.');
+      return;
+    }
+    const splitChequeNum = isSplitMethod ? Math.max(0, saleTotal - splitCashNum) : 0;
+
+    setIsSubmitting(true);
+    try {
+      const nowIso = new Date().toISOString();
+
+      // 1. Create New Customer if requested
+      if (sellCustomerMode === 'NEW') {
+        const newContactId = generateUUID();
+        const cleanName = sellNewCustomerName.trim();
+        const cleanPhone = sellNewCustomerPhone.trim();
+        const cleanCity = sellNewCustomerCity.trim();
+        const contactPayload: any = {
+          id: newContactId,
+          user_id: authUser?.id,
+          name: cleanName,
+          phone: cleanPhone,
+          city: cleanCity,
+          type: 'CUSTOMER' as ContactType,
+          balance: 0,
+          end_date: cleanCity ? JSON.stringify({ city: cleanCity }) : null,
+          last_updated: nowIso
+        };
+
+        try {
+          let cRes = await supabase.from('contacts').insert([contactPayload]).select();
+          if (
+            cRes.error &&
+            (cRes.error.code === 'PGRST204' ||
+              cRes.error.code === '42703' ||
+              cRes.error.message?.toLowerCase().includes('city') ||
+              (cRes.error.message?.includes('schema cache') && !cRes.error.message?.includes('table')))
+          ) {
+            const { city: _omitCity, ...withoutCity } = contactPayload;
+            cRes = await supabase.from('contacts').insert([withoutCity]).select();
+          }
+        } catch (cErr) {
+          console.warn('Supabase new customer insert fallback:', cErr);
+        }
+
+        const newContact: Contact = {
+          id: newContactId,
+          userId: authUser?.id,
+          name: cleanName,
+          phone: cleanPhone,
+          city: cleanCity,
+          type: 'CUSTOMER',
+          balance: 0,
+          lastUpdated: nowIso
+        };
+        resolvedContact = newContact;
+        const nextContacts = [newContact, ...contacts];
+        setContacts(nextContacts);
+        try {
+          const cacheKey = authUser?.id ? `st_cached_contacts_${authUser.id}` : 'st_cached_contacts';
+          localStorage.setItem(cacheKey, JSON.stringify(nextContacts));
+          localStorage.setItem('st_cached_contacts', JSON.stringify(nextContacts));
+        } catch {}
+      }
+
+      if (!resolvedContact) return;
+
+      // 2. Deduct sold quantities from Items & Stock
+      const nextStock = daybookItems.map(s => ({ ...s }));
+      let stockChanged = false;
+      validItems.forEach(soldIt => {
+        const idx = nextStock.findIndex(
+          s =>
+            (soldIt.id && s.id === soldIt.id) ||
+            (soldIt.sku && s.sku && s.sku.toLowerCase() === soldIt.sku.toLowerCase()) ||
+            (soldIt.item && s.item.toLowerCase() === soldIt.item.toLowerCase())
+        );
+        if (idx >= 0) {
+          nextStock[idx] = {
+            ...nextStock[idx],
+            qty: Math.max(0, (Number(nextStock[idx].qty) || 0) - soldIt.qty),
+            updatedAt: nowIso
+          };
+          stockChanged = true;
+        }
+      });
+      if (stockChanged) {
+        await persistDaybookItems(nextStock);
+      }
+
+      // 3. Build & Save Customer Ledger Transaction (type: 'CREDIT')
+      const cleanNotes = sellNotes.trim();
+      let formattedDesc = '';
+      if (isCreditSale) {
+        formattedDesc = cleanNotes ? `Credit Sale • ${cleanNotes}` : 'Credit Sale (Pay Later)';
+      } else if (isSplitMethod) {
+        const parts: string[] = [
+          `Cash: LKR ${splitCashNum.toLocaleString()}, Cheque: LKR ${splitChequeNum.toLocaleString()} [${sellChequeStatus}]`
+        ];
+        if (sellChequeDate) parts.push(`Due: ${sellChequeDate}`);
+        if (sellChequeNumber.trim()) parts.push(`#${sellChequeNumber.trim()}`);
+        if (cleanNotes) parts.push(cleanNotes);
+        formattedDesc = parts.join(' • ');
+      } else if (isChequeMethod) {
+        const parts: string[] = [`Cheque [${sellChequeStatus}]`];
+        if (sellChequeDate) parts.push(`Due: ${sellChequeDate}`);
+        if (sellChequeNumber.trim()) parts.push(`#${sellChequeNumber.trim()}`);
+        if (cleanNotes) parts.push(cleanNotes);
+        formattedDesc = parts.join(' • ');
+      } else {
+        formattedDesc = cleanNotes ? `${sellPaymentMethod} • ${cleanNotes}` : sellPaymentMethod;
+      }
+
+      const txId = generateUUID();
+      const rawSellAttachment = (isChequeMethod || isSplitMethod) ? transAttachmentUrl : null;
+      const cloudSellAttachmentUrl = rawSellAttachment
+        ? await uploadTxAttachmentToCloud(rawSellAttachment, txId, transAttachmentDocType, authUser?.id)
+        : null;
+
+      const sellDescParts: string[] = [formattedDesc, encodeCashbookItemsToken(validItems)];
+      if (cloudSellAttachmentUrl) {
+        sellDescParts.push(`[ATT:${transAttachmentDocType}|${cloudSellAttachmentUrl}]`);
+      }
+      const dbDescription = sellDescParts.join(' • ');
+      const effectiveTxDate =
+        (isChequeMethod || isSplitMethod) && sellChequeStatus === 'PASSED' && sellChequeDate
+          ? sellChequeDate
+          : sellDate;
+
+      const txPayload = {
+        id: txId,
+        user_id: authUser?.id,
+        contact_id: resolvedContact.id,
+        date: effectiveTxDate,
+        amount: saleTotal,
+        type: 'CREDIT' as TransactionType,
+        description: dbDescription,
+        balance_after: 0
+      };
+
+      try {
+        await supabase.from('transactions').insert([txPayload]).select();
+      } catch (txErr) {
+        console.warn('Supabase stock sale transaction warning:', txErr);
+      }
+
+      if (cloudSellAttachmentUrl) {
+        saveTxAttachment(txId, cloudSellAttachmentUrl, transAttachmentDocType);
+      }
+
+      const isPendingChq = (isChequeMethod || isSplitMethod) && sellChequeStatus === 'PENDING';
+      const balanceDelta = isCreditSale
+        ? saleTotal
+        : isChequeMethod && isPendingChq
+        ? saleTotal
+        : isSplitMethod && isPendingChq
+        ? splitChequeNum
+        : 0;
+
+      const savedTx: Transaction = {
+        id: txId,
+        userId: authUser?.id,
+        contactId: resolvedContact.id,
+        date: effectiveTxDate,
+        description: dbDescription,
+        amount: saleTotal,
+        type: 'CREDIT',
+        paymentMethod: isCreditSale ? undefined : (sellPaymentMethod as PaymentMethod),
+        chequeStatus: !isCreditSale && (isChequeMethod || isSplitMethod) ? sellChequeStatus : undefined,
+        chequeNumber: !isCreditSale && (isChequeMethod || isSplitMethod) ? sellChequeNumber.trim() : undefined,
+        chequeDate: !isCreditSale && (isChequeMethod || isSplitMethod) ? sellChequeDate : undefined,
+        cashAmount: isSplitMethod ? splitCashNum : undefined,
+        chequeAmount: isSplitMethod ? splitChequeNum : undefined,
+        hasAttachment: !!cloudSellAttachmentUrl,
+        attachmentUrl: cloudSellAttachmentUrl || undefined,
+        attachmentDocType: cloudSellAttachmentUrl ? transAttachmentDocType : undefined,
+        balanceAfter: (contactStats[resolvedContact.id]?.balance || 0) + balanceDelta
+      };
+
+      const nextTxList = [savedTx, ...transactions];
+      setTransactions(nextTxList);
+      try {
+        const txKey = authUser?.id ? `st_cached_transactions_${authUser.id}` : 'st_cached_transactions';
+        localStorage.setItem(txKey, JSON.stringify(nextTxList));
+        localStorage.setItem('st_cached_transactions', JSON.stringify(nextTxList));
+      } catch {}
+
+      // 4. Sync Paid Portion to Sales Daybook
+      if (!isCreditSale) {
+        const resolvedCat = sellCategory.trim() || validItems[0]?.category || 'Spare Parts Sale';
+        if (isPendingChq && isChequeMethod) {
+          showProfileToast(`Pending cheque sale saved for ${resolvedContact.name} & stock updated!`);
+        } else if (isPendingChq && isSplitMethod) {
+          if (splitCashNum > 0) {
+            await recordOrUpdateLinkedCashbookEntry({
+              txId,
+              contactId: resolvedContact.id,
+              contactName: resolvedContact.name,
+              contactType: resolvedContact.type,
+              txType: 'CREDIT',
+              amount: splitCashNum,
+              date: effectiveTxDate,
+              paymentMethod: 'Cash',
+              descriptionNote: cleanNotes ? `Cash part of Split Sale • ${cleanNotes}` : 'Cash part of Split Sale',
+              categoryOverride: resolvedCat,
+              items: validItems,
+              isItemCreditSale: true
+            });
+            showProfileToast(`LKR ${splitCashNum.toLocaleString()} cash recorded to Sales! Cheque on hold.`);
+          } else {
+            showProfileToast(`Split cheque sale saved for ${resolvedContact.name} & stock updated!`);
+          }
+        } else {
+          await recordOrUpdateLinkedCashbookEntry({
+            txId,
+            contactId: resolvedContact.id,
+            contactName: resolvedContact.name,
+            contactType: resolvedContact.type,
+            txType: 'CREDIT',
+            amount: saleTotal,
+            date: effectiveTxDate,
+            paymentMethod: sellPaymentMethod,
+            descriptionNote: cleanNotes,
+            categoryOverride: resolvedCat,
+            items: validItems,
+            isItemCreditSale: true
+          });
+          showProfileToast(`Sold to ${resolvedContact.name} (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+        }
+      } else {
+        showProfileToast(`Credit sale LKR ${saleTotal.toLocaleString()} added to ${resolvedContact.name}'s ledger & stock updated!`);
+      }
+
+      setIsSellStockModalOpen(false);
+      setSellCartItems([]);
+      setTransAttachmentUrl(null);
+      setTransAttachmentDocType('Cheque');
+
+      const invoiceData = {
+        type: 'TRANSACTION' as const,
+        item: savedTx,
+        contact: resolvedContact
+      };
+
+      if (afterAction === 'INVOICE') {
+        setInvoiceModalItem(invoiceData);
+        setInvoiceFormat('POS');
+      } else if (afterAction === 'WHATSAPP') {
+        await shareInvoiceViaWhatsAppWithPDF(invoiceData, 'POS');
+      }
+    } catch (err: any) {
+      setSellError(err?.message || 'Failed to complete sale.');
+      showProfileToast('Error completing stock sale.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const renderSellStockModal = () => {
+    if (!isSellStockModalOpen) return null;
+
+    const existingCustomers = contacts
+      .filter(c => c.type === 'CUSTOMER' || c.type === 'SERVICE')
+      .filter(c => {
+        if (!sellCustomerSearch.trim()) return true;
+        const q = sellCustomerSearch.toLowerCase();
+        return (
+          c.name.toLowerCase().includes(q) ||
+          (c.phone || '').toLowerCase().includes(q) ||
+          (c.city || '').toLowerCase().includes(q)
+        );
+      });
+
+    const filteredStockCatalog = daybookItems.filter(it => {
+      if (!sellStockSearch.trim()) return true;
+      const q = sellStockSearch.toLowerCase();
+      return (
+        it.item.toLowerCase().includes(q) ||
+        (it.sku || '').toLowerCase().includes(q) ||
+        (it.category || '').toLowerCase().includes(q)
+      );
+    });
+
+    const addItemToSellCart = (stockItem: DaybookStockItem) => {
+      setSellError('');
+      setSellCartItems(prev => {
+        const existingIdx = prev.findIndex(c => c.id === stockItem.id);
+        if (existingIdx >= 0) {
+          return prev.map((c, idx) => (idx === existingIdx ? { ...c, qty: (Number(c.qty) || 0) + 1 } : c));
+        }
+        return [
+          ...prev,
+          {
+            id: stockItem.id,
+            item: stockItem.item,
+            sku: stockItem.sku,
+            category: stockItem.category,
+            qty: 1,
+            cost: Number(stockItem.cost) || 0,
+            wholesalePrice: Number(stockItem.wholesalePrice) || 0,
+            retailPrice: Number(stockItem.retailPrice) || 0,
+            priceType: 'RETAIL'
+          }
+        ];
+      });
+      if (stockItem.category && !sellCategory) {
+        setSellCategory(stockItem.category);
+      }
+    };
+
+    const cartTotalCost = sellCartItems.reduce((sum, it) => sum + (Number(it.qty) || 0) * (Number(it.cost) || 0), 0);
+    const cartTotalSale = sellCartItems.reduce((sum, it) => sum + (Number(it.qty) || 0) * getItemUnitSalePrice(it), 0);
+    const cartEstProfit = cartTotalSale - cartTotalCost;
+    const splitCashNum = sellPaymentMethod === 'Cash + Cheque' ? (parseFloat(sellCashAmount) || 0) : 0;
+    const splitChequeBal = sellPaymentMethod === 'Cash + Cheque' ? Math.max(0, cartTotalSale - splitCashNum) : 0;
+
+    return (
+      <div className="fixed inset-0 bg-black/75 z-[130] flex items-center justify-center p-2.5 sm:p-4 backdrop-blur-sm animate-in fade-in duration-150">
+        <div className="bg-white dark:bg-[#0e1626] w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[94vh]">
+          {/* Header */}
+          <div className="p-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
+                <ArrowUpRight size={20} />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base leading-tight">Sell Stock to Customer</h3>
+                <p className="text-[11px] text-white/85">Link customer, deduct stock, update ledger &amp; share WhatsApp PDF</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsSellStockModalOpen(false)}
+              className="p-1.5 text-white/80 hover:text-white rounded-xl hover:bg-white/10 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 text-slate-800 dark:text-slate-100">
+            {/* Step 1: Customer Selection */}
+            <div className="bg-slate-50 dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200 dark:border-[#1e2a3c] space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Users size={13} className="text-emerald-600" />
+                  1. Customer Selection
+                </span>
+                <div className="flex items-center bg-white dark:bg-[#1a2538] p-1 rounded-xl border border-slate-200 dark:border-[#26354d]">
+                  <button
+                    type="button"
+                    onClick={() => { setSellCustomerMode('EXISTING'); setSellError(''); }}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                      sellCustomerMode === 'EXISTING'
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#233148]'
+                    }`}
+                  >
+                    Existing Customer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setSellCustomerMode('NEW'); setSellError(''); }}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 ${
+                      sellCustomerMode === 'NEW'
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#233148]'
+                    }`}
+                  >
+                    <UserPlus size={12} />
+                    <span>+ New Customer</span>
+                  </button>
+                </div>
+              </div>
+
+              {sellCustomerMode === 'EXISTING' ? (
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={sellCustomerSearch}
+                      onChange={e => setSellCustomerSearch(e.target.value)}
+                      placeholder="Search customer by name, phone, or city..."
+                      className="w-full pl-8 pr-3 py-2 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  {existingCustomers.length === 0 ? (
+                    <div className="text-center py-3 text-xs text-slate-400">
+                      No matching customers found. Switch to &ldquo;+ New Customer&rdquo; above to add one.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
+                      {existingCustomers.map(c => {
+                        const isSelected = sellSelectedContactId === c.id;
+                        const dueBal = contactStats[c.id]?.balance || 0;
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => { setSellSelectedContactId(c.id); setSellError(''); }}
+                            className={`text-left p-2.5 rounded-xl border transition-all flex items-center justify-between gap-2 ${
+                              isSelected
+                                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-500 ring-1 ring-emerald-500'
+                                : 'bg-white dark:bg-[#1a2538] border-slate-200 dark:border-[#26354d] hover:border-emerald-300'
+                            }`}
+                          >
+                            <div className="overflow-hidden">
+                              <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">{c.name}</p>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                                {[c.phone, c.city].filter(Boolean).join(' • ') || (c.type === 'SERVICE' ? 'Service Customer' : 'Customer')}
+                              </p>
+                            </div>
+                            <span className={`text-[10px] font-extrabold shrink-0 tabular-nums px-1.5 py-0.5 rounded ${
+                              dueBal > 0
+                                ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400'
+                                : 'bg-slate-100 dark:bg-[#131b2a] text-slate-500 dark:text-slate-400'
+                            }`}>
+                              {dueBal > 0 ? `Due ${dueBal.toLocaleString()}` : 'Clear'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Customer Name *</label>
+                    <input
+                      type="text"
+                      value={sellNewCustomerName}
+                      onChange={e => setSellNewCustomerName(e.target.value)}
+                      placeholder="Full Name"
+                      className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Phone / WhatsApp</label>
+                    <input
+                      type="tel"
+                      value={sellNewCustomerPhone}
+                      onChange={e => setSellNewCustomerPhone(e.target.value)}
+                      placeholder="077..."
+                      className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">City / Area</label>
+                    <input
+                      type="text"
+                      value={sellNewCustomerCity}
+                      onChange={e => setSellNewCustomerCity(e.target.value)}
+                      placeholder="Optional"
+                      className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Step 2: Items Cart & Stock Catalog Picker */}
+            <div className="bg-slate-50 dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200 dark:border-[#1e2a3c] space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Package size={13} className="text-indigo-600" />
+                  2. Items to Sell ({sellCartItems.length})
+                </span>
+                <span className="text-[11px] font-extrabold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                  Total: LKR {cartTotalSale.toLocaleString()}
+                </span>
+              </div>
+
+              {/* Cart Items */}
+              {sellCartItems.length > 0 && (
+                <div className="space-y-2">
+                  {sellCartItems.map((cartItem, idx) => {
+                    const matchedStock = daybookItems.find(d => d.id === cartItem.id);
+                    const availQty = matchedStock ? Number(matchedStock.qty) || 0 : null;
+                    const overStock = availQty !== null && (Number(cartItem.qty) || 0) > availQty;
+                    const unitRate = getItemUnitSalePrice(cartItem);
+                    const lineTotal = (Number(cartItem.qty) || 0) * unitRate;
+                    const activeRateTier = cartItem.priceType === 'WHOLESALE' ? 'WHOLESALE' : 'RETAIL';
+
+                    return (
+                      <div
+                        key={cartItem.id || idx}
+                        className="bg-white dark:bg-[#1a2538] p-2.5 rounded-xl border border-slate-200 dark:border-[#26354d] space-y-2"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="overflow-hidden">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate">{cartItem.item}</span>
+                              {cartItem.sku && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-[#131b2a] text-slate-600 dark:text-slate-300">
+                                  {cartItem.sku}
+                                </span>
+                              )}
+                              {availQty !== null && (
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                  overStock
+                                    ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                                    : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300'
+                                }`}>
+                                  Stock: {availQty}{overStock ? ' (Low!)' : ''}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSellCartItems(prev => prev.filter((_, i) => i !== idx))}
+                            className="p-1 text-slate-400 hover:text-rose-600 rounded-lg"
+                            title="Remove item"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-12 gap-2 items-center">
+                          {/* Retail / Wholesale Rate Toggle */}
+                          <div className="col-span-5 sm:col-span-4 flex items-center bg-slate-100 dark:bg-[#131b2a] p-0.5 rounded-lg border border-slate-200 dark:border-[#26354d]">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) => (i === idx ? { ...c, priceType: 'RETAIL' } : c))
+                                )
+                              }
+                              className={`flex-1 py-1 rounded-md text-[10px] font-bold transition-all ${
+                                activeRateTier === 'RETAIL'
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'text-slate-600 dark:text-slate-300'
+                              }`}
+                            >
+                              Retail
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) => (i === idx ? { ...c, priceType: 'WHOLESALE' } : c))
+                                )
+                              }
+                              className={`flex-1 py-1 rounded-md text-[10px] font-bold transition-all ${
+                                activeRateTier === 'WHOLESALE'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'text-slate-600 dark:text-slate-300'
+                              }`}
+                            >
+                              Whlsale
+                            </button>
+                          </div>
+
+                          {/* Qty Stepper */}
+                          <div className="col-span-4 sm:col-span-3 flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) =>
+                                    i === idx ? { ...c, qty: Math.max(1, (Number(c.qty) || 1) - 1) } : c
+                                  )
+                                )
+                              }
+                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-[#131b2a] text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center justify-center border border-slate-200 dark:border-[#26354d]"
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              step="any"
+                              value={cartItem.qty}
+                              onChange={e => {
+                                const v = parseFloat(e.target.value) || 0;
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) => (i === idx ? { ...c, qty: v } : c))
+                                );
+                              }}
+                              className="w-11 text-center py-1 bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-lg text-xs font-extrabold tabular-nums"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) => (i === idx ? { ...c, qty: (Number(c.qty) || 0) + 1 } : c))
+                                )
+                              }
+                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-[#131b2a] text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center justify-center border border-slate-200 dark:border-[#26354d]"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          {/* Editable Unit Price */}
+                          <div className="col-span-3 sm:col-span-3">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={unitRate}
+                              onChange={e => {
+                                const val = parseFloat(e.target.value) || 0;
+                                setSellCartItems(prev =>
+                                  prev.map((c, i) =>
+                                    i === idx
+                                      ? activeRateTier === 'WHOLESALE'
+                                        ? { ...c, wholesalePrice: val }
+                                        : { ...c, retailPrice: val }
+                                      : c
+                                  )
+                                );
+                              }}
+                              title="Unit Price (LKR)"
+                              className="w-full px-2 py-1 bg-slate-50 dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-lg text-xs font-bold text-right tabular-nums"
+                            />
+                          </div>
+
+                          {/* Line Total */}
+                          <div className="col-span-12 sm:col-span-2 text-right font-black text-xs text-emerald-700 dark:text-emerald-400 tabular-nums">
+                            LKR {lineTotal.toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Add More Items From Stock */}
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={sellStockSearch}
+                    onChange={e => setSellStockSearch(e.target.value)}
+                    placeholder="Add stock item by name, SKU, or category..."
+                    className="w-full pl-8 pr-3 py-2 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-indigo-500"
+                  />
+                </div>
+                {filteredStockCatalog.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1.5 bg-white dark:bg-[#1a2538] rounded-xl border border-slate-200 dark:border-[#26354d]">
+                    {filteredStockCatalog.slice(0, 24).map(st => {
+                      const unitP = Number(st.retailPrice) || Number(st.wholesalePrice) || Number(st.cost) || 0;
+                      const stQty = Number(st.qty) || 0;
+                      const isOut = stQty <= 0;
+                      const isLow = stQty > 0 && stQty <= LOW_STOCK_THRESHOLD;
+                      return (
+                        <button
+                          key={st.id}
+                          type="button"
+                          onClick={() => addItemToSellCart(st)}
+                          className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 transition-all active:scale-95 ${
+                            isOut
+                              ? 'bg-rose-50/70 dark:bg-rose-950/20 border-rose-200 dark:border-rose-800/50 hover:border-rose-400'
+                              : isLow
+                              ? 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/50 hover:border-amber-400'
+                              : 'bg-slate-50 dark:bg-[#131b2a] hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border-slate-200 dark:border-[#26354d] hover:border-emerald-400'
+                          }`}
+                        >
+                          <Plus size={11} className={isOut ? 'text-rose-600' : isLow ? 'text-amber-600' : 'text-emerald-600'} />
+                          <span className="truncate max-w-[140px]">{st.item}</span>
+                          <span className={`text-[10px] tabular-nums ${
+                            isOut ? 'text-rose-600 font-black' : isLow ? 'text-amber-700 dark:text-amber-300 font-extrabold' : 'text-slate-500 dark:text-slate-400'
+                          }`}>
+                            ({isOut ? 'OUT' : isLow ? `${stQty} LOW` : stQty}) • LKR {unitP.toLocaleString()}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Step 3: Payment & Sale Details */}
+            <div className="bg-slate-50 dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200 dark:border-[#1e2a3c] space-y-3">
+              <span className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 uppercase tracking-wider block">
+                3. Payment &amp; Date
+              </span>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Sale Date</label>
+                  <input
+                    type="date"
+                    value={sellDate}
+                    onChange={e => setSellDate(e.target.value)}
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Category</label>
+                  <select
+                    value={sellCategory}
+                    onChange={e => setSellCategory(e.target.value)}
+                    className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold text-slate-800 dark:text-white outline-none"
+                  >
+                    {Array.from(new Set([...SALE_CATEGORIES, ...userItemCategories])).map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase block">Payment Method</label>
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                  {(['Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque', 'CREDIT'] as const).map(pm => (
+                    <button
+                      key={pm}
+                      type="button"
+                      onClick={() => {
+                        setSellPaymentMethod(pm);
+                        if (pm === 'Cash + Cheque' && !sellCashAmount && cartTotalSale > 0) {
+                          setSellCashAmount(String(Math.round(cartTotalSale / 2)));
+                        }
+                      }}
+                      className={`py-2 px-1.5 rounded-xl text-[10px] font-extrabold border transition-all text-center ${
+                        sellPaymentMethod === pm
+                          ? pm === 'CREDIT'
+                            ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                            : 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                          : 'bg-white dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
+                      }`}
+                    >
+                      {pm === 'CREDIT' ? 'Credit (Later)' : pm === 'Bank Transfer' ? 'Bank' : pm}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {(sellPaymentMethod === 'Cheque' || sellPaymentMethod === 'Cash + Cheque') && (
+                <div className={`p-3 rounded-xl space-y-2.5 border ${
+                  sellPaymentMethod === 'Cash + Cheque'
+                    ? 'bg-indigo-50/70 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800/50'
+                    : 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/50'
+                }`}>
+                  {sellPaymentMethod === 'Cash + Cheque' && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold text-indigo-950 dark:text-indigo-200 uppercase tracking-wider">
+                          Split Payment: Cash &amp; Cheque Balance
+                        </span>
+                        <span className="text-[10px] font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
+                          Total: LKR {cartTotalSale.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase">Cash Paid (LKR)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={sellCashAmount}
+                            onChange={e => setSellCashAmount(e.target.value)}
+                            placeholder="0"
+                            className="w-full bg-white dark:bg-[#1a2538] border border-emerald-300 dark:border-emerald-800 rounded-xl px-3 py-1.5 text-xs font-extrabold tabular-nums"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-indigo-800 dark:text-indigo-300 uppercase">Cheque Balance</label>
+                          <div className="w-full bg-white/80 dark:bg-[#131b2a] border border-indigo-200 dark:border-indigo-800/60 rounded-xl px-3 py-1.5 text-xs font-black text-indigo-800 dark:text-indigo-300 tabular-nums">
+                            LKR {splitChequeBal.toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase">Cheque #</label>
+                      <input
+                        type="text"
+                        value={sellChequeNumber}
+                        onChange={e => setSellChequeNumber(e.target.value)}
+                        placeholder="Optional"
+                        className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-2.5 py-1.5 text-xs font-bold"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase">Due Date</label>
+                      <input
+                        type="date"
+                        value={sellChequeDate}
+                        onChange={e => setSellChequeDate(e.target.value)}
+                        className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-2 py-1.5 text-xs font-bold"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 uppercase">Status</label>
+                      <select
+                        value={sellChequeStatus}
+                        onChange={e => setSellChequeStatus(e.target.value as ChequeStatus)}
+                        className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-2 py-1.5 text-xs font-bold"
+                      >
+                        <option value="PENDING">Pending (Hold)</option>
+                        <option value="PASSED">Passed / Cleared</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Upload & Camera Attachment (bottom of Split Payment & Cheque box) */}
+                  <div className={`pt-2.5 mt-1 border-t space-y-2 ${
+                    sellPaymentMethod === 'Cash + Cheque'
+                      ? 'border-indigo-200/80 dark:border-indigo-800/50'
+                      : 'border-amber-200/80 dark:border-amber-800/50'
+                  }`}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className={`text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
+                        sellPaymentMethod === 'Cash + Cheque'
+                          ? 'text-indigo-950 dark:text-indigo-200'
+                          : 'text-amber-950 dark:text-amber-200'
+                      }`}>
+                        <ImageIcon size={12} className={sellPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700 dark:text-indigo-400' : 'text-amber-700 dark:text-amber-400'} />
+                        <span>Attach Cheque or Invoice (Optional)</span>
+                      </label>
+                      <div className={`flex items-center gap-1 bg-white dark:bg-[#1a2538] p-0.5 rounded-lg border ${
+                        sellPaymentMethod === 'Cash + Cheque'
+                          ? 'border-indigo-200 dark:border-indigo-800/60'
+                          : 'border-amber-200 dark:border-amber-800/60'
+                      }`}>
+                        {(['Cheque', 'Invoice'] as const).map(docType => (
+                          <button
+                            key={docType}
+                            type="button"
+                            onClick={() => setTransAttachmentDocType(docType)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all ${
+                              transAttachmentDocType === docType
+                                ? sellPaymentMethod === 'Cash + Cheque'
+                                  ? 'bg-indigo-600 text-white shadow-2xs'
+                                  : 'bg-amber-600 text-white shadow-2xs'
+                                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            {docType}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {currentView !== 'TRANSACTION_FORM' && (
+                      <>
+                        <input
+                          ref={transUploadInputRef}
+                          type="file"
+                          accept="image/*,application/pdf"
+                          onChange={handleTransAttachmentFileChange}
+                          className="hidden"
+                        />
+                        <input
+                          ref={transCameraInputRef}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={handleTransAttachmentFileChange}
+                          className="hidden"
+                        />
+                      </>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => transUploadInputRef.current?.click()}
+                        className={`py-2 px-3 bg-white dark:bg-[#1a2538] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs active:scale-95 transition-all border ${
+                          sellPaymentMethod === 'Cash + Cheque'
+                            ? 'hover:bg-indigo-100/60 dark:hover:bg-indigo-950/40 text-indigo-950 dark:text-indigo-200 border-indigo-300 dark:border-indigo-800/60'
+                            : 'hover:bg-amber-100/60 dark:hover:bg-amber-950/40 text-amber-950 dark:text-amber-200 border-amber-300 dark:border-amber-800/60'
+                        }`}
+                      >
+                        <Upload size={14} className={sellPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700 dark:text-indigo-400' : 'text-amber-700 dark:text-amber-400'} />
+                        <span>Upload {transAttachmentDocType}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleOpenCamera}
+                        className={`py-2 px-3 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all border ${
+                          sellPaymentMethod === 'Cash + Cheque'
+                            ? 'bg-indigo-700 hover:bg-indigo-800 border-indigo-800'
+                            : 'bg-amber-700 hover:bg-amber-800 border-amber-800'
+                        }`}
+                      >
+                        <Camera size={14} />
+                        <span>Camera {transAttachmentDocType}</span>
+                      </button>
+                    </div>
+
+                    {transAttachmentUrl && (
+                      <div className={`bg-white dark:bg-[#1a2538] rounded-xl p-2 flex items-center justify-between gap-2.5 shadow-2xs border ${
+                        sellPaymentMethod === 'Cash + Cheque'
+                          ? 'border-indigo-300 dark:border-indigo-800'
+                          : 'border-amber-300 dark:border-amber-800'
+                      }`}>
+                        <div
+                          onClick={() => setViewingAttachment({ url: transAttachmentUrl, title: `${transAttachmentDocType} Photo` })}
+                          className="flex items-center gap-2 cursor-pointer overflow-hidden flex-1"
+                        >
+                          {isImageAttachment(transAttachmentUrl) ? (
+                            <img
+                              src={transAttachmentUrl}
+                              alt={`${transAttachmentDocType} preview`}
+                              className="w-10 h-10 rounded-lg object-cover border border-slate-200 dark:border-[#26354d] shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 flex items-center justify-center text-rose-600 shrink-0">
+                              <FileText size={18} />
+                            </div>
+                          )}
+                          <div className="overflow-hidden">
+                            <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{transAttachmentDocType} Attached</p>
+                            <p className={`text-[10px] font-semibold flex items-center gap-1 ${
+                              sellPaymentMethod === 'Cash + Cheque' ? 'text-indigo-700 dark:text-indigo-300' : 'text-amber-700 dark:text-amber-300'
+                            }`}>
+                              <Eye size={11} /> Tap to view full size
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setTransAttachmentUrl(null)}
+                          className="p-1.5 text-rose-600 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 rounded-lg active:scale-95 transition-all shrink-0"
+                          title="Remove attachment"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <input
+                type="text"
+                value={sellNotes}
+                onChange={e => setSellNotes(e.target.value)}
+                placeholder="Sale notes / remarks (optional)..."
+                className="w-full bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            {/* Summary */}
+            <div className="bg-slate-900 text-white rounded-2xl p-3.5 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-[10px] uppercase text-slate-400 font-bold">Total Cost</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-200 tabular-nums">LKR {cartTotalCost.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase text-slate-400 font-bold">Sale Total</p>
+                <p className="text-sm sm:text-base font-black text-emerald-400 tabular-nums">LKR {cartTotalSale.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase text-slate-400 font-bold">Est. Profit</p>
+                <p className={`text-xs sm:text-sm font-extrabold tabular-nums ${cartEstProfit >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>
+                  {cartEstProfit >= 0 ? '+' : ''}LKR {cartEstProfit.toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {sellError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2">
+                <AlertCircle size={15} className="shrink-0" />
+                <span>{sellError}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Footer Actions */}
+          <div className="p-3.5 sm:p-4 bg-slate-50 dark:bg-[#0b111e] border-t border-slate-200 dark:border-[#1e2a3c] grid grid-cols-1 sm:grid-cols-3 gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => handleCompleteStockSale('NONE')}
+              className="py-2.5 px-3 bg-slate-800 hover:bg-slate-900 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+              <span>Save Sale</span>
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => handleCompleteStockSale('INVOICE')}
+              className="py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Receipt size={14} />
+              <span>Save &amp; Invoice</span>
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => handleCompleteStockSale('WHATSAPP')}
+              className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Share2 size={14} />
+              <span>Save &amp; WhatsApp PDF</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const handleOpenRestockModal = (item: DaybookStockItem) => {
+    setRestockingItem(item);
+    setRestockQty('1');
+    setRestockCost((Number(item.cost) || 0).toString());
+    setRestockWholesale((Number(item.wholesalePrice) || 0).toString());
+    setRestockRetail((Number(item.retailPrice) || 0).toString());
+  };
+
+  const handleSaveRestock = async () => {
+    if (!restockingItem || isSubmitting) return;
+    const addQty = parseFloat(restockQty) || 0;
+    if (addQty <= 0) {
+      showProfileToast('Please enter a quantity greater than 0 to add.', 'error');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const nextCost = parseFloat(restockCost) || 0;
+      const nextWholesale = parseFloat(restockWholesale) || 0;
+      const nextRetail = parseFloat(restockRetail) || 0;
+      const newQty = (Number(restockingItem.qty) || 0) + addQty;
+
+      const nextItems = daybookItems.map(it =>
+        it.id === restockingItem.id
+          ? {
+              ...it,
+              qty: newQty,
+              cost: nextCost,
+              wholesalePrice: nextWholesale,
+              retailPrice: nextRetail,
+              updatedAt: nowIso
+            }
+          : it
+      );
+
+      await persistDaybookItems(nextItems);
+      showProfileToast(`Restocked ${restockingItem.item}: +${addQty} (New Qty: ${newQty})`);
+      setRestockingItem(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const renderRestockModal = () => {
+    if (!restockingItem) return null;
+    const addQty = parseFloat(restockQty) || 0;
+    const previewQty = (Number(restockingItem.qty) || 0) + addQty;
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150">
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col">
+          <div className="p-4 bg-blue-600 text-white flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
+                <Package size={18} />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base leading-tight">Restock Item</h3>
+                <p className="text-[11px] text-white/85 truncate max-w-[230px]">{restockingItem.item}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRestockingItem(null)}
+              className="p-1.5 text-white/80 hover:text-white rounded-lg hover:bg-white/10"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-3.5 text-slate-800 dark:text-slate-100">
+            <div className="flex items-center justify-between bg-slate-50 dark:bg-[#1a2538] p-3 rounded-2xl border border-slate-200 dark:border-[#26354d] text-xs">
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 font-bold block text-[10px] uppercase">Current Stock</span>
+                <span className="font-black text-base text-slate-800 dark:text-white tabular-nums">{restockingItem.qty}</span>
+              </div>
+              <ArrowRight size={16} className="text-blue-500" />
+              <div className="text-right">
+                <span className="text-blue-600 dark:text-blue-400 font-bold block text-[10px] uppercase">After Restock</span>
+                <span className="font-black text-base text-blue-600 dark:text-blue-400 tabular-nums">{previewQty}</span>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Quantity to Add *
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="1"
+                autoFocus
+                value={restockQty}
+                onChange={e => setRestockQty(e.target.value)}
+                className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2.5 text-base font-black text-slate-800 dark:text-white outline-none focus:border-blue-500 tabular-nums"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-rose-600 uppercase">Cost (LKR)</label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={restockCost}
+                  onChange={e => setRestockCost(e.target.value)}
+                  className="w-full bg-rose-50/40 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800/60 rounded-xl px-2.5 py-2 text-xs font-extrabold text-rose-700 dark:text-rose-300 tabular-nums"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-emerald-600 uppercase">Wholesale</label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={restockWholesale}
+                  onChange={e => setRestockWholesale(e.target.value)}
+                  className="w-full bg-emerald-50/40 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/60 rounded-xl px-2.5 py-2 text-xs font-extrabold text-emerald-700 dark:text-emerald-300 tabular-nums"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-indigo-600 uppercase">Retail</label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={restockRetail}
+                  onChange={e => setRestockRetail(e.target.value)}
+                  className="w-full bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800/60 rounded-xl px-2.5 py-2 text-xs font-extrabold text-indigo-700 dark:text-indigo-300 tabular-nums"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 dark:bg-[#0e1626] border-t border-slate-200 dark:border-[#1e2a3c] flex gap-2.5">
+            <button
+              type="button"
+              onClick={() => setRestockingItem(null)}
+              className="flex-1 py-2.5 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={handleSaveRestock}
+              className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Check size={15} />
+              <span>Add Stock</span>
             </button>
           </div>
         </div>
@@ -13805,6 +15322,30 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                           <span className="hidden sm:inline">A4</span>
                         </button>
 
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const matchedContact = contacts.find(
+                              c =>
+                                (inv.contactId && c.id === inv.contactId) ||
+                                c.name.toLowerCase() === (inv.contactName || '').toLowerCase()
+                            ) || null;
+                            shareInvoiceViaWhatsAppWithPDF(
+                              {
+                                type: 'CASHBOOK',
+                                item: { ...inv, contactPhone: matchedContact?.phone || '' },
+                                contact: matchedContact
+                              },
+                              'POS'
+                            );
+                          }}
+                          className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs active:scale-95 flex items-center gap-1"
+                          title="Auto-generate PDF & Share on WhatsApp"
+                        >
+                          <Share2 size={12} />
+                          <span className="hidden sm:inline">WhatsApp</span>
+                        </button>
+
                         {userCanDelete && (
                           <button
                             type="button"
@@ -13988,6 +15529,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       {renderSqlModal()}
       {renderCashbookModal()}
       {renderDaybookItemModal()}
+      {renderSellStockModal()}
+      {renderRestockModal()}
 
       {/* Live Camera Capture Modal for Cheque / Invoice */}
       {isCameraModalOpen && (

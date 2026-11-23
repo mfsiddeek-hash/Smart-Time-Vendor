@@ -287,7 +287,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
     <div 
       onClick={() => onClick?.(transaction)}
       className={`p-4 border-b border-slate-100 dark:border-[#1e2a3c] flex flex-col gap-2 transition-colors cursor-pointer hover:bg-slate-50/70 dark:hover:bg-[#172235] ${
-        pendingCheque ? 'bg-amber-50/40 dark:bg-amber-950/20 border-l-4 border-l-amber-500' : 'bg-white dark:bg-[#131b2a]'
+        pendingCheque ? 'bg-amber-50/50 dark:bg-amber-950/25 ring-1 ring-inset ring-amber-300/60 dark:ring-amber-700/40' : 'bg-white dark:bg-[#131b2a]'
       }`}
     >
       <div className="flex justify-between items-start">
@@ -295,13 +295,13 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
           <span className="font-bold text-base text-slate-800 dark:text-slate-100">{formatDisplayDate(transaction.date)}</span>
           {pendingCheque && (
             <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400 border border-amber-300 dark:border-amber-800/50">
-              <Clock size={11} className="animate-pulse" />
+              <Clock size={11} />
               Post-Dated Cheque (On Hold)
             </span>
           )}
         </div>
-        <div className="text-right">
-          <span className={`font-bold text-base ${
+        <div className="text-right tabular-nums">
+          <span className={`font-bold text-base tabular-nums ${
             pendingCheque 
               ? 'text-amber-800 dark:text-amber-400 font-extrabold' 
               : isPayment 
@@ -374,15 +374,12 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
               <span className={`inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border ${
                 contactType === 'CUSTOMER'
                   ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50'
-                  : contactType === 'VENDOR'
-                  ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
                   : contactType === 'RENT'
                   ? (transaction.type === 'CREDIT' ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50' : 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/50')
                   : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/50'
               }`}>
                 {contactType === 'CUSTOMER' ? 'Linked to Sales' :
-                 contactType === 'VENDOR' ? 'Linked to Expenses' :
-                 contactType === 'RENT' ? (transaction.type === 'CREDIT' ? 'Linked to Sales (+ Sale)' : 'Shop Rent Expense') :
+                 contactType === 'RENT' ? (transaction.type === 'CREDIT' ? 'Rent Withdrawal (+ Sale)' : 'Rent Deposit') :
                  'Linked to Sales'}
               </span>
             )}

@@ -1,4 +1,4 @@
-export type ContactType = 'CUSTOMER' | 'VENDOR' | 'RENT' | 'SERVICE';
+export type ContactType = 'CUSTOMER' | 'RENT' | 'SERVICE';
 
 export interface Contact {
   id: string;
@@ -37,6 +37,8 @@ export interface Transaction {
   chequeStatus?: ChequeStatus;
   chequeNumber?: string;
   chequeDate?: string; // Cheque issue date or future maturity date
+  cashAmount?: number;
+  chequeAmount?: number;
   amount: number;
   type: TransactionType;
   balanceAfter: number;
@@ -93,7 +95,7 @@ export interface UserProfile {
   updatedAt?: string;
 }
 
-export type CashbookEntryType = 'SALE' | 'EXPENSE';
+export type CashbookEntryType = 'SALE';
 
 export interface CashbookEntryItem {
   id: string;
@@ -131,6 +133,7 @@ export interface CashbookEntry {
   paymentMethod: PaymentMethod;
   referenceNo?: string;
   contactName?: string;
+  contactId?: string;
   items?: CashbookEntryItem[];
   createdAt?: string;
 }
