@@ -315,7 +315,7 @@ export default function App() {
   const [itemFormWholesalePrice, setItemFormWholesalePrice] = useState('');
   const [itemFormRetailPrice, setItemFormRetailPrice] = useState('');
 
-  const LOW_STOCK_THRESHOLD = 3;
+  const LOW_STOCK_THRESHOLD = 12;
 
   const alertStockItems = useMemo(() => {
     return daybookItems
