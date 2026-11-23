@@ -311,6 +311,7 @@ export default function App() {
   const [daybookItemCategoryFilter, setDaybookItemCategoryFilter] = useState<string>('ALL');
   const [daybookLowStockOnly, setDaybookLowStockOnly] = useState(false);
   const [dismissLowStockAlert, setDismissLowStockAlert] = useState(false);
+  const [selectedStockItemId, setSelectedStockItemId] = useState<string | null>(null);
   const [isDaybookItemModalOpen, setIsDaybookItemModalOpen] = useState(false);
   const [editingDaybookItem, setEditingDaybookItem] = useState<DaybookStockItem | null>(null);
   const [itemFormName, setItemFormName] = useState('');
@@ -12279,10 +12280,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   };
 
   const renderItemsAndStockSection = (inCashbook: boolean = false) => {
-    const totalStockQty = daybookItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
-    const totalCostVal = daybookItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.cost) || 0)), 0);
-    const totalWholesaleVal = daybookItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.wholesalePrice) || 0)), 0);
-    const totalRetailVal = daybookItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.retailPrice) || 0)), 0);
+    const selectedStockItem = selectedStockItemId
+      ? daybookItems.find(it => it.id === selectedStockItemId) || null
+      : null;
 
     const categoryCounts: Record<string, number> = {};
     daybookItems.forEach(it => {
@@ -12306,33 +12306,93 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       );
     });
 
+    const hasListFilter = daybookLowStockOnly || daybookItemCategoryFilter !== 'ALL' || Boolean(daybookItemSearch.trim());
+    const kpiScopeItems = selectedStockItem
+      ? [selectedStockItem]
+      : hasListFilter
+      ? filteredItems
+      : daybookItems;
+
+    const totalStockQty = kpiScopeItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
+    const totalCostVal = kpiScopeItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.cost) || 0)), 0);
+    const totalWholesaleVal = kpiScopeItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.wholesalePrice) || 0)), 0);
+    const totalRetailVal = kpiScopeItems.reduce((sum, it) => sum + ((Number(it.qty) || 0) * (Number(it.retailPrice) || 0)), 0);
+
     return (
       <div className="space-y-4">
+        {selectedStockItem && (
+          <div className="bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 rounded-2xl px-3.5 py-2.5 flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="px-2 py-0.5 rounded-lg bg-indigo-600 text-white text-[10px] font-extrabold uppercase tracking-wider shrink-0">
+                Selected Item
+              </span>
+              <span className="text-xs sm:text-sm font-extrabold text-indigo-950 dark:text-indigo-100 truncate">
+                {selectedStockItem.item}
+              </span>
+              {selectedStockItem.sku && (
+                <span className="text-[10px] font-mono font-bold text-indigo-700 dark:text-indigo-300 bg-white/80 dark:bg-[#131b2a] px-1.5 py-0.5 rounded">
+                  {selectedStockItem.sku}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedStockItemId(null)}
+              className="px-2.5 py-1 rounded-xl bg-white dark:bg-[#131b2a] border border-indigo-200 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 text-[11px] font-extrabold hover:bg-indigo-100/60 active:scale-95 transition-all flex items-center gap-1 shrink-0"
+            >
+              <X size={12} />
+              <span>Show All ({daybookItems.length})</span>
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-          <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
-            <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Items</span>
-            <p className="text-xl font-black text-slate-800 dark:text-white mt-1">{daybookItems.length}</p>
-            <p className="text-[10px] text-slate-400 font-semibold">SKU catalog</p>
+          <div className={`bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border shadow-xs transition-all ${
+            selectedStockItem ? 'border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-300/60' : 'border-slate-200/80 dark:border-[#1e2a3c]'
+          }`}>
+            <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+              {selectedStockItem ? 'Selected' : 'Items'}
+            </span>
+            <p className="text-xl font-black text-slate-800 dark:text-white mt-1 tabular-nums">{kpiScopeItems.length}</p>
+            <p className="text-[10px] text-slate-400 font-semibold truncate">
+              {selectedStockItem ? selectedStockItem.item : hasListFilter ? 'Filtered SKUs' : 'SKU catalog'}
+            </p>
           </div>
-          <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
+          <div className={`bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border shadow-xs transition-all ${
+            selectedStockItem ? 'border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-300/60' : 'border-slate-200/80 dark:border-[#1e2a3c]'
+          }`}>
             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Qty</span>
-            <p className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1">{totalStockQty.toLocaleString()}</p>
-            <p className="text-[10px] text-slate-400 font-semibold">Units in stock</p>
+            <p className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1 tabular-nums">{totalStockQty.toLocaleString()}</p>
+            <p className="text-[10px] text-slate-400 font-semibold">
+              {selectedStockItem ? 'Item stock qty' : 'Units in stock'}
+            </p>
           </div>
-          <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
+          <div className={`bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border shadow-xs transition-all ${
+            selectedStockItem ? 'border-rose-300 dark:border-rose-600 ring-1 ring-rose-300/50' : 'border-slate-200/80 dark:border-[#1e2a3c]'
+          }`}>
             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Cost Value</span>
-            <p className="text-base sm:text-lg font-black text-rose-600 dark:text-rose-400 mt-1">LKR {totalCostVal.toLocaleString()}</p>
-            <p className="text-[10px] text-slate-400 font-semibold">Total stock cost</p>
+            <p className="text-base sm:text-lg font-black text-rose-600 dark:text-rose-400 mt-1 tabular-nums">LKR {totalCostVal.toLocaleString()}</p>
+            <p className="text-[10px] text-slate-400 font-semibold">
+              {selectedStockItem ? 'Item stock cost' : 'Total stock cost'}
+            </p>
           </div>
-          <div className="bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
+          <div className={`bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border shadow-xs transition-all ${
+            selectedStockItem ? 'border-emerald-300 dark:border-emerald-600 ring-1 ring-emerald-300/50' : 'border-slate-200/80 dark:border-[#1e2a3c]'
+          }`}>
             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Wholesale Value</span>
-            <p className="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400 mt-1">LKR {totalWholesaleVal.toLocaleString()}</p>
-            <p className="text-[10px] text-slate-400 font-semibold">Wholesale stock</p>
+            <p className="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">LKR {totalWholesaleVal.toLocaleString()}</p>
+            <p className="text-[10px] text-slate-400 font-semibold">
+              {selectedStockItem ? 'Item wholesale stock' : 'Wholesale stock'}
+            </p>
           </div>
-          <div className="col-span-2 sm:col-span-1 bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs">
+          <div className={`col-span-2 sm:col-span-1 bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border shadow-xs transition-all ${
+            selectedStockItem ? 'border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-300/60' : 'border-slate-200/80 dark:border-[#1e2a3c]'
+          }`}>
             <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Retail Value</span>
-            <p className="text-base sm:text-lg font-black text-indigo-600 dark:text-indigo-400 mt-1">LKR {totalRetailVal.toLocaleString()}</p>
-            <p className="text-[10px] text-slate-400 font-semibold">Retail stock value</p>
+            <p className="text-base sm:text-lg font-black text-indigo-600 dark:text-indigo-400 mt-1 tabular-nums">LKR {totalRetailVal.toLocaleString()}</p>
+            <p className="text-[10px] text-slate-400 font-semibold">
+              {selectedStockItem ? 'Item retail value' : 'Retail stock value'}
+            </p>
           </div>
         </div>
 
@@ -12502,97 +12562,138 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         ) : (
           <div className="space-y-2.5">
             {filteredItems.map(it => {
+              const itemQty = Number(it.qty) || 0;
               const costUnit = Number(it.cost) || 0;
               const wholesaleUnit = Number(it.wholesalePrice) || 0;
               const retailUnit = Number(it.retailPrice) || 0;
               const sellUnit = retailUnit > 0 ? retailUnit : wholesaleUnit;
               const unitProfit = sellUnit - costUnit;
-              const isLowStock = (Number(it.qty) || 0) <= 3;
+              const isLowStock = itemQty <= 3;
+              const isSelectedItem = selectedStockItemId === it.id;
+              const itemCostTotal = itemQty * costUnit;
+              const itemWholesaleTotal = itemQty * wholesaleUnit;
+              const itemRetailTotal = itemQty * retailUnit;
+              const itemEstProfit = (itemRetailTotal > 0 ? itemRetailTotal : itemWholesaleTotal) - itemCostTotal;
+
               return (
                 <div
                   key={it.id}
-                  className="bg-white dark:bg-[#131b2a] rounded-2xl p-3.5 border border-slate-200/80 dark:border-[#1e2a3c] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  onClick={() => setSelectedStockItemId(prev => (prev === it.id ? null : it.id))}
+                  className={`rounded-2xl p-3.5 border shadow-xs cursor-pointer transition-all space-y-2.5 ${
+                    isSelectedItem
+                      ? 'bg-indigo-50/40 dark:bg-indigo-950/25 border-indigo-500 ring-2 ring-indigo-400/40'
+                      : 'bg-white dark:bg-[#131b2a] border-slate-200/80 dark:border-[#1e2a3c] hover:border-indigo-300 dark:hover:border-indigo-700'
+                  }`}
                 >
-                  <div className="space-y-1.5 overflow-hidden">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-extrabold text-sm text-slate-900 dark:text-white truncate">{it.item}</span>
-                      {it.category && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200/80 dark:border-blue-800/50">
-                          {it.category}
-                        </span>
-                      )}
-                      {it.sku && (
-                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-[#26354d] flex items-center gap-1">
-                          <Hash size={10} /> SKU: {it.sku}
-                        </span>
-                      )}
-                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border ${
-                        Number(it.qty) <= 0
-                          ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
-                          : isLowStock
-                          ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800/50'
-                          : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/50'
-                      }`}>
-                        Qty: {it.qty}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap text-xs">
-                      <span className="bg-rose-50/70 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 px-2 py-0.5 rounded-lg font-bold border border-rose-200/60 dark:border-rose-800/40">
-                        Cost: LKR {costUnit.toLocaleString()}
-                      </span>
-                      <span className="bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-lg font-bold border border-emerald-200/60 dark:border-emerald-800/40">
-                        Wholesale: LKR {wholesaleUnit.toLocaleString()}
-                      </span>
-                      <span className="bg-indigo-50/80 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-lg font-bold border border-indigo-200/60 dark:border-indigo-800/40">
-                        Retail: LKR {retailUnit.toLocaleString()}
-                      </span>
-                      {(costUnit > 0 && sellUnit > 0) && (
-                        <span className={`px-2 py-0.5 rounded-lg font-bold text-[11px] ${
-                          unitProfit >= 0 ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300' : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1.5 overflow-hidden">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-sm text-slate-900 dark:text-white truncate">{it.item}</span>
+                        {it.category && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200/80 dark:border-blue-800/50">
+                            {it.category}
+                          </span>
+                        )}
+                        {it.sku && (
+                          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-[#26354d] flex items-center gap-1">
+                            <Hash size={10} /> SKU: {it.sku}
+                          </span>
+                        )}
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border tabular-nums ${
+                          itemQty <= 0
+                            ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
+                            : isLowStock
+                            ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800/50'
+                            : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/50'
                         }`}>
-                          Profit: {unitProfit >= 0 ? '+' : ''}LKR {unitProfit.toLocaleString()}/unit
+                          Qty: {it.qty}
                         </span>
-                      )}
-                    </div>
-                  </div>
+                      </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenSellStockModal(it)}
-                      className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs active:scale-95 transition-all"
-                    >
-                      <ArrowUpRight size={13} />
-                      <span>Sell</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenRestockModal(it)}
-                      className="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/50 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95 transition-all"
-                    >
-                      <Plus size={13} />
-                      <span>Restock</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenDaybookItemModal(it)}
-                      className="p-2 text-slate-500 dark:text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition-colors"
-                      title="Edit Item"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    {userCanDelete && (
+                      <div className="flex items-center gap-2 flex-wrap text-xs tabular-nums">
+                        <span className="bg-rose-50/70 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 px-2 py-0.5 rounded-lg font-bold border border-rose-200/60 dark:border-rose-800/40">
+                          Cost: LKR {costUnit.toLocaleString()}
+                        </span>
+                        <span className="bg-emerald-50/80 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-lg font-bold border border-emerald-200/60 dark:border-emerald-800/40">
+                          Wholesale: LKR {wholesaleUnit.toLocaleString()}
+                        </span>
+                        <span className="bg-indigo-50/80 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-lg font-bold border border-indigo-200/60 dark:border-indigo-800/40">
+                          Retail: LKR {retailUnit.toLocaleString()}
+                        </span>
+                        {(costUnit > 0 && sellUnit > 0) && (
+                          <span className={`px-2 py-0.5 rounded-lg font-bold text-[11px] ${
+                            unitProfit >= 0 ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300' : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                          }`}>
+                            Profit: {unitProfit >= 0 ? '+' : ''}LKR {unitProfit.toLocaleString()}/unit
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap" onClick={e => e.stopPropagation()}>
                       <button
                         type="button"
-                        onClick={() => handleDeleteDaybookItem(it.id)}
-                        className="p-2 text-slate-500 dark:text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition-colors"
-                        title="Delete Item"
+                        onClick={() => handleOpenSellStockModal(it)}
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-2xs active:scale-95 transition-all"
                       >
-                        <Trash2 size={14} />
+                        <ArrowUpRight size={13} />
+                        <span>Sell</span>
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRestockModal(it)}
+                        className="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/50 rounded-xl text-xs font-bold flex items-center gap-1 active:scale-95 transition-all"
+                      >
+                        <Plus size={13} />
+                        <span>Restock</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDaybookItemModal(it)}
+                        className="p-2 text-slate-500 dark:text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition-colors"
+                        title="Edit Item"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      {userCanDelete && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDaybookItem(it.id)}
+                          className="p-2 text-slate-500 dark:text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition-colors"
+                          title="Delete Item"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
+
+                  {isSelectedItem && (
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2.5 border-t border-indigo-200/80 dark:border-indigo-800/50 tabular-nums animate-in fade-in duration-150">
+                      <div className="bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-indigo-100 dark:border-[#26354d]">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase block">Total Qty</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{itemQty.toLocaleString()}</span>
+                      </div>
+                      <div className="bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-rose-100 dark:border-[#26354d]">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase block">Cost Value</span>
+                        <span className="text-sm font-black text-rose-600 dark:text-rose-400">LKR {itemCostTotal.toLocaleString()}</span>
+                      </div>
+                      <div className="bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-emerald-100 dark:border-[#26354d]">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase block">Wholesale Value</span>
+                        <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">LKR {itemWholesaleTotal.toLocaleString()}</span>
+                      </div>
+                      <div className="bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-indigo-100 dark:border-[#26354d]">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase block">Retail Value</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">LKR {itemRetailTotal.toLocaleString()}</span>
+                      </div>
+                      <div className="col-span-2 sm:col-span-1 bg-white dark:bg-[#131b2a] rounded-xl p-2.5 border border-blue-100 dark:border-[#26354d]">
+                        <span className="text-[9px] font-extrabold text-slate-400 uppercase block">Est. Profit</span>
+                        <span className={`text-sm font-black ${itemEstProfit >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                          {itemEstProfit >= 0 ? '+' : ''}LKR {itemEstProfit.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
