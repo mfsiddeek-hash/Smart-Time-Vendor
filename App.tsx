@@ -65,6 +65,23 @@ const generateUUID = () => {
   });
 };
 
+const getConsistentInvoiceNo = (item: any): string => {
+  const ref = String(item?.referenceNo || '').replace(/^#+/, '').trim();
+  if (ref.toUpperCase().startsWith('INV-') || ref.toUpperCase().startsWith('SO-')) {
+    if (!ref.toUpperCase().startsWith('INV-CUST-') && !ref.toUpperCase().startsWith('INV-RENT-')) {
+      return ref.toUpperCase();
+    }
+  }
+  const idStr = String(item?.id || '').replace(/^#+/, '').trim();
+  if (idStr) {
+    return `INV-${idStr.slice(0, 6).toUpperCase()}`;
+  }
+  if (ref) {
+    return ref.toUpperCase().startsWith('INV-') || ref.toUpperCase().startsWith('SO-') ? ref.toUpperCase() : `INV-${ref.slice(0, 6).toUpperCase()}`;
+  }
+  return 'INV-000000';
+};
+
 const normalizeToLocalMidnight = (dateString: string | null | undefined) => {
   if (!dateString) return new Date();
   
@@ -2208,12 +2225,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const isCashbook = type === 'CASHBOOK';
     const isTx = type === 'TRANSACTION';
 
-    const rawRef = String(isCashbook ? (item.referenceNo || item.id) : item.id || '').replace(/^#+/, '').trim();
-    const invoiceNo = rawRef.toUpperCase().startsWith('INV-') || rawRef.toUpperCase().startsWith('SO-')
-      ? rawRef.toUpperCase()
-      : isCashbook || isTx
-      ? `INV-${rawRef.slice(0, 6).toUpperCase()}`
-      : `SO-${rawRef.slice(0, 6).toUpperCase()}`;
+    const invoiceNo = getConsistentInvoiceNo(item);
 
     const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
     const dateStr = formatDisplayDate(rawDate);
@@ -2736,12 +2748,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     if (!invoiceModalItem) return null;
     const { item, contact, type } = invoiceModalItem;
 
-    const rawRef = String(type === 'CASHBOOK' ? (item.referenceNo || item.id) : item.id || '').replace(/^#+/, '').trim();
-    const invoiceNo = rawRef.toUpperCase().startsWith('INV-') || rawRef.toUpperCase().startsWith('SO-')
-      ? rawRef.toUpperCase()
-      : type === 'CASHBOOK' || type === 'TRANSACTION'
-      ? `INV-${rawRef.slice(0, 6).toUpperCase()}`
-      : `SO-${rawRef.slice(0, 6).toUpperCase()}`;
+    const invoiceNo = getConsistentInvoiceNo(item);
 
     const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
     const dateStr = formatDisplayDate(rawDate);
@@ -15939,7 +15946,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               {filteredInvoices.map(inv => {
                 const isChequeLike = inv.paymentMethod === 'Cheque' || inv.paymentMethod === 'Cash + Cheque';
                 const isPendingChq = isPendingCashbookEntry(inv);
-                const refDisplay = inv.referenceNo || `INV-${inv.id.slice(0, 6).toUpperCase()}`;
+                const refDisplay = getConsistentInvoiceNo(inv);
 
                 return (
                   <div
