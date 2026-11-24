@@ -423,6 +423,7 @@ export default function App() {
   const [sellNotes, setSellNotes] = useState('');
   const [sellStockSearch, setSellStockSearch] = useState('');
   const [sellError, setSellError] = useState('');
+  const [showSellCostProfit, setShowSellCostProfit] = useState(false);
 
   const resolveCanonicalCategory = (rawCat?: string): string => {
     const clean = (rawCat || '').trim();
@@ -13785,6 +13786,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     setSellCategoryManual(false);
     setSellNotes('');
     setSellStockSearch('');
+    setShowSellCostProfit(false);
     setTransAttachmentUrl(null);
     setTransAttachmentDocType('Cheque');
     if (prefillItem) {
@@ -14870,20 +14872,37 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             </div>
 
             {/* Summary */}
-            <div className="bg-slate-900 text-white rounded-2xl p-3.5 grid grid-cols-3 gap-2 text-center">
-              <div>
-                <p className="text-[10px] uppercase text-slate-400 font-bold">Total Cost</p>
-                <p className="text-xs sm:text-sm font-extrabold text-slate-200 tabular-nums">LKR {cartTotalCost.toLocaleString()}</p>
+            <div className="bg-slate-900 text-white rounded-2xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Financial Summary</span>
+                <button
+                  type="button"
+                  onClick={() => setShowSellCostProfit(v => !v)}
+                  className="px-2 py-1 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-bold text-white flex items-center gap-1 transition-all"
+                  title={showSellCostProfit ? 'Hide Cost & Profit (Show *****)' : 'Show Cost & Profit'}
+                >
+                  {showSellCostProfit ? <EyeOff size={13} /> : <Eye size={13} />}
+                  <span>{showSellCostProfit ? 'Hide Cost/Profit' : 'Show Cost/Profit'}</span>
+                </button>
               </div>
-              <div>
-                <p className="text-[10px] uppercase text-slate-400 font-bold">Sale Total</p>
-                <p className="text-sm sm:text-base font-black text-emerald-400 tabular-nums">LKR {cartTotalSale.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase text-slate-400 font-bold">Est. Profit</p>
-                <p className={`text-xs sm:text-sm font-extrabold tabular-nums ${cartEstProfit >= 0 ? 'text-blue-400' : 'text-rose-400'}`}>
-                  {cartEstProfit >= 0 ? '+' : ''}LKR {cartEstProfit.toLocaleString()}
-                </p>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <p className="text-[10px] uppercase text-slate-400 font-bold">Total Cost</p>
+                  <p className="text-xs sm:text-sm font-extrabold text-slate-200 tabular-nums">
+                    {showSellCostProfit ? `LKR ${cartTotalCost.toLocaleString()}` : '*****'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase text-slate-400 font-bold">Sale Total</p>
+                  <p className="text-sm sm:text-base font-black text-rose-500 dark:text-rose-400 tabular-nums">LKR {cartTotalSale.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase text-slate-400 font-bold">Est. Profit</p>
+                  <p className={`text-xs sm:text-sm font-extrabold tabular-nums ${showSellCostProfit ? (cartEstProfit >= 0 ? 'text-blue-400' : 'text-rose-400') : 'text-slate-200'}`}>
+                    {showSellCostProfit ? `${cartEstProfit >= 0 ? '+' : ''}LKR ${cartEstProfit.toLocaleString()}` : '*****'}
+                  </p>
+                </div>
               </div>
             </div>
 
