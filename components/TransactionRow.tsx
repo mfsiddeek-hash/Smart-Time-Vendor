@@ -238,6 +238,18 @@ export const parsePaymentMethod = (
     return result;
   }
 
+  if (explicitMethod === 'Credit' || trimmed.startsWith('Credit • ') || trimmed.startsWith('Credit Sale') || trimmed.toLowerCase() === 'credit' || trimmed.toLowerCase() === 'credit (pay later)') {
+    let cleanNotes = trimmed;
+    if (trimmed.startsWith('Credit Sale • ')) {
+      cleanNotes = trimmed.substring(14).trim();
+    } else if (trimmed.startsWith('Credit • ')) {
+      cleanNotes = trimmed.substring(9).trim();
+    } else if (trimmed.toLowerCase() === 'credit' || trimmed.toLowerCase() === 'credit sale' || trimmed.toLowerCase() === 'credit (pay later)') {
+      cleanNotes = '';
+    }
+    return { ...result, method: 'Credit', cleanNotes };
+  }
+
   if (trimmed.startsWith('Bank Transfer • ')) {
     return { ...result, method: 'Bank Transfer', cleanNotes: trimmed.substring(16).trim() };
   }
