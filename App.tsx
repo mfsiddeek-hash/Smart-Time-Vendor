@@ -8060,7 +8060,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               {selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && transItems.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => { setTransIsUnpaidCredit(true); setTransPaymentMethod('Cash'); setTransLinkSaleToCashbook(false); }}
+                  onClick={() => { setTransIsUnpaidCredit(true); setTransPaymentMethod('Cash'); setTransLinkSaleToCashbook(true); }}
                   className={`mt-2.5 w-full py-2.5 px-3 rounded-2xl border-2 flex items-center justify-center gap-2 text-xs font-bold transition-all active:scale-95 ${
                     transIsUnpaidCredit
                       ? 'border-rose-600 bg-rose-50 text-rose-900 ring-2 ring-rose-400/30 shadow-sm'
