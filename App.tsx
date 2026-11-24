@@ -2250,7 +2250,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
     const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
     const isPending = isTx ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const isUnpaidCredit = isTx && item.type === 'CREDIT' && !parsedTxMeta?.method;
+    const isUnpaidCredit = (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
     const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
 
     let doc: jsPDF;
@@ -2772,7 +2772,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
     const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
     const isPending = type === 'TRANSACTION' ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const isUnpaidCredit = type === 'TRANSACTION' && item.type === 'CREDIT' && !parsedTxMeta?.method;
+    const isUnpaidCredit = (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
     const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
 
     const shareToWhatsApp = () => {
