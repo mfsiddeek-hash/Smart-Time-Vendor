@@ -18,6 +18,32 @@ export interface ParsedTransactionMetadata {
 const ATT_TOKEN_REGEX = /\s*•?\s*\[ATT:(Cheque|Invoice)\|([^\]]+)\]/i;
 const ITEMS_TOKEN_REGEX = /\s*•?\s*\[ITEMS:([A-Za-z0-9+/=]+)\]/;
 
+export const extractLinkedInvoiceNo = (itemOrDesc: any): string | null => {
+  if (!itemOrDesc) return null;
+  if (typeof itemOrDesc === 'object') {
+    const explicitLinked = String(itemOrDesc.linkedInvoiceNo || '').replace(/^#+/, '').trim().toUpperCase();
+    if (explicitLinked.startsWith('INV-') && !explicitLinked.startsWith('INV-CUST-') && !explicitLinked.startsWith('INV-RENT-')) {
+      return explicitLinked;
+    }
+    const ref = String(itemOrDesc.referenceNo || '').replace(/^#+/, '').trim().toUpperCase();
+    if (ref.startsWith('INV-') && !ref.startsWith('INV-CUST-') && !ref.startsWith('INV-RENT-')) {
+      return ref;
+    }
+    return extractLinkedInvoiceNo(itemOrDesc.description);
+  }
+  const str = String(itemOrDesc);
+  const tagMatch = str.match(/\[INV:(INV-[A-Z0-9-]+)\]/i);
+  if (tagMatch?.[1]) return tagMatch[1].toUpperCase();
+  const textMatch = str.match(/(?:Invoice\s*#?|Ref\s*#?:?\s*|#)(INV-[A-Z0-9-]+)/i);
+  if (textMatch?.[1]) {
+    const candidate = textMatch[1].toUpperCase();
+    if (!candidate.startsWith('INV-CUST-') && !candidate.startsWith('INV-RENT-')) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
 export const extractItemsToken = (desc?: string): { items: CashbookEntryItem[]; cleanDesc: string } => {
   if (!desc) return { items: [], cleanDesc: '' };
   const match = desc.match(ITEMS_TOKEN_REGEX);
@@ -272,16 +298,26 @@ export const parsePaymentMethod = (
   return result;
 };
 
+export interface InvoicePaymentSummary {
+  invoiceNo: string;
+  billAmount: number;
+  paidAmount: number;
+  pendingChequeAmount: number;
+  currentDue: number;
+  paymentCount: number;
+}
+
 interface TransactionRowProps {
   transaction: Transaction;
   contactType?: ContactType;
+  invoicePaymentSummary?: InvoicePaymentSummary;
   onClick?: (transaction: Transaction) => void;
   onPassCheque?: (transaction: Transaction) => void;
   onViewInvoice?: (transaction: Transaction) => void;
   onViewAttachment?: (url: string, docType?: 'Cheque' | 'Invoice') => void;
 }
 
-export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, onClick, onPassCheque, onViewInvoice, onViewAttachment }) => {
+export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, contactType, invoicePaymentSummary, onClick, onPassCheque, onViewInvoice, onViewAttachment }) => {
   const isPayment = transaction.type === 'PAYMENT';
   const parsed = parsePaymentMethod(
     transaction.description, 
@@ -294,6 +330,7 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
   const chqDueDate = parsed.chequeDate || transaction.chequeDate || transaction.date;
   const resolvedAttachmentUrl = transaction.attachmentUrl || parsed.attachmentUrl;
   const resolvedAttachmentDocType = transaction.attachmentDocType || parsed.attachmentDocType || 'Cheque';
+  const linkedInvNo = extractLinkedInvoiceNo(transaction);
 
   return (
     <div 
@@ -394,6 +431,30 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                  contactType === 'RENT' ? (transaction.type === 'CREDIT' ? 'Rent Withdrawal (+ Sale)' : 'Rent Deposit') :
                  'Linked to Sales'}
               </span>
+            )}
+
+            {isPayment && linkedInvNo && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/60">
+                #{linkedInvNo}
+              </span>
+            )}
+
+            {!isPayment && invoicePaymentSummary && (
+              <>
+                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]">
+                  #{invoicePaymentSummary.invoiceNo}
+                </span>
+                {invoicePaymentSummary.currentDue <= 0 ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded border bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50">
+                    <CheckCircle2 size={10} />
+                    Paid in Full
+                  </span>
+                ) : invoicePaymentSummary.paidAmount > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded border bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/50">
+                    Paid: LKR {invoicePaymentSummary.paidAmount.toLocaleString()} • Due: LKR {invoicePaymentSummary.currentDue.toLocaleString()}
+                  </span>
+                ) : null}
+              </>
             )}
 
             {isCheque && chqDueDate && (

@@ -15,7 +15,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, CashbookEntryItem, DaybookStockItem, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount, extractLinkedInvoiceNo, InvoicePaymentSummary } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
@@ -66,6 +66,10 @@ const generateUUID = () => {
 };
 
 const getConsistentInvoiceNo = (item: any): string => {
+  const linkedInv = extractLinkedInvoiceNo(item);
+  if (linkedInv) {
+    return linkedInv;
+  }
   const ref = String(item?.referenceNo || '').replace(/^#+/, '').trim();
   if (ref.toUpperCase().startsWith('INV-') || ref.toUpperCase().startsWith('SO-')) {
     if (!ref.toUpperCase().startsWith('INV-CUST-') && !ref.toUpperCase().startsWith('INV-RENT-')) {
@@ -744,6 +748,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const [transIsUnpaidCredit, setTransIsUnpaidCredit] = useState(false);
   const [transItemSearch, setTransItemSearch] = useState('');
   const [transItemCategoryFilter, setTransItemCategoryFilter] = useState<string>('ALL');
+  const [transLinkedInvoiceNo, setTransLinkedInvoiceNo] = useState<string | null>(null);
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment');
@@ -2217,35 +2222,163 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     navigateTo('CONTACT_FORM');
   };
 
-  const buildGeneralInvoicePDFDoc = (
-    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
-    format: 'POS' | 'A4'
+  const getInvoicePaymentLedger = (invoiceNo: string, contactId?: string, excludeTxId?: string) => {
+    const normalizedInv = String(invoiceNo || '').replace(/^#+/, '').trim().toUpperCase();
+    const creditTx = transactions.find(t => {
+      if (t.type !== 'CREDIT') return false;
+      if (contactId && t.contactId !== contactId) return false;
+      return getConsistentInvoiceNo(t) === normalizedInv;
+    }) || null;
+
+    const matchingPayments = transactions
+      .filter(t => {
+        if (t.type !== 'PAYMENT') return false;
+        if (excludeTxId && t.id === excludeTxId) return false;
+        if (contactId && t.contactId !== contactId) return false;
+        return extractLinkedInvoiceNo(t) === normalizedInv;
+      })
+      .sort((a, b) => {
+        const timeA = new Date(a.date).getTime();
+        const timeB = new Date(b.date).getTime();
+        if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeA - timeB;
+        return a.id.localeCompare(b.id);
+      });
+
+    let totalPaid = 0;
+    let totalPendingCheque = 0;
+    const paymentHistory = matchingPayments.map(p => {
+      const parsedP = parsePaymentMethod(p.description, p.paymentMethod, p.chequeStatus, p.chequeDate);
+      const isPendingChq = isPendingCheque(p);
+      const isBouncedChq = parsedP.chequeStatus === 'BOUNCED' || p.chequeStatus === 'BOUNCED';
+      const isSplitP = parsedP.method === 'Cash + Cheque' || p.paymentMethod === 'Cash + Cheque';
+      let clearedAmt = 0;
+      let pendingAmt = 0;
+      if (!isBouncedChq) {
+        if (isPendingChq) {
+          clearedAmt = isSplitP ? getTransactionCashAmount(p, parsedP) : 0;
+          pendingAmt = isSplitP ? getTransactionChequeAmount(p, parsedP) : (Number(p.amount) || 0);
+        } else {
+          clearedAmt = Number(p.amount) || 0;
+        }
+      }
+      totalPaid += clearedAmt;
+      totalPendingCheque += pendingAmt;
+      return {
+        tx: p,
+        date: p.date,
+        method: parsedP.method || p.paymentMethod || 'Cash',
+        amount: Number(p.amount) || 0,
+        clearedAmount: clearedAmt,
+        pendingAmount: pendingAmt,
+        isPending: isPendingChq,
+        isBounced: isBouncedChq,
+        chequeNumber: parsedP.chequeNumber || p.chequeNumber,
+        notes: parsedP.cleanNotes
+      };
+    });
+
+    const billAmount = creditTx ? (Number(creditTx.amount) || 0) : 0;
+    const currentDue = Math.max(0, billAmount - totalPaid);
+
+    return {
+      invoiceNo: normalizedInv,
+      creditTx,
+      paymentHistory,
+      billAmount,
+      totalPaid,
+      totalPendingCheque,
+      currentDue
+    };
+  };
+
+  const resolveInvoiceViewData = (
+    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null }
   ) => {
     const { item, contact, type } = data;
-    const isCashbook = type === 'CASHBOOK';
     const isTx = type === 'TRANSACTION';
-
     const invoiceNo = getConsistentInvoiceNo(item);
+    const resolvedContactId = item.contactId || contact?.id;
+    const matchedContact = contact || (resolvedContactId ? contacts.find(c => c.id === resolvedContactId) || null : null);
 
-    const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
+    const ledger = (resolvedContactId && invoiceNo.startsWith('INV-'))
+      ? getInvoicePaymentLedger(invoiceNo, resolvedContactId)
+      : null;
+
+    const creditTx = ledger?.creditTx || null;
+    const creditParsed = creditTx
+      ? parsePaymentMethod(creditTx.description, creditTx.paymentMethod, creditTx.chequeStatus, creditTx.chequeDate)
+      : null;
+    const isLinkedCreditInvoice = Boolean(
+      creditTx &&
+      (!creditParsed?.method || creditParsed.method === 'Credit' || (ledger?.paymentHistory.length || 0) > 0)
+    );
+
+    const baseItem = isLinkedCreditInvoice && creditTx ? creditTx : item;
+    const baseIsTx = isLinkedCreditInvoice && creditTx ? true : isTx;
+
+    const rawDate = baseItem.date || baseItem.orderDate || new Date().toISOString().slice(0, 10);
     const dateStr = formatDisplayDate(rawDate);
-    const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const customerName = item.contactName || contact?.name || 'Valued Customer';
-    const customerPhone = item.contactPhone || contact?.phone || '-';
-    const customerCity = contact?.city || '';
-    const entryItemsList: CashbookEntryItem[] = Array.isArray(item.items) && item.items.length > 0
-      ? item.items
-      : extractCashbookItems(item.description).items;
-    const parsedTxMeta = isTx ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
-    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
-    const cleanRawDesc = isTx && parsedTxMeta
+    const timeStr = baseItem.created_at
+      ? new Date(baseItem.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const customerName = item.contactName || matchedContact?.name || 'Valued Customer';
+    const customerPhone = item.contactPhone || matchedContact?.phone || '-';
+    const customerCity = matchedContact?.city || '';
+    const entryItemsList: CashbookEntryItem[] = Array.isArray(baseItem.items) && baseItem.items.length > 0
+      ? baseItem.items
+      : extractCashbookItems(baseItem.description).items;
+    const parsedTxMeta = baseIsTx
+      ? parsePaymentMethod(baseItem.description, baseItem.paymentMethod, baseItem.chequeStatus, baseItem.chequeDate)
+      : parsePaymentMethod(baseItem.description, baseItem.paymentMethod);
+    const categoryName = baseItem.category || (baseItem.type === 'SALE' ? 'Sale' : baseItem.type === 'PAYMENT' ? 'Customer Payment' : (matchedContact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
+    const cleanRawDesc = baseIsTx && parsedTxMeta
       ? parsedTxMeta.cleanNotes
-      : stripCashbookItems(stripAttachmentToken(item.description || item.cleanNotes));
+      : stripCashbookItems(stripAttachmentToken(baseItem.description || baseItem.cleanNotes));
     const itemsTextSummary = formatCashbookItemsSummary(entryItemsList);
     const description = [cleanRawDesc, itemsTextSummary].filter(Boolean).join(' • ') || 'Payment / Sale Entry';
-    const paymentMethod = parsedTxMeta?.method || item.paymentMethod || 'Cash';
-    const amount = item.amount || item.totalCost || item.targetAmount || 0;
+    const amount = baseItem.amount || baseItem.totalCost || baseItem.targetAmount || 0;
 
+    if (isLinkedCreditInvoice && ledger) {
+      const paymentHistory = ledger.paymentHistory;
+      const totalPaid = ledger.totalPaid;
+      const currentDue = Math.max(0, amount - totalPaid);
+      const hasPaymentHistory = paymentHistory.length > 0;
+      const isUnpaidCredit = currentDue > 0;
+      const paymentMethod = currentDue <= 0 && totalPaid > 0
+        ? 'Credit (Paid in Full)'
+        : totalPaid > 0
+        ? 'Credit (Partial Paid)'
+        : 'Credit';
+
+      return {
+        invoiceNo,
+        dateStr,
+        timeStr,
+        customerName,
+        customerPhone,
+        customerCity,
+        matchedContact,
+        entryItemsList,
+        parsedTxMeta,
+        categoryName,
+        cleanRawDesc,
+        description,
+        paymentMethod,
+        amount,
+        isSplit: false,
+        splitCash: 0,
+        splitCheque: 0,
+        isPending: ledger.totalPendingCheque > 0,
+        isUnpaidCredit,
+        totalDue: currentDue,
+        totalPaid,
+        hasPaymentHistory,
+        paymentHistory,
+        isLinkedCreditInvoice: true
+      };
+    }
+
+    const paymentMethod = parsedTxMeta?.method || item.paymentMethod || 'Cash';
     const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
     const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
     const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
@@ -2253,9 +2386,68 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const isUnpaidCredit = (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
     const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
 
+    return {
+      invoiceNo,
+      dateStr,
+      timeStr,
+      customerName,
+      customerPhone,
+      customerCity,
+      matchedContact,
+      entryItemsList,
+      parsedTxMeta,
+      categoryName,
+      cleanRawDesc,
+      description,
+      paymentMethod,
+      amount,
+      isSplit,
+      splitCash,
+      splitCheque,
+      isPending,
+      isUnpaidCredit,
+      totalDue,
+      totalPaid: isUnpaidCredit ? 0 : (isSplit ? (isPending ? splitCash : amount) : (parsedTxMeta?.method === 'Cheque' && isPending ? 0 : amount)),
+      hasPaymentHistory: false,
+      paymentHistory: [] as ReturnType<typeof getInvoicePaymentLedger>['paymentHistory'],
+      isLinkedCreditInvoice: false
+    };
+  };
+
+  const buildGeneralInvoicePDFDoc = (
+    data: { type: 'CASHBOOK' | 'TRANSACTION' | 'SERVICE'; item: any; contact?: Contact | null },
+    format: 'POS' | 'A4'
+  ) => {
+    const resolved = resolveInvoiceViewData(data);
+    const {
+      invoiceNo,
+      dateStr,
+      timeStr,
+      customerName,
+      customerPhone,
+      customerCity,
+      entryItemsList,
+      parsedTxMeta,
+      categoryName,
+      cleanRawDesc,
+      description,
+      paymentMethod,
+      amount,
+      isSplit,
+      splitCash,
+      splitCheque,
+      isPending,
+      isUnpaidCredit,
+      totalDue,
+      totalPaid,
+      hasPaymentHistory,
+      paymentHistory,
+      isLinkedCreditInvoice
+    } = resolved;
+
     let doc: jsPDF;
     if (format === 'POS') {
-      const estimatedHeight = Math.max(190, 150 + entryItemsList.length * 10);
+      const estimatedHeight = Math.max(195, 155 + entryItemsList.length * 10 + (hasPaymentHistory ? paymentHistory.length * 6 + 14 : 0));
       doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
@@ -2304,7 +2496,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       y += 4.5;
       doc.text(`Phone     : ${customerPhone}`, 6, y);
       y += 4.5;
-      doc.text(`Method    : ${isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque' : paymentMethod}`, 6, y);
+      doc.text(`Method    : ${isLinkedCreditInvoice ? paymentMethod : (isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque' : paymentMethod)}`, 6, y);
       if (isSplit) {
         y += 4;
         doc.text(`Cash Paid : LKR ${splitCash.toLocaleString()}`, 6, y);
@@ -2364,6 +2556,24 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         }
       }
 
+      if (hasPaymentHistory) {
+        y += 2;
+        doc.text('------------------------------------------', 40, y, { align: 'center' });
+        y += 4;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(8);
+        doc.text('PAYMENT HISTORY', 6, y);
+        y += 4;
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(7.5);
+        paymentHistory.forEach(ph => {
+          const statusSuffix = ph.isBounced ? ' [BOUNCED]' : ph.isPending ? ' [HOLD]' : '';
+          doc.text(`${formatDisplayDate(ph.date)} (${ph.method}${statusSuffix})`.slice(0, 28), 6, y);
+          doc.text(`LKR ${ph.amount.toLocaleString()}`, 74, y, { align: 'right' });
+          y += 4;
+        });
+      }
+
       y += 3;
       doc.text('------------------------------------------', 40, y, { align: 'center' });
       y += 5;
@@ -2372,7 +2582,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text('TOTAL BILL    :', 6, y);
       doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
 
-      if (isUnpaidCredit) {
+      if (isLinkedCreditInvoice && hasPaymentHistory) {
+        y += 4.5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('TOTAL PAID    :', 6, y);
+        doc.text(`LKR ${totalPaid.toLocaleString()}`, 74, y, { align: 'right' });
+
+        y += 5;
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(9.5);
+        doc.text('CURRENT DUE   :', 6, y);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
+      } else if (isUnpaidCredit) {
         y += 5;
         doc.setFontSize(9.5);
         doc.text('TOTAL DUE     :', 6, y);
@@ -2477,7 +2699,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.setFontSize(9.5);
       doc.text(`Customer Name : ${customerName}${customerCity ? ` (${customerCity})` : ''}`, 14, 50);
       doc.text(`Phone Number  : ${customerPhone}`, 14, 56);
-      const methodDisplay = isUnpaidCredit ? 'Credit (On Account)' : isSplit ? `Cash + Cheque (Split)` : paymentMethod;
+      const methodDisplay = isLinkedCreditInvoice ? paymentMethod : (isUnpaidCredit ? 'Credit (On Account)' : isSplit ? `Cash + Cheque (Split)` : paymentMethod);
       doc.text(`Payment Method: ${methodDisplay}`, 14, 62);
       let leftMetaY = 67;
       if (parsedTxMeta?.chequeNumber || parsedTxMeta?.chequeDate || parsedTxMeta?.chequeStatus) {
@@ -2504,7 +2726,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text(`Store Name : ${shopName || 'LEDGER BOOK'}`, 115, 50);
       doc.text(`Address    : ${shopAddress || 'N/A'}`, 115, 56);
       doc.text(`Store Phone: ${shopPhone || 'N/A'}`, 115, 62);
-      const statusDisplay = isUnpaidCredit ? 'UNPAID (CREDIT)' : isPending ? 'PENDING CLEARANCE' : 'PAID / SETTLED';
+      const statusDisplay = isLinkedCreditInvoice
+        ? (totalDue <= 0 ? 'PAID / SETTLED' : totalPaid > 0 ? 'PARTIALLY PAID (CREDIT)' : 'UNPAID (CREDIT)')
+        : (isUnpaidCredit ? 'UNPAID (CREDIT)' : isPending ? 'PENDING CLEARANCE' : 'PAID / SETTLED');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8.5);
       doc.text(`Status     : ${statusDisplay}`, 115, 68);
@@ -2544,20 +2768,58 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         }
       });
 
-      const rawFinalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : (tableStartY + 24);
+      let rawFinalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : (tableStartY + 24);
+
+      if (hasPaymentHistory) {
+        autoTable(doc, {
+          startY: rawFinalY + 6,
+          head: [['Payment Date', 'Method', 'Details / Cheque', 'Paid Amount (LKR)']],
+          body: paymentHistory.map(ph => [
+            formatDisplayDate(ph.date),
+            `${ph.method}${ph.isBounced ? ' (Bounced)' : ph.isPending ? ' (Pending)' : ''}`,
+            ph.chequeNumber ? `Cheque #${ph.chequeNumber}` : (ph.notes || 'Payment Received'),
+            `LKR ${ph.amount.toLocaleString()}`
+          ]),
+          theme: 'grid',
+          headStyles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold' },
+          styles: { fontSize: 8.5, cellPadding: 2.5 },
+          columnStyles: {
+            3: { cellWidth: 38, halign: 'right', fontStyle: 'bold' }
+          }
+        });
+        rawFinalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY : (rawFinalY + 24);
+      }
+
       let summaryAnchorY = rawFinalY;
       if (summaryAnchorY + 64 > 282) {
         doc.addPage();
         summaryAnchorY = 16;
       }
 
-      const boxHeight = isSplit ? 40 : (parsedTxMeta?.method === 'Cheque' ? 32 : 24);
+      const boxHeight = (isLinkedCreditInvoice && hasPaymentHistory) ? 34 : (isSplit ? 40 : (parsedTxMeta?.method === 'Cheque' ? 32 : 24));
       doc.setFillColor(248, 250, 252);
       doc.rect(115, summaryAnchorY + 8, 81, boxHeight, 'F');
       doc.setDrawColor(226, 232, 240);
       doc.rect(115, summaryAnchorY + 8, 81, boxHeight, 'S');
 
-      if (isUnpaidCredit) {
+      if (isLinkedCreditInvoice && hasPaymentHistory) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text('Total Bill:', 119, summaryAnchorY + 16);
+        doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 16, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(5, 150, 105);
+        doc.text('Total Paid:', 119, summaryAnchorY + 23);
+        doc.text(`LKR ${totalPaid.toLocaleString()}`, 192, summaryAnchorY + 23, { align: 'right' });
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(totalDue > 0 ? 225 : 5, totalDue > 0 ? 29 : 150, totalDue > 0 ? 72 : 105);
+        doc.text('CURRENT DUE:', 119, summaryAnchorY + 33);
+        doc.text(`LKR ${totalDue.toLocaleString()}`, 192, summaryAnchorY + 33, { align: 'right' });
+      } else if (isUnpaidCredit) {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(11);
         doc.setTextColor(225, 29, 72);
@@ -2607,7 +2869,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         doc.text(`LKR ${amount.toLocaleString()}`, 192, summaryAnchorY + 22, { align: 'right' });
       }
 
-      const termsTop = summaryAnchorY + (isSplit ? 54 : (parsedTxMeta?.method === 'Cheque' ? 46 : 38));
+      const termsTop = summaryAnchorY + ((isLinkedCreditInvoice && hasPaymentHistory) ? 50 : (isSplit ? 54 : (parsedTxMeta?.method === 'Cheque' ? 46 : 38)));
       doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
@@ -2635,8 +2897,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       : `\n*Details:* ${description}\n`;
 
     const notesLine = entryItemsList.length > 0 && cleanRawDesc ? `Notes: ${cleanRawDesc}\n` : '';
+    const paymentHistoryText = hasPaymentHistory
+      ? `\n*Payment History:*\n` + paymentHistory.map(ph => `• ${formatDisplayDate(ph.date)} (${ph.method}): *LKR ${ph.amount.toLocaleString()}*`).join('\n') + `\n`
+      : '';
 
-    const paymentSummaryText = isUnpaidCredit
+    const paymentSummaryText = (isLinkedCreditInvoice && hasPaymentHistory)
+      ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
+        `💵 *Total Paid: LKR ${totalPaid.toLocaleString()}*\n` +
+        `${totalDue > 0 ? '⚠️' : '✅'} *Current Due: LKR ${totalDue.toLocaleString()}*`
+      : isUnpaidCredit
       ? `*Total Bill Amount: LKR ${amount.toLocaleString()}*\n` +
         `⚠️ *Balance Due: LKR ${totalDue.toLocaleString()}*`
       : isSplit
@@ -2662,9 +2931,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       `Customer: ${customerName}` + (customerCity ? ` (${customerCity})` : '') + `\n` +
       `Phone: ${customerPhone}\n` +
       `Category: ${categoryName}\n` +
-      `Payment Method: ${isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque (Split)' : paymentMethod}${chequeDetails}\n` +
+      `Payment Method: ${isLinkedCreditInvoice ? paymentMethod : (isUnpaidCredit ? 'Credit (On Account)' : isSplit ? 'Cash + Cheque (Split)' : paymentMethod)}${chequeDetails}\n` +
       notesLine +
       itemsText +
+      paymentHistoryText +
       `-----------------------------------\n` +
       paymentSummaryText + `\n\n` +
       (shopReceiptTerms || DEFAULT_RECEIPT_TERMS) + `\n\n` +
@@ -2746,34 +3016,32 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const renderInvoiceModal = () => {
     if (!invoiceModalItem) return null;
-    const { item, contact, type } = invoiceModalItem;
-
-    const invoiceNo = getConsistentInvoiceNo(item);
-
-    const rawDate = item.date || item.orderDate || new Date().toISOString().slice(0, 10);
-    const dateStr = formatDisplayDate(rawDate);
-    const timeStr = item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const customerName = item.contactName || contact?.name || 'Valued Customer';
-    const customerPhone = contact?.phone || '-';
-    const entryItemsList: CashbookEntryItem[] = Array.isArray(item.items) && item.items.length > 0
-      ? item.items
-      : extractCashbookItems(item.description).items;
-    const parsedTxMeta = type === 'TRANSACTION' ? parsePaymentMethod(item.description, item.paymentMethod, item.chequeStatus, item.chequeDate) : parsePaymentMethod(item.description, item.paymentMethod);
-    const categoryName = item.category || (item.type === 'SALE' ? 'Sale' : item.type === 'PAYMENT' ? 'Customer Payment' : (contact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
-    const cleanRawDesc = type === 'TRANSACTION' && parsedTxMeta
-      ? parsedTxMeta.cleanNotes
-      : stripCashbookItems(stripAttachmentToken(item.description || item.cleanNotes));
-    const itemsTextSummary = formatCashbookItemsSummary(entryItemsList);
-    const description = [cleanRawDesc, itemsTextSummary].filter(Boolean).join(' • ') || 'Payment / Sale Entry';
-    const paymentMethod = parsedTxMeta?.method || item.paymentMethod || 'Cash';
-    const amount = item.amount || item.totalCost || item.targetAmount || 0;
-
-    const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
-    const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
-    const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
-    const isPending = type === 'TRANSACTION' ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const isUnpaidCredit = (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
-    const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
+    const resolved = resolveInvoiceViewData(invoiceModalItem);
+    const {
+      invoiceNo,
+      dateStr,
+      timeStr,
+      customerName,
+      customerPhone,
+      matchedContact: contact,
+      entryItemsList,
+      parsedTxMeta,
+      categoryName,
+      cleanRawDesc,
+      description,
+      paymentMethod,
+      amount,
+      isSplit,
+      splitCash,
+      splitCheque,
+      isPending,
+      isUnpaidCredit,
+      totalDue,
+      totalPaid,
+      hasPaymentHistory,
+      paymentHistory,
+      isLinkedCreditInvoice
+    } = resolved;
 
     const shareToWhatsApp = () => {
       shareInvoiceViaWhatsAppWithPDF(invoiceModalItem, invoiceFormat);
@@ -2781,7 +3049,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     const copyInvoiceText = () => {
       const splitText = isSplit ? `\nCash Paid: LKR ${splitCash.toLocaleString()}\nCheque (${isPending ? 'On Hold' : 'Cleared'}): LKR ${splitCheque.toLocaleString()}\nTotal Due: LKR ${totalDue.toLocaleString()}` : '';
-      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nAmount: LKR ${amount.toLocaleString()}${splitText}\nMethod: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
+      const historyText = hasPaymentHistory
+        ? `\nPayment History:\n` + paymentHistory.map(ph => `- ${formatDisplayDate(ph.date)} (${ph.method}): LKR ${ph.amount.toLocaleString()}`).join('\n') + `\nTotal Paid: LKR ${totalPaid.toLocaleString()}\nCurrent Due: LKR ${totalDue.toLocaleString()}`
+        : '';
+      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nTotal Bill: LKR ${amount.toLocaleString()}${splitText}${historyText}\nMethod: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
       navigator.clipboard.writeText(text);
       showProfileToast('Invoice details copied to clipboard!');
     };
@@ -2912,11 +3183,36 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 </div>
 
                 <div className="space-y-1 pt-1 border-t border-dashed border-slate-300">
+                  {hasPaymentHistory && (
+                    <div className="pb-2 mb-2 border-b border-dashed border-slate-300 space-y-1">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Payment History</p>
+                      {paymentHistory.map((ph, idx) => (
+                        <div key={ph.tx.id || idx} className="flex justify-between items-center text-[11px] text-emerald-700 font-semibold">
+                          <span>
+                            {formatDisplayDate(ph.date)} • {ph.method}
+                            {ph.isBounced ? ' (Bounced)' : ph.isPending ? ' (Pending)' : ''}
+                          </span>
+                          <span>LKR {ph.amount.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-slate-600 font-bold">TOTAL BILL:</span>
                     <span className="font-extrabold text-slate-900 text-sm">LKR {amount.toLocaleString()}</span>
                   </div>
-                  {isUnpaidCredit ? (
+                  {isLinkedCreditInvoice && hasPaymentHistory ? (
+                    <>
+                      <div className="flex justify-between items-center text-xs font-bold text-emerald-700">
+                        <span>TOTAL PAID:</span>
+                        <span>LKR {totalPaid.toLocaleString()}</span>
+                      </div>
+                      <div className={`flex justify-between items-center text-xs font-black pt-1 border-t border-dotted border-slate-300 ${totalDue > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                        <span>{totalDue > 0 ? 'CURRENT DUE:' : 'CURRENT DUE (SETTLED):'}</span>
+                        <span className="text-sm">LKR {totalDue.toLocaleString()}</span>
+                      </div>
+                    </>
+                  ) : isUnpaidCredit ? (
                     <div className="flex justify-between items-center text-xs font-black pt-1 border-t border-dotted border-slate-300 text-rose-600">
                       <span>TOTAL DUE (CREDIT):</span>
                       <span className="text-sm">LKR {totalDue.toLocaleString()}</span>
@@ -3054,13 +3350,45 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   </table>
                 </div>
 
+                {hasPaymentHistory && (
+                  <div className="border border-emerald-200 bg-emerald-50/40 rounded-xl overflow-hidden">
+                    <div className="bg-emerald-100/70 px-3 py-1.5 text-[10px] font-extrabold text-emerald-900 uppercase tracking-wider">
+                      Payment History ({paymentHistory.length})
+                    </div>
+                    <div className="divide-y divide-emerald-100">
+                      {paymentHistory.map((ph, idx) => (
+                        <div key={ph.tx.id || idx} className="px-3 py-2 flex items-center justify-between text-[11px]">
+                          <div>
+                            <span className="font-bold text-slate-800">{formatDisplayDate(ph.date)}</span>
+                            <span className="text-slate-500 ml-2">
+                              {ph.method}{ph.chequeNumber ? ` (#${ph.chequeNumber})` : ''}{ph.isBounced ? ' • Bounced' : ph.isPending ? ' • Pending' : ''}
+                            </span>
+                          </div>
+                          <span className="font-extrabold text-emerald-700">LKR {ph.amount.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex justify-end pt-2">
                   <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl min-w-[240px] space-y-1.5 text-right">
                     <div className="flex justify-between text-xs font-bold text-slate-700">
                       <span>Total Bill:</span>
                       <span>LKR {amount.toLocaleString()}</span>
                     </div>
-                    {isUnpaidCredit ? (
+                    {isLinkedCreditInvoice && hasPaymentHistory ? (
+                      <>
+                        <div className="flex justify-between text-xs font-bold text-emerald-700">
+                          <span>Total Paid:</span>
+                          <span>LKR {totalPaid.toLocaleString()}</span>
+                        </div>
+                        <div className={`border-t border-slate-300 pt-1.5 flex justify-between text-sm font-black ${totalDue > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                          <span>{totalDue > 0 ? 'Current Due:' : 'Current Due (Paid):'}</span>
+                          <span>LKR {totalDue.toLocaleString()}</span>
+                        </div>
+                      </>
+                    ) : isUnpaidCredit ? (
                       <div className="border-t border-slate-300 pt-1.5 flex justify-between text-sm font-black text-rose-600">
                         <span>Total Due (Credit):</span>
                         <span>LKR {totalDue.toLocaleString()}</span>
@@ -3814,13 +4142,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             const rawCleanDesc = stripCashbookItems(stripAttachmentToken(tx.description || ''));
             const parsedDesc = isChequeLike ? rawCleanDesc : (parsed.cleanNotes || rawCleanDesc || 'Payment');
 
+            const linkedInv = extractLinkedInvoiceNo(tx);
             let category = 'Customer Payment';
-            let refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
+            let refNo = linkedInv || `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
             let desc = `Payment Received - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''}`;
 
             if (isPaidCustomerItemCredit && parsed.items) {
               category = parsed.items[0]?.category || '';
-              refNo = `CUST-${contact.id.slice(0, 6).toUpperCase()}`;
+              refNo = `INV-${tx.id.slice(0, 6).toUpperCase()}`;
               desc = `Item Sale - ${contact.name}${parsedDesc ? ' (' + parsedDesc + ')' : ''} • ${encodeCashbookItemsToken(parsed.items)}`;
             } else if (contact.type === 'RENT') {
               category = 'Shop Rent';
@@ -4044,6 +4373,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     categoryOverride?: string;
     items?: CashbookEntryItem[];
     isItemCreditSale?: boolean;
+    linkedInvoiceNo?: string;
   }) => {
     if (!params.amount || params.amount <= 0) return;
     if (params.contactType === 'RENT' && params.txType !== 'CREDIT') return;
@@ -4084,7 +4414,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       desc = desc ? `${desc} • ${encodeCashbookItemsToken(params.items)}` : encodeCashbookItemsToken(params.items);
     }
 
-    const orderNo = `${refPrefix}-${params.contactId.slice(0, 6).toUpperCase()}`;
+    const orderNo = params.linkedInvoiceNo
+      ? params.linkedInvoiceNo
+      : params.isItemCreditSale
+      ? `INV-${params.txId.slice(0, 6).toUpperCase()}`
+      : `${refPrefix}-${params.contactId.slice(0, 6).toUpperCase()}`;
 
     const entryPayload: any = {
       id: params.txId,
@@ -4706,9 +5040,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     setIsSubmitting(true);
     try {
+      const activeLinkedInv = (selectedContact.type === 'CUSTOMER' && transType === 'PAYMENT')
+        ? (transLinkedInvoiceNo || extractLinkedInvoiceNo(transDesc))
+        : null;
       const isCustomerPaidItemSale = selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && validTransItems.length > 0 && !transIsUnpaidCredit;
       const hasTxPaymentMeta = transType === 'PAYMENT' || isCustomerPaidItemSale || (!transIsUnpaidCredit && (transPaymentMethod === 'Cheque' || transPaymentMethod === 'Cash + Cheque'));
       let formattedDesc = stripCashbookItems(transDesc.trim());
+      if (activeLinkedInv && !extractLinkedInvoiceNo(formattedDesc)) {
+        formattedDesc = formattedDesc ? `Payment for Invoice #${activeLinkedInv} • ${formattedDesc}` : `Payment for Invoice #${activeLinkedInv}`;
+      }
       if (hasTxPaymentMeta) {
         if (transPaymentMethod === 'Cash + Cheque') {
           const cashAmtNum = parseFloat(transCashAmount) || 0;
@@ -4850,7 +5190,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
                 categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
                 items: shouldLinkItemSale ? validTransItems : undefined,
-                isItemCreditSale: shouldLinkItemSale
+                isItemCreditSale: shouldLinkItemSale,
+                linkedInvoiceNo: activeLinkedInv || undefined
               });
             }
           } else if (editingTransaction && !shouldLinkToCashbook) {
@@ -4866,6 +5207,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           } catch {}
           showProfileToast("Saved locally! Run Supabase SQL setup to sync to cloud.", "error");
           setEditingTransaction(null);
+          setTransLinkedInvoiceNo(null);
           setTransItems([]);
           handleBack();
           return;
@@ -4924,13 +5266,16 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
               categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
               items: shouldLinkItemSale ? validTransItems : undefined,
-              isItemCreditSale: shouldLinkItemSale
+              isItemCreditSale: shouldLinkItemSale,
+              linkedInvoiceNo: activeLinkedInv || undefined
             });
 
             const toastMsg = isPendingChq
               ? `${transPaymentMethod} (Pending) saved & added to Sales Details!`
               : shouldLinkItemSale
               ? "Items sold, stock updated & linked to Sales!"
+              : activeLinkedInv
+              ? `Payment for Invoice #${activeLinkedInv} saved & updated!`
               : selectedContact.type === 'CUSTOMER' ? "Customer payment saved & linked to Sales (+ Sale)!" :
                 selectedContact.type === 'RENT' ? (transType === 'CREDIT' ? "Rent withdrawal saved & linked to Sales (+ Sale)!" : "Rent deposit saved!") :
                 "Service payment saved & linked to Sales (Repair Charges)!";
@@ -4948,6 +5293,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setEditingTransaction(null);
       setTransAttachmentUrl(null);
       setTransAttachmentDocType('Cheque');
+      setTransLinkedInvoiceNo(null);
       setTransItems([]);
       handleBack();
     } catch (err: any) { alert(err.message); }
@@ -6354,7 +6700,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         const timeB = new Date(b.date).getTime();
         if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) return timeA - timeB;
         if (a.type === b.type) return 0;
-        return a.type === 'CREDIT' ? 1 : -1;
+        return isRent ? (a.type === 'PAYMENT' ? -1 : 1) : (a.type === 'CREDIT' ? -1 : 1);
       });
     
     let currentSum = 0;
@@ -6931,6 +7277,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     setTransChequeDate(new Date().toISOString().slice(0, 10));
                     setTransAttachmentUrl(null);
                     setTransAttachmentDocType('Cheque');
+                    setTransLinkedInvoiceNo(null);
                     navigateTo('TRANSACTION_FORM', selectedContact.id);
                   }}
                   className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-sm active:scale-95 transition-all"
@@ -7199,11 +7546,28 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               </div>
             )}
 
-            {computedWithBalance.map(t => (
+            {computedWithBalance.map(t => {
+              const parsedRow = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+              const isCustomerCreditRow = selectedContact.type === 'CUSTOMER' && t.type === 'CREDIT' && (!parsedRow.method || parsedRow.method === 'Credit');
+              let rowInvSummary: InvoicePaymentSummary | undefined = undefined;
+              if (isCustomerCreditRow) {
+                const invNo = getConsistentInvoiceNo(t);
+                const ledger = getInvoicePaymentLedger(invNo, selectedContact.id);
+                rowInvSummary = {
+                  invoiceNo: invNo,
+                  billAmount: ledger.billAmount,
+                  paidAmount: ledger.totalPaid,
+                  pendingChequeAmount: ledger.totalPendingCheque,
+                  currentDue: ledger.currentDue,
+                  paymentCount: ledger.paymentHistory.length
+                };
+              }
+              return (
               <TransactionRow 
                 key={t.id} 
                 transaction={t} 
                 contactType={selectedContact.type}
+                invoicePaymentSummary={rowInvSummary}
                 onPassCheque={handleQuickPassCheque}
                 onViewInvoice={openInvoiceModalForTransaction}
                 onViewAttachment={(url, docType) => setViewingAttachment({ url, title: `${docType || 'Cheque / Invoice'} Attachment` })}
@@ -7226,21 +7590,23 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   setTransDeductStockOnSave(false);
                   setTransLinkSaleToCashbook(cashbookEntries.some(cb => cb.id === tx.id));
                   setTransIsUnpaidCredit(selectedContact.type === 'CUSTOMER' && tx.type === 'CREDIT' && !parsed.method);
+                  setTransLinkedInvoiceNo(extractLinkedInvoiceNo(tx));
                   setTransItemSearch('');
                   setTransItemCategoryFilter('ALL');
                   navigateTo('TRANSACTION_FORM', selectedContact.id); 
                 }} 
               />
-            ))}
+              );
+            })}
             {computedWithBalance.length === 0 && <div className="p-16 text-center text-slate-400">No transactions recorded yet</div>}
           </div>
         )}
         <div className="fixed bottom-0 left-0 right-0 bg-white px-4 pt-4 pb-10 flex gap-4 border-t border-slate-100 z-40 shadow-lg">
-          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); setTransItems([]); setTransAutoCalcFromItems(true); setTransDeductStockOnSave(true); setTransLinkSaleToCashbook(true); setTransIsUnpaidCredit(false); setTransItemSearch(''); setTransItemCategoryFilter('ALL'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('CREDIT'); setTransAmount(''); setTransDesc(isService ? 'Service Total Cost' : ''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); setTransItems([]); setTransAutoCalcFromItems(true); setTransDeductStockOnSave(true); setTransLinkSaleToCashbook(true); setTransIsUnpaidCredit(false); setTransLinkedInvoiceNo(null); setTransItemSearch(''); setTransItemCategoryFilter('ALL'); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-red-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <span className="text-[10px] opacity-90 uppercase font-black">{labelLeft}</span>
              <span className="flex items-center gap-1 font-bold text-lg">LKR <ArrowDown size={14} /></span>
           </button>
-          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); setTransItems([]); setTransAutoCalcFromItems(false); setTransDeductStockOnSave(false); setTransLinkSaleToCashbook(false); setTransIsUnpaidCredit(false); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
+          <button onClick={() => { setEditingTransaction(null); setTransType('PAYMENT'); setTransAmount(''); setTransDesc(''); setTransPaymentMethod('Cash'); setTransChequeStatus('PENDING'); setTransChequeNumber(''); setTransChequeDate(new Date().toISOString().slice(0, 10)); setTransAttachmentUrl(null); setTransAttachmentDocType('Cheque'); setTransItems([]); setTransAutoCalcFromItems(false); setTransDeductStockOnSave(false); setTransLinkSaleToCashbook(false); setTransIsUnpaidCredit(false); setTransLinkedInvoiceNo(null); navigateTo('TRANSACTION_FORM', selectedContact.id); }} className="flex-1 bg-green-700 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center active:scale-95 shadow-md">
              <div className="flex items-center gap-1.5">
                <span className="text-[10px] opacity-90 uppercase font-black">{isService ? 'RECORD PAYMENT (WITH DATE)' : labelRight}</span>
                <span className="text-[9px] bg-white/25 text-white px-1.5 py-0.2 rounded font-extrabold uppercase">
@@ -7293,8 +7659,36 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
           {/* Unpaid Credit Sales / Invoices Picker for Customer GOT MONEY */}
           {selectedContact.type === 'CUSTOMER' && transType === 'PAYMENT' && (() => {
-            const customerCredits = transactions.filter(t => t.contactId === selectedContact.id && t.type === 'CREDIT');
+            const customerCredits = transactions.filter(t => {
+              if (t.contactId !== selectedContact.id || t.type !== 'CREDIT') return false;
+              const p = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+              return !p.method || p.method === 'Credit';
+            });
             if (customerCredits.length === 0) return null;
+
+            const creditItemsWithBalance = customerCredits.map(c => {
+              const invNo = getConsistentInvoiceNo(c);
+              const parsed = parsePaymentMethod(c.description, c.paymentMethod, c.chequeStatus, c.chequeDate);
+              const itemsList = parsed.items || extractCashbookItems(c.description).items;
+              const ledger = getInvoicePaymentLedger(invNo, selectedContact.id, editingTransaction?.id);
+              const remainingDue = Math.max(0, c.amount - ledger.totalPaid);
+              return {
+                tx: c,
+                invNo,
+                parsed,
+                itemsList,
+                paid: ledger.totalPaid,
+                pendingChq: ledger.totalPendingCheque,
+                remainingDue,
+                paymentCount: ledger.paymentHistory.length
+              };
+            });
+
+            const unpaidCredits = creditItemsWithBalance.filter(item => item.remainingDue > 0);
+            const activeLinkedInv = transLinkedInvoiceNo || extractLinkedInvoiceNo(transDesc);
+            const selectedEntry = activeLinkedInv ? creditItemsWithBalance.find(i => i.invNo === activeLinkedInv) : null;
+            const currentPayInput = parseFloat(transAmount) || 0;
+
             return (
               <div className="mb-6 bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
@@ -7302,48 +7696,95 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     <Receipt size={15} className="text-emerald-600" />
                     <span>Select Credit Sale / Invoice to Settle</span>
                   </div>
-                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
-                    {customerCredits.length} unpaid
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    unpaidCredits.length > 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                  }`}>
+                    {unpaidCredits.length > 0 ? `${unpaidCredits.length} unpaid` : 'All settled'}
                   </span>
                 </div>
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {customerCredits.map(c => {
-                    const invNo = getConsistentInvoiceNo(c);
-                    const parsed = parsePaymentMethod(c.description, c.paymentMethod, c.chequeStatus, c.chequeDate);
-                    const itemsList = parsed.items || extractCashbookItems(c.description).items;
-                    return (
-                      <div
-                        key={c.id}
-                        onClick={() => {
-                          setTransAmount(c.amount.toString());
-                          setTransDesc(`Payment for Invoice #${invNo} • ${parsed.cleanNotes || c.description || 'Credit Sale'}`);
-                          showProfileToast(`Selected Invoice #${invNo} (LKR ${c.amount.toLocaleString()}) for payment`);
-                        }}
-                        className="p-3 bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-emerald-300 rounded-xl cursor-pointer transition-all flex items-center justify-between gap-3 shadow-2xs"
-                      >
-                        <div className="flex flex-col gap-0.5 overflow-hidden">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-black text-slate-900">#{invNo}</span>
-                            <span className="text-[10px] font-bold text-slate-500">{formatDisplayDate(c.date)}</span>
+
+                {unpaidCredits.length === 0 ? (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-800 flex items-center gap-2">
+                    <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+                    <span>All credit invoices for {selectedContact.name} are fully paid!</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {unpaidCredits.map(({ tx: c, invNo, parsed, itemsList, paid, remainingDue }) => {
+                      const isSelected = activeLinkedInv === invNo;
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => {
+                            setTransLinkedInvoiceNo(invNo);
+                            setTransAmount(remainingDue.toString());
+                            setTransDesc(`Payment for Invoice #${invNo}`);
+                            showProfileToast(`Selected Invoice #${invNo} (Current Due: LKR ${remainingDue.toLocaleString()})`);
+                          }}
+                          className={`p-3 rounded-xl cursor-pointer transition-all flex items-center justify-between gap-3 shadow-2xs border ${
+                            isSelected
+                              ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20'
+                              : 'bg-white hover:bg-emerald-50/60 border-slate-200 hover:border-emerald-300'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-0.5 overflow-hidden">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-black text-slate-900">#{invNo}</span>
+                              <span className="text-[10px] font-bold text-slate-500">{formatDisplayDate(c.date)}</span>
+                              {paid > 0 && (
+                                <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
+                                  Paid: LKR {paid.toLocaleString()} / {c.amount.toLocaleString()}
+                                </span>
+                              )}
+                            </div>
+                            {itemsList.length > 0 ? (
+                              <p className="text-[11px] font-semibold text-slate-600 truncate">
+                                {itemsList.map(it => `${it.item || it.sku} (${it.qty}x)`).join(', ')}
+                              </p>
+                            ) : (
+                              <p className="text-[11px] font-semibold text-slate-600 truncate">{parsed.cleanNotes || c.description || 'Credit Sale'}</p>
+                            )}
                           </div>
-                          {itemsList.length > 0 ? (
-                            <p className="text-[11px] font-semibold text-slate-600 truncate">
-                              {itemsList.map(it => `${it.item || it.sku} (${it.qty}x)`).join(', ')}
-                            </p>
-                          ) : (
-                            <p className="text-[11px] font-semibold text-slate-600 truncate">{parsed.cleanNotes || c.description || 'Credit Sale'}</p>
-                          )}
+                          <div className="text-right shrink-0">
+                            <span className="text-xs font-black text-rose-600 block">Due: LKR {remainingDue.toLocaleString()}</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded border inline-block mt-0.5 ${
+                              isSelected
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            }`}>
+                              {isSelected ? 'Selected ✓' : 'Select to Pay →'}
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-right shrink-0">
-                          <span className="text-xs font-black text-rose-600 block">LKR {c.amount.toLocaleString()}</span>
-                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 inline-block mt-0.5">
-                            Select to Pay →
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {selectedEntry && (
+                  <div className="p-2.5 bg-white border border-emerald-200 rounded-xl flex items-center justify-between gap-2 text-[11px]">
+                    <div className="text-slate-700 font-semibold">
+                      <span className="font-black text-emerald-800">Linked: #{selectedEntry.invNo}</span>
+                      {' • '}
+                      <span>Current Due: LKR {selectedEntry.remainingDue.toLocaleString()}</span>
+                      {currentPayInput > 0 && (
+                        <span className="ml-1.5 font-bold text-blue-700">
+                          → New Due: LKR {Math.max(0, selectedEntry.remainingDue - currentPayInput).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTransLinkedInvoiceNo(null);
+                        setTransDesc('');
+                      }}
+                      className="text-[10px] font-bold text-slate-500 hover:text-rose-600 px-2 py-0.5 rounded border border-slate-200"
+                    >
+                      Unlink
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })()}
