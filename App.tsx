@@ -4744,7 +4744,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         selectedContact.type === 'CUSTOMER' &&
         transType === 'CREDIT' &&
         validTransItems.length > 0 &&
-        !transIsUnpaidCredit &&
         transLinkSaleToCashbook &&
         amountVal > 0
       );
@@ -4839,7 +4838,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 phoneModel: selectedContact.phoneModel,
                 amount: amountVal,
                 date: effectiveTxDate,
-                paymentMethod: transPaymentMethod,
+                paymentMethod: transIsUnpaidCredit ? 'Credit' : transPaymentMethod,
                 descriptionNote: cleanFormattedDesc,
                 isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
                 categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
@@ -4913,7 +4912,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               phoneModel: selectedContact.phoneModel,
               amount: amountVal,
               date: effectiveTxDate,
-              paymentMethod: transPaymentMethod,
+              paymentMethod: transIsUnpaidCredit ? 'Credit' : transPaymentMethod,
               descriptionNote: cleanFormattedDesc,
               isAdvance: cleanFormattedDesc?.toLowerCase().includes('advance'),
               categoryOverride: shouldLinkItemSale ? (validTransItems[0]?.category || '') : undefined,
@@ -8402,8 +8401,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                     Stock: {transDeductStockOnSave ? 'Will deduct qty' : 'No stock change'}
                   </span>
                   <span className="flex items-center gap-1">
-                    <Receipt size={13} className={!transIsUnpaidCredit && transLinkSaleToCashbook && !isPendingChq ? 'text-emerald-600' : 'text-slate-400'} />
-                    Sales Record: {transIsUnpaidCredit || !transLinkSaleToCashbook ? 'Not linked' : (isPendingChq ? 'Hold until Cheque Passed' : 'Records Sale')}
+                    <Receipt size={13} className={!transLinkSaleToCashbook ? 'text-slate-400' : 'text-emerald-600'} />
+                    Sales Record: {!transLinkSaleToCashbook ? 'Not linked' : 'Records Sale'}
                   </span>
                 </div>
               </div>
@@ -13245,7 +13244,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque'] as const).map(pm => (
+            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque', 'Credit'] as const).map(pm => (
               <button
                 key={pm}
                 type="button"
@@ -14042,34 +14041,32 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         localStorage.setItem('st_cached_transactions', JSON.stringify(nextTxList));
       } catch {}
 
-      // 4. Sync Paid Portion (including Cheque & Cash + Cheque) to Sales Details
-      if (!isCreditSale) {
-        const resolvedCat = sellCategory.trim() || validItems[0]?.category || '';
-        if ((isChequeMethod || isSplitMethod) && sellChequeStatus === 'BOUNCED') {
-          showProfileToast(`Bounced cheque sale saved for ${resolvedContact.name} & stock updated.`);
-        } else {
-          await recordOrUpdateLinkedCashbookEntry({
-            txId,
-            contactId: resolvedContact.id,
-            contactName: resolvedContact.name,
-            contactType: resolvedContact.type,
-            txType: 'CREDIT',
-            amount: saleTotal,
-            date: effectiveTxDate,
-            paymentMethod: sellPaymentMethod,
-            descriptionNote: formattedDesc,
-            categoryOverride: resolvedCat,
-            items: validItems,
-            isItemCreditSale: true
-          });
-          if (isPendingChq) {
-            showProfileToast(`Cheque (${sellPaymentMethod}) sale recorded to Sales Details (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
-          } else {
-            showProfileToast(`Sold to ${resolvedContact.name} (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
-          }
-        }
+      // 4. Sync Sale (including Credit, Cash, Cheque, Card, Bank, Cash + Cheque) to Sales Details
+      const resolvedCat = sellCategory.trim() || validItems[0]?.category || '';
+      if ((isChequeMethod || isSplitMethod) && sellChequeStatus === 'BOUNCED') {
+        showProfileToast(`Bounced cheque sale saved for ${resolvedContact.name} & stock updated.`);
       } else {
-        showProfileToast(`Credit sale LKR ${saleTotal.toLocaleString()} added to ${resolvedContact.name}'s ledger & stock updated!`);
+        await recordOrUpdateLinkedCashbookEntry({
+          txId,
+          contactId: resolvedContact.id,
+          contactName: resolvedContact.name,
+          contactType: resolvedContact.type,
+          txType: 'CREDIT',
+          amount: saleTotal,
+          date: effectiveTxDate,
+          paymentMethod: isCreditSale ? 'Credit' : sellPaymentMethod,
+          descriptionNote: formattedDesc,
+          categoryOverride: resolvedCat,
+          items: validItems,
+          isItemCreditSale: true
+        });
+        if (isCreditSale) {
+          showProfileToast(`Credit sale recorded to Sales Details (+ LKR ${saleTotal.toLocaleString()}) & added to ${resolvedContact.name}'s balance!`);
+        } else if (isPendingChq) {
+          showProfileToast(`Cheque (${sellPaymentMethod}) sale recorded to Sales Details (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+        } else {
+          showProfileToast(`Sold to ${resolvedContact.name} (+ LKR ${saleTotal.toLocaleString()}) & stock updated!`);
+        }
       }
 
       setIsSellStockModalOpen(false);
