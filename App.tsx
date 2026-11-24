@@ -7291,6 +7291,63 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             autoFocus 
           />
 
+          {/* Unpaid Credit Sales / Invoices Picker for Customer GOT MONEY */}
+          {selectedContact.type === 'CUSTOMER' && transType === 'PAYMENT' && (() => {
+            const customerCredits = transactions.filter(t => t.contactId === selectedContact.id && t.type === 'CREDIT');
+            if (customerCredits.length === 0) return null;
+            return (
+              <div className="mb-6 bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                    <Receipt size={15} className="text-emerald-600" />
+                    <span>Select Credit Sale / Invoice to Settle</span>
+                  </div>
+                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    {customerCredits.length} unpaid
+                  </span>
+                </div>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {customerCredits.map(c => {
+                    const invNo = getConsistentInvoiceNo(c);
+                    const parsed = parsePaymentMethod(c.description, c.paymentMethod, c.chequeStatus, c.chequeDate);
+                    const itemsList = parsed.items || extractCashbookItems(c.description).items;
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => {
+                          setTransAmount(c.amount.toString());
+                          setTransDesc(`Payment for Invoice #${invNo} • ${parsed.cleanNotes || c.description || 'Credit Sale'}`);
+                          showProfileToast(`Selected Invoice #${invNo} (LKR ${c.amount.toLocaleString()}) for payment`);
+                        }}
+                        className="p-3 bg-white hover:bg-emerald-50/60 border border-slate-200 hover:border-emerald-300 rounded-xl cursor-pointer transition-all flex items-center justify-between gap-3 shadow-2xs"
+                      >
+                        <div className="flex flex-col gap-0.5 overflow-hidden">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-slate-900">#{invNo}</span>
+                            <span className="text-[10px] font-bold text-slate-500">{formatDisplayDate(c.date)}</span>
+                          </div>
+                          {itemsList.length > 0 ? (
+                            <p className="text-[11px] font-semibold text-slate-600 truncate">
+                              {itemsList.map(it => `${it.item || it.sku} (${it.qty}x)`).join(', ')}
+                            </p>
+                          ) : (
+                            <p className="text-[11px] font-semibold text-slate-600 truncate">{parsed.cleanNotes || c.description || 'Credit Sale'}</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-black text-rose-600 block">LKR {c.amount.toLocaleString()}</span>
+                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 inline-block mt-0.5">
+                            Select to Pay →
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Link Items & Stock Picker for Customer GAVE ITEMS */}
           {selectedContact.type === 'CUSTOMER' && transType === 'CREDIT' && (() => {
             const recalcTransAmount = (itemsList: CashbookEntryItem[], autoFlag: boolean = transAutoCalcFromItems) => {
