@@ -2486,7 +2486,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text('OFFICIAL INVOICE / RECEIPT', 40, y, { align: 'center' });
 
       y += 5;
-      doc.setFont('courier', 'normal');
+      doc.setFont('courier', 'bold');
       doc.setFontSize(8);
       doc.text(`Invoice No: #${invoiceNo}`, 6, y);
       y += 4.5;
@@ -2513,6 +2513,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
 
       y += 4;
+      doc.setFont('courier', 'normal');
       doc.text('------------------------------------------', 40, y, { align: 'center' });
       y += 4;
       doc.setFont('courier', 'bold');
@@ -2521,7 +2522,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       doc.text('AMOUNT', 74, y, { align: 'right' });
 
       y += 4.5;
-      doc.setFont('courier', 'normal');
+      doc.setFont('courier', 'bold');
       doc.setFontSize(8);
       if (entryItemsList.length > 0) {
         entryItemsList.forEach(it => {
@@ -2531,25 +2532,28 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           doc.text(String(it.item || it.sku).slice(0, 26), 6, y);
           doc.text(`LKR ${lTotal.toLocaleString()}`, 74, y, { align: 'right' });
           y += 3.8;
-          doc.setFont('courier', 'normal');
-          doc.setFontSize(7.2);
+          doc.setFont('courier', 'bold');
+          doc.setFontSize(7.5);
           const skuPrefix = it.sku ? `${it.sku} • ` : '';
-          doc.text(`${skuPrefix}${it.qty} pcs x LKR ${uPrice.toLocaleString()} (1 pc)`.slice(0, 42), 6, y);
+          doc.text(`${skuPrefix}${it.qty} pcs x LKR ${uPrice.toLocaleString()} (1 pc)`.slice(0, 40), 6, y);
           doc.setFontSize(8);
           y += 4.4;
         });
         if (cleanRawDesc) {
-          doc.setFontSize(7.2);
+          doc.setFont('courier', 'bold');
+          doc.setFontSize(7.5);
           doc.text(`Note: ${cleanRawDesc}`.slice(0, 40), 6, y);
           doc.setFontSize(8);
           y += 4;
         }
       } else {
+        doc.setFont('courier', 'bold');
         doc.text(`${categoryName}`.slice(0, 26), 6, y);
         doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
         y += 4;
         if (description) {
-          doc.setFontSize(7.2);
+          doc.setFont('courier', 'bold');
+          doc.setFontSize(7.5);
           doc.text(description.slice(0, 40), 6, y);
           doc.setFontSize(8);
           y += 4;
@@ -2558,13 +2562,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       if (hasPaymentHistory) {
         y += 2;
+        doc.setFont('courier', 'normal');
         doc.text('------------------------------------------', 40, y, { align: 'center' });
         y += 4;
         doc.setFont('courier', 'bold');
         doc.setFontSize(8);
         doc.text('PAYMENT HISTORY', 6, y);
         y += 4;
-        doc.setFont('courier', 'normal');
+        doc.setFont('courier', 'bold');
         doc.setFontSize(7.5);
         paymentHistory.forEach(ph => {
           const statusSuffix = ph.isBounced ? ' [BOUNCED]' : ph.isPending ? ' [HOLD]' : '';
@@ -2575,10 +2580,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       }
 
       y += 3;
+      doc.setFont('courier', 'normal');
       doc.text('------------------------------------------', 40, y, { align: 'center' });
       y += 5;
       doc.setFont('courier', 'bold');
       doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
       doc.text('TOTAL BILL    :', 6, y);
       doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
 
@@ -2586,55 +2593,78 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         y += 4.5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(8.5);
+        doc.setTextColor(5, 150, 105);
         doc.text('TOTAL PAID    :', 6, y);
         doc.text(`LKR ${totalPaid.toLocaleString()}`, 74, y, { align: 'right' });
 
         y += 5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(9.5);
+        if (totalDue > 0) {
+          doc.setTextColor(220, 38, 38);
+        } else {
+          doc.setTextColor(5, 150, 105);
+        }
         doc.text('CURRENT DUE   :', 6, y);
         doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
       } else if (isUnpaidCredit) {
         y += 5;
+        doc.setFont('courier', 'bold');
         doc.setFontSize(9.5);
+        doc.setTextColor(220, 38, 38);
         doc.text('TOTAL DUE     :', 6, y);
         doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
       } else if (isSplit) {
         y += 4.5;
-        doc.setFont('courier', 'normal');
+        doc.setFont('courier', 'bold');
         doc.setFontSize(8);
+        doc.setTextColor(5, 150, 105);
         doc.text('CASH RECEIVED :', 6, y);
         doc.text(`LKR ${splitCash.toLocaleString()}`, 74, y, { align: 'right' });
 
         y += 4.5;
+        doc.setTextColor(180, 83, 9);
         doc.text(`CHEQUE (${isPending ? 'HOLD' : 'PASS'}):`, 6, y);
         doc.text(`LKR ${splitCheque.toLocaleString()}`, 74, y, { align: 'right' });
 
         y += 5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(9.5);
+        if (totalDue > 0) {
+          doc.setTextColor(220, 38, 38);
+        } else {
+          doc.setTextColor(5, 150, 105);
+        }
         doc.text('TOTAL DUE     :', 6, y);
         doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
       } else if (parsedTxMeta?.method === 'Cheque') {
         y += 4.5;
-        doc.setFont('courier', 'normal');
+        doc.setFont('courier', 'bold');
         doc.setFontSize(8);
+        doc.setTextColor(180, 83, 9);
         doc.text(`CHEQUE (${isPending ? 'HOLD' : 'PASS'}):`, 6, y);
         doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
 
         y += 5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(9.5);
+        if (totalDue > 0) {
+          doc.setTextColor(220, 38, 38);
+        } else {
+          doc.setTextColor(5, 150, 105);
+        }
         doc.text('TOTAL DUE     :', 6, y);
         doc.text(`LKR ${totalDue.toLocaleString()}`, 74, y, { align: 'right' });
       } else {
         y += 5;
         doc.setFont('courier', 'bold');
         doc.setFontSize(10);
+        doc.setTextColor(5, 150, 105);
         doc.text('TOTAL PAID    :', 6, y);
         doc.text(`LKR ${amount.toLocaleString()}`, 74, y, { align: 'right' });
       }
 
+      doc.setTextColor(0, 0, 0);
       y += 6;
       doc.setFont('courier', 'normal');
       doc.setFontSize(7);
@@ -3125,31 +3155,31 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   OFFICIAL RECEIPT / INVOICE
                 </div>
 
-                <div className="space-y-1 text-[11px] border-b border-dashed border-slate-300 pb-3">
-                  <div className="flex justify-between"><span className="text-slate-500">Invoice #:</span> <span className="font-bold">#{invoiceNo}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Date:</span> <span>{dateStr} {timeStr}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Customer:</span> <span className="font-semibold">{customerName} {contact?.city ? `(${contact.city})` : ''}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Phone:</span> <span>{customerPhone}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Method:</span> <span className="font-bold">{isSplit ? 'Cash + Cheque (Split)' : paymentMethod}</span></div>
+                <div className="space-y-1 text-[11px] font-bold text-slate-900 border-b border-dashed border-slate-300 pb-3">
+                  <div className="flex justify-between"><span className="text-slate-600">Invoice #:</span> <span className="font-extrabold">#{invoiceNo}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Date:</span> <span>{dateStr} {timeStr}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Customer:</span> <span className="font-extrabold">{customerName} {contact?.city ? `(${contact.city})` : ''}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Phone:</span> <span>{customerPhone}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-600">Method:</span> <span className="font-extrabold">{isSplit ? 'Cash + Cheque (Split)' : paymentMethod}</span></div>
                   {isSplit && (
                     <>
-                      <div className="flex justify-between text-emerald-700 font-semibold"><span>Cash Paid:</span> <span>LKR {splitCash.toLocaleString()}</span></div>
-                      <div className="flex justify-between text-amber-800 font-semibold"><span>Cheque ({isPending ? 'On Hold' : 'Cleared'}):</span> <span>LKR {splitCheque.toLocaleString()}</span></div>
+                      <div className="flex justify-between text-emerald-700 font-bold"><span>Cash Paid:</span> <span>LKR {splitCash.toLocaleString()}</span></div>
+                      <div className="flex justify-between text-amber-800 font-bold"><span>Cheque ({isPending ? 'On Hold' : 'Cleared'}):</span> <span>LKR {splitCheque.toLocaleString()}</span></div>
                     </>
                   )}
                   {parsedTxMeta?.chequeNumber && (
-                    <div className="flex justify-between"><span className="text-slate-500">Cheque #:</span> <span className="font-mono font-bold">#{parsedTxMeta.chequeNumber}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Cheque #:</span> <span className="font-mono font-extrabold">#{parsedTxMeta.chequeNumber}</span></div>
                   )}
                   {parsedTxMeta?.chequeDate && (
-                    <div className="flex justify-between"><span className="text-slate-500">Due Date:</span> <span className="font-bold">{formatDisplayDate(parsedTxMeta.chequeDate)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Due Date:</span> <span className="font-extrabold">{formatDisplayDate(parsedTxMeta.chequeDate)}</span></div>
                   )}
                   {parsedTxMeta?.chequeStatus && (
-                    <div className="flex justify-between"><span className="text-slate-500">Status:</span> <span className="font-bold">{parsedTxMeta.chequeStatus}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Status:</span> <span className="font-extrabold">{parsedTxMeta.chequeStatus}</span></div>
                   )}
                 </div>
 
                 <div className="space-y-2 border-b border-dashed border-slate-300 pb-3">
-                  <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase">
+                  <div className="flex justify-between text-[10px] font-extrabold text-slate-600 uppercase">
                     <span>Item / Details</span>
                     <span>Amount</span>
                   </div>
@@ -3159,25 +3189,28 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                         const uPrice = getItemUnitSalePrice(it);
                         const lTotal = (Number(it.qty) || 0) * (Number(uPrice) || 0);
                         return (
-                          <div key={it.id || idx} className="flex justify-between items-start text-xs font-semibold">
+                          <div key={it.id || idx} className="flex justify-between items-start text-xs font-bold">
                             <div className="pr-2">
-                              <p className="font-bold text-slate-900">{it.item || it.sku}</p>
-                              <p className="text-[10px] text-slate-500 leading-tight">
+                              <p className="font-extrabold text-slate-900">{it.item || it.sku}</p>
+                              <p className="text-[10px] font-bold text-slate-700 leading-tight">
                                 {it.sku ? `SKU: ${it.sku} • ` : ''}{it.qty} pcs × LKR {uPrice.toLocaleString()} (1 pc)
                               </p>
                             </div>
-                            <span className="font-bold whitespace-nowrap">LKR {lTotal.toLocaleString()}</span>
+                            <span className="font-extrabold whitespace-nowrap">LKR {lTotal.toLocaleString()}</span>
                           </div>
                         );
                       })}
+                      {cleanRawDesc && (
+                        <p className="text-[10px] font-bold text-slate-700 pt-0.5">Note: {cleanRawDesc}</p>
+                      )}
                     </div>
                   ) : (
-                    <div className="flex justify-between items-start text-xs font-semibold">
+                    <div className="flex justify-between items-start text-xs font-bold">
                       <div className="pr-2">
-                        <p className="font-bold text-slate-900">{categoryName}</p>
-                        <p className="text-[10px] text-slate-500 leading-tight">{description}</p>
+                        <p className="font-extrabold text-slate-900">{categoryName}</p>
+                        <p className="text-[10px] font-bold text-slate-700 leading-tight">{description}</p>
                       </div>
-                      <span className="font-bold whitespace-nowrap">LKR {amount.toLocaleString()}</span>
+                      <span className="font-extrabold whitespace-nowrap">LKR {amount.toLocaleString()}</span>
                     </div>
                   )}
                 </div>
@@ -3185,9 +3218,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 <div className="space-y-1 pt-1 border-t border-dashed border-slate-300">
                   {hasPaymentHistory && (
                     <div className="pb-2 mb-2 border-b border-dashed border-slate-300 space-y-1">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Payment History</p>
+                      <p className="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">Payment History</p>
                       {paymentHistory.map((ph, idx) => (
-                        <div key={ph.tx.id || idx} className="flex justify-between items-center text-[11px] text-emerald-700 font-semibold">
+                        <div key={ph.tx.id || idx} className="flex justify-between items-center text-[11px] text-emerald-700 font-bold">
                           <span>
                             {formatDisplayDate(ph.date)} • {ph.method}
                             {ph.isBounced ? ' (Bounced)' : ph.isPending ? ' (Pending)' : ''}
