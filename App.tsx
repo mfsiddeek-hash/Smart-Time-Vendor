@@ -1608,13 +1608,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     return false;
   };
 
-  // Helper to split Cash / Bank / Card / Cheque amounts (handles Cash + Cheque split sales)
-  const getCashbookEntryPaymentSplit = (entry: CashbookEntry): { cash: number; bank: number; card: number; cheque: number } => {
+  // Helper to split Cash / Bank / Card / Cheque / Credit amounts (handles Cash + Cheque split sales & Credit sales)
+  const getCashbookEntryPaymentSplit = (entry: CashbookEntry): { cash: number; bank: number; card: number; cheque: number; credit: number } => {
     const amt = Number(entry.amount) || 0;
-    if (entry.paymentMethod === 'Cash') return { cash: amt, bank: 0, card: 0, cheque: 0 };
-    if (entry.paymentMethod === 'Bank Transfer') return { cash: 0, bank: amt, card: 0, cheque: 0 };
-    if (entry.paymentMethod === 'Card') return { cash: 0, bank: 0, card: amt, cheque: 0 };
-    if (entry.paymentMethod === 'Cheque') return { cash: 0, bank: 0, card: 0, cheque: amt };
+    if (entry.paymentMethod === 'Cash') return { cash: amt, bank: 0, card: 0, cheque: 0, credit: 0 };
+    if (entry.paymentMethod === 'Bank Transfer') return { cash: 0, bank: amt, card: 0, cheque: 0, credit: 0 };
+    if (entry.paymentMethod === 'Card') return { cash: 0, bank: 0, card: amt, cheque: 0, credit: 0 };
+    if (entry.paymentMethod === 'Cheque') return { cash: 0, bank: 0, card: 0, cheque: amt, credit: 0 };
+    if (entry.paymentMethod === 'Credit') return { cash: 0, bank: 0, card: 0, cheque: 0, credit: amt };
     if (entry.paymentMethod === 'Cash + Cheque') {
       const desc = entry.description || '';
       const cashMatch = desc.match(/Cash:\s*(?:LKR\s*)?([0-9,]+(?:\.[0-9]+)?)/i);
@@ -1622,11 +1623,124 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const cashNum = cashMatch ? parseFloat(cashMatch[1].replace(/,/g, '')) : 0;
       const chqNum = chqMatch ? parseFloat(chqMatch[1].replace(/,/g, '')) : Math.max(0, amt - cashNum);
       if (cashNum > 0 || chqNum > 0) {
-        return { cash: cashNum, bank: 0, card: 0, cheque: chqNum };
+        return { cash: cashNum, bank: 0, card: 0, cheque: chqNum, credit: 0 };
       }
-      return { cash: 0, bank: 0, card: 0, cheque: amt };
+      return { cash: 0, bank: 0, card: 0, cheque: amt, credit: 0 };
     }
-    return { cash: amt, bank: 0, card: 0, cheque: 0 };
+    return { cash: amt, bank: 0, card: 0, cheque: 0, credit: 0 };
+  };
+
+  // Identify Customer Payment cashbook entries that settle an existing Credit Sale invoice (to avoid double-counting sales)
+  const isCustomerPaymentCashbookEntry = (entry: CashbookEntry): boolean => {
+    const cat = (entry.category || '').trim().toLowerCase();
+    const desc = (entry.description || '').trim().toLowerCase();
+    const hasItems = (Array.isArray(entry.items) && entry.items.length > 0) || extractCashbookItems(entry.description).items.length > 0;
+    if (hasItems) return false;
+    return cat === 'customer payment' || desc.startsWith('payment received -');
+  };
+
+  const primarySaleInvoiceNos = useMemo(() => {
+    const set = new Set<string>();
+    cashbookEntries.forEach(e => {
+      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e)) return;
+      if (isCustomerPaymentCashbookEntry(e)) return;
+      const inv = extractLinkedInvoiceNo(e) || (e.id ? `INV-${e.id.slice(0, 6).toUpperCase()}` : '');
+      if (inv && inv.startsWith('INV-')) {
+        set.add(inv.toUpperCase());
+      }
+    });
+    return set;
+  }, [cashbookEntries]);
+
+  const isLinkedCreditSettlementEntry = (entry: CashbookEntry): boolean => {
+    if (!isCustomerPaymentCashbookEntry(entry)) return false;
+    const invNo = extractLinkedInvoiceNo(entry);
+    return Boolean(invNo && primarySaleInvoiceNos.has(invNo));
+  };
+
+  const settledAmountByInvoiceMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    cashbookEntries.forEach(e => {
+      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e)) return;
+      if (!isLinkedCreditSettlementEntry(e)) return;
+      const invNo = extractLinkedInvoiceNo(e);
+      if (invNo) {
+        map[invNo] = (map[invNo] || 0) + (Number(e.amount) || 0);
+      }
+    });
+    return map;
+  }, [cashbookEntries, primarySaleInvoiceNos]);
+
+  const calcSalesBreakdown = (entries: CashbookEntry[], includeLinkedSettlementInTotals: boolean = false) => {
+    let totalAmount = 0;
+    let cash = 0;
+    let bank = 0;
+    let card = 0;
+    let cheque = 0;
+    let grossCredit = 0;
+    let billedCount = 0;
+    let settlementCount = 0;
+    let settlementTotal = 0;
+    const settledByInvoiceInSet: Record<string, number> = {};
+
+    entries.forEach(e => {
+      const isLinkedSettlement = isLinkedCreditSettlementEntry(e);
+      const amt = Number(e.amount) || 0;
+      const invNo = extractLinkedInvoiceNo(e);
+
+      if (isLinkedSettlement) {
+        settlementCount += 1;
+        settlementTotal += amt;
+        if (invNo) {
+          settledByInvoiceInSet[invNo] = (settledByInvoiceInSet[invNo] || 0) + amt;
+        }
+        if (includeLinkedSettlementInTotals) {
+          totalAmount += amt;
+        }
+      } else {
+        billedCount += 1;
+        totalAmount += amt;
+      }
+
+      const split = getCashbookEntryPaymentSplit(e);
+      cash += split.cash;
+      bank += split.bank;
+      card += split.card;
+      cheque += split.cheque;
+      if (!isLinkedSettlement) {
+        grossCredit += split.credit;
+      }
+    });
+
+    let settledCreditInSet = 0;
+    entries.forEach(e => {
+      if (isLinkedCreditSettlementEntry(e)) return;
+      const split = getCashbookEntryPaymentSplit(e);
+      if (split.credit > 0) {
+        const invNo = extractLinkedInvoiceNo(e);
+        if (invNo && settledByInvoiceInSet[invNo]) {
+          const applied = Math.min(split.credit, settledByInvoiceInSet[invNo]);
+          settledCreditInSet += applied;
+          settledByInvoiceInSet[invNo] -= applied;
+        }
+      }
+    });
+
+    const credit = Math.max(0, grossCredit - settledCreditInSet);
+    const priorInvoiceCollected = Math.max(0, settlementTotal - settledCreditInSet);
+
+    return {
+      totalAmount,
+      cash,
+      bank,
+      card,
+      cheque,
+      credit,
+      billedCount,
+      settlementCount,
+      settlementTotal,
+      priorInvoiceCollected
+    };
   };
 
   const todayCashbookSnapshot = useMemo(() => {
@@ -1634,12 +1748,12 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const todayEntries = cashbookEntries.filter(
       e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isBouncedCashbookEntry(e)
     );
-    const sales = todayEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const summary = calcSalesBreakdown(todayEntries, false);
     return {
-      count: todayEntries.length,
-      sales
+      count: summary.billedCount,
+      sales: summary.totalAmount
     };
-  }, [cashbookEntries]);
+  }, [cashbookEntries, primarySaleInvoiceNos]);
 
   const downloadCategoryReport = () => {
     try {
@@ -10948,24 +11062,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   }, [baseFilteredCashbookEntries]);
 
   const cashbookTotals = useMemo(() => {
-    let totalSales = 0;
-    let cashSales = 0;
-    let bankSales = 0;
-    let cardSales = 0;
-    let chequeSales = 0;
+    const summary = calcSalesBreakdown(baseFilteredCashbookEntries, false);
     let totalItemsSoldQty = 0;
     let totalItemCost = 0;
     let totalItemProfit = 0;
 
     baseFilteredCashbookEntries.forEach(e => {
-      const amt = Number(e.amount) || 0;
-      totalSales += amt;
-      const split = getCashbookEntryPaymentSplit(e);
-      cashSales += split.cash;
-      bankSales += split.bank;
-      cardSales += split.card;
-      chequeSales += split.cheque;
-
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
         const q = Number(it.qty) || 0;
@@ -10982,19 +11084,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     });
 
     return {
-      totalSales,
-      cashSales,
-      bankSales,
-      cardSales,
-      chequeSales,
+      totalSales: summary.totalAmount,
+      cashSales: summary.cash,
+      bankSales: summary.bank,
+      cardSales: summary.card,
+      chequeSales: summary.cheque,
+      creditSales: summary.credit,
+      billedCount: summary.billedCount,
+      settlementCount: summary.settlementCount,
       totalItemsSoldQty,
       totalItemCost,
       totalItemProfit,
-      hasBank: bankSales > 0,
-      hasCard: cardSales > 0,
-      hasCheque: chequeSales > 0
+      hasBank: summary.bank > 0,
+      hasCard: summary.card > 0,
+      hasCheque: summary.cheque > 0,
+      hasCredit: summary.credit > 0
     };
-  }, [baseFilteredCashbookEntries]);
+  }, [baseFilteredCashbookEntries, primarySaleInvoiceNos]);
 
   const existingCategories = useMemo(() => {
     const legacyDefaults = new Set([
@@ -11024,7 +11130,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
   }, [cashbookEntries, userItemCategories]);
 
   const groupedCashbookEntries = useMemo(() => {
-    const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number }> = [];
+    const groups: Array<{ date: string; entries: CashbookEntry[]; daySales: number; billedCount: number; settlementCount: number }> = [];
     const dateMap: Record<string, CashbookEntry[]> = {};
     
     filteredCashbookEntries.forEach(e => {
@@ -11034,12 +11140,18 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     Object.keys(dateMap).sort((a, b) => new Date(b).getTime() - new Date(a).getTime()).forEach(date => {
       const items = dateMap[date];
-      const daySales = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
-      groups.push({ date, entries: items, daySales });
+      const daySummary = calcSalesBreakdown(items, false);
+      groups.push({
+        date,
+        entries: items,
+        daySales: daySummary.totalAmount,
+        billedCount: daySummary.billedCount,
+        settlementCount: daySummary.settlementCount
+      });
     });
 
     return groups;
-  }, [filteredCashbookEntries]);
+  }, [filteredCashbookEntries, primarySaleInvoiceNos]);
 
   const handleOpenCashbookModal = (
     _type: CashbookEntryType = 'SALE',
@@ -11790,7 +11902,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   + LKR {cashbookTotals.totalSales.toLocaleString()}
                 </h3>
                 <p className="text-[10px] text-white/85 font-semibold mt-0.5">
-                  {baseFilteredCashbookEntries.length} sales recorded
+                  {cashbookTotals.billedCount} sale{cashbookTotals.billedCount === 1 ? '' : 's'} recorded
+                  {cashbookTotals.settlementCount > 0 ? ` • ${cashbookTotals.settlementCount} credit payment${cashbookTotals.settlementCount === 1 ? '' : 's'}` : ''}
                 </p>
               </div>
             </div>
@@ -11808,11 +11921,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   <span className="text-slate-500 dark:text-slate-400">Cash:</span>
                   <span className="text-emerald-600 dark:text-emerald-400">LKR {cashbookTotals.cashSales.toLocaleString()}</span>
                 </div>
-                {(cashbookTotals.hasBank || cashbookTotals.hasCard || cashbookTotals.hasCheque) ? (
+                {(cashbookTotals.hasBank || cashbookTotals.hasCard || cashbookTotals.hasCheque || cashbookTotals.hasCredit) ? (
                   <div className="flex items-center gap-2 flex-wrap text-[10px] text-slate-500 dark:text-slate-400 font-semibold pt-0.5">
                     {cashbookTotals.hasBank && <span>Bank: LKR {cashbookTotals.bankSales.toLocaleString()}</span>}
                     {cashbookTotals.hasCard && <span>• Card: LKR {cashbookTotals.cardSales.toLocaleString()}</span>}
                     {cashbookTotals.hasCheque && <span>• Cheque: LKR {cashbookTotals.chequeSales.toLocaleString()}</span>}
+                    {cashbookTotals.hasCredit && <span className="text-rose-600 dark:text-rose-400 font-bold">• Credit Due: LKR {cashbookTotals.creditSales.toLocaleString()}</span>}
                   </div>
                 ) : (
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold">All cash settlements</p>
@@ -12073,7 +12187,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         {formatDisplayDate(group.date)}
                       </span>
                       <span className="text-[10px] text-slate-400 font-semibold">
-                        ({group.entries.length} sale{group.entries.length > 1 ? 's' : ''})
+                        ({group.billedCount} sale{group.billedCount === 1 ? '' : 's'}
+                        {group.settlementCount > 0 ? `, ${group.settlementCount} payment${group.settlementCount === 1 ? '' : 's'}` : ''})
                       </span>
                     </div>
 
@@ -12098,6 +12213,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       const entryDueDateMatch = entry.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
                       const chequeDueDate = entryDueDateMatch ? entryDueDateMatch[1] : entry.date;
                       const isChequeMatured = isPendingChequeEntry && chequeDueDate <= todayDateStr;
+                      const isLinkedSettlement = isLinkedCreditSettlementEntry(entry);
 
                       return (
                         <div
@@ -12126,14 +12242,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                     ? 'bg-purple-50 text-purple-700 border-purple-200'
                                     : entry.paymentMethod === 'Cheque'
                                     ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                    : entry.paymentMethod === 'Credit'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/50'
                                     : 'bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
                                 }`}>
                                   {entry.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
                                    entry.paymentMethod === 'Card' ? <CreditCard size={10} /> :
                                    entry.paymentMethod === 'Cheque' ? <Landmark size={10} /> :
+                                   entry.paymentMethod === 'Credit' ? <Clock size={10} /> :
                                    <Banknote size={10} />}
                                   {entry.paymentMethod}
                                 </span>
+
+                                {isLinkedSettlement && (
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-teal-50 text-teal-800 border-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:border-teal-800/50">
+                                    Credit Settlement
+                                  </span>
+                                )}
 
                                 {isPendingChequeEntry && (
                                   <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
@@ -13344,10 +13469,12 @@ ON CONFLICT (id) DO UPDATE SET public = true;
 
     const todaySalesEntries = allCompletedSales.filter(e => e.date === todayStr);
     const yesterdaySalesEntries = allCompletedSales.filter(e => e.date === yesterdayStr);
-    const todayTotalAmount = todaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const yesterdayTotalAmount = yesterdaySalesEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const todayChequeAmount = todaySalesEntries.reduce((s, e) => s + getCashbookEntryPaymentSplit(e).cheque, 0);
-    const yesterdayChequeAmount = yesterdaySalesEntries.reduce((s, e) => s + getCashbookEntryPaymentSplit(e).cheque, 0);
+    const todaySummary = calcSalesBreakdown(todaySalesEntries, false);
+    const yesterdaySummary = calcSalesBreakdown(yesterdaySalesEntries, false);
+    const todayTotalAmount = todaySummary.totalAmount;
+    const yesterdayTotalAmount = yesterdaySummary.totalAmount;
+    const todayChequeAmount = todaySummary.cheque;
+    const yesterdayChequeAmount = yesterdaySummary.cheque;
 
     let todayItemsQty = 0;
     let todayItemCost = 0;
@@ -13433,24 +13560,23 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         return (b.createdAt || '').localeCompare(a.createdAt || '');
       });
 
-    let periodTotalAmount = 0;
-    let cashSales = 0;
-    let bankSales = 0;
-    let cardSales = 0;
-    let chequeSales = 0;
+    const includeLinkedSettlementInFilter = salesDetailsPaymentFilter !== 'ALL' && salesDetailsPaymentFilter !== 'Credit';
+    const periodSummary = calcSalesBreakdown(filteredSales, includeLinkedSettlementInFilter);
+    const periodTotalAmount = periodSummary.totalAmount;
+    const cashSales = periodSummary.cash;
+    const bankSales = periodSummary.bank;
+    const cardSales = periodSummary.card;
+    const chequeSales = periodSummary.cheque;
+    const creditSales = periodSummary.credit;
+    const periodBilledCount = periodSummary.billedCount;
+    const periodSettlementCount = periodSummary.settlementCount;
+    const priorInvoiceCollected = periodSummary.priorInvoiceCollected;
+
     let totalItemsQtySold = 0;
     let totalItemCost = 0;
     let totalItemProfit = 0;
 
     filteredSales.forEach(e => {
-      const amt = Number(e.amount) || 0;
-      periodTotalAmount += amt;
-      const split = getCashbookEntryPaymentSplit(e);
-      cashSales += split.cash;
-      bankSales += split.bank;
-      cardSales += split.card;
-      chequeSales += split.cheque;
-
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
         const qty = Number(it.qty) || 0;
@@ -13466,7 +13592,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       });
     });
 
-    const groupedSales: Array<{ date: string; entries: CashbookEntry[]; dayTotal: number }> = [];
+    const groupedSales: Array<{ date: string; entries: CashbookEntry[]; dayTotal: number; billedCount: number; settlementCount: number }> = [];
     const dateMap: Record<string, CashbookEntry[]> = {};
     filteredSales.forEach(e => {
       if (!dateMap[e.date]) dateMap[e.date] = [];
@@ -13476,8 +13602,14 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
       .forEach(date => {
         const entries = dateMap[date];
-        const dayTotal = entries.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-        groupedSales.push({ date, entries, dayTotal });
+        const daySummary = calcSalesBreakdown(entries, includeLinkedSettlementInFilter);
+        groupedSales.push({
+          date,
+          entries,
+          dayTotal: daySummary.totalAmount,
+          billedCount: daySummary.billedCount,
+          settlementCount: daySummary.settlementCount
+        });
       });
 
     const periodTitle =
@@ -13516,14 +13648,15 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         doc.setFontSize(9);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(21, 128, 61);
-        doc.text(`PERIOD SALES: LKR ${periodTotalAmount.toLocaleString()} (${filteredSales.length} entries)`, 20, 62);
+        doc.text(`PERIOD SALES: LKR ${periodTotalAmount.toLocaleString()} (${periodBilledCount} sale${periodBilledCount === 1 ? '' : 's'})`, 20, 62);
         doc.text(`ITEMS SOLD: ${totalItemsQtySold} • PROFIT: LKR ${totalItemProfit.toLocaleString()}`, 120, 62);
         doc.setTextColor(30, 41, 59);
 
         const rows = filteredSales.map(e => {
           const cleanDesc = stripCashbookItems(e.description);
           const itemsSum = formatCashbookItemsSummary(e.items || extractCashbookItems(e.description).items);
-          const fullDesc = [cleanDesc, itemsSum].filter(Boolean).join(' • ') || e.contactName || '-';
+          const isSettlement = isLinkedCreditSettlementEntry(e);
+          const fullDesc = [cleanDesc, itemsSum, isSettlement ? '[Credit Settlement - Included in Original Invoice]' : ''].filter(Boolean).join(' • ') || e.contactName || '-';
           return [
             e.date,
             e.category || 'Sale',
@@ -13531,7 +13664,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             e.contactName || '-',
             e.paymentMethod,
             e.referenceNo || '-',
-            `LKR ${(Number(e.amount) || 0).toLocaleString()}`
+            isSettlement && !includeLinkedSettlementInFilter
+              ? `LKR ${(Number(e.amount) || 0).toLocaleString()} (Settled)`
+              : `LKR ${(Number(e.amount) || 0).toLocaleString()}`
           ];
         });
 
@@ -13543,7 +13678,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
           headStyles: { fillColor: [5, 150, 105], fontStyle: 'bold' },
           foot: [[
             'Total',
-            `${filteredSales.length} Sales`,
+            `${periodBilledCount} Sale${periodBilledCount === 1 ? '' : 's'}`,
             `Items: ${totalItemsQtySold}`,
             '-',
             '-',
@@ -13638,7 +13773,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
             <div className="mt-1.5">
               <p className="text-2xl font-black text-white tabular-nums">LKR {periodTotalAmount.toLocaleString()}</p>
               <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-white/90 font-semibold mt-1">
-                <span>{filteredSales.length} sale{filteredSales.length === 1 ? '' : 's'}</span>
+                <span>
+                  {includeLinkedSettlementInFilter && periodBilledCount === 0 && periodSettlementCount > 0
+                    ? `${periodSettlementCount} payment${periodSettlementCount === 1 ? '' : 's'}`
+                    : `${periodBilledCount} sale${periodBilledCount === 1 ? '' : 's'}`}
+                </span>
+                {!includeLinkedSettlementInFilter && periodSettlementCount > 0 && (
+                  <>
+                    <span>•</span>
+                    <span>{periodSettlementCount} credit payment{periodSettlementCount === 1 ? '' : 's'}</span>
+                  </>
+                )}
                 {salesDetailsDateFilter === 'CUSTOM' && (
                   <>
                     <span>•</span>
@@ -13651,6 +13796,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                 {bankSales > 0 && <span>• Bank: {bankSales.toLocaleString()}</span>}
                 {cardSales > 0 && <span>• Card: {cardSales.toLocaleString()}</span>}
                 {chequeSales > 0 && <span>• Cheque: {chequeSales.toLocaleString()}</span>}
+                {creditSales > 0 && <span>• Credit Due: {creditSales.toLocaleString()}</span>}
+                {!includeLinkedSettlementInFilter && priorInvoiceCollected > 0 && (
+                  <span>• Prior Credit Paid: {priorInvoiceCollected.toLocaleString()}</span>
+                )}
               </div>
             </div>
           </div>
@@ -13679,7 +13828,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               )}
               <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-xs font-bold tabular-nums">
                 <span className="text-slate-600 dark:text-slate-300">
-                  {todayItemsQty > 0 ? `${todayItemsQty} pcs sold` : `${todaySalesEntries.length} sale${todaySalesEntries.length === 1 ? '' : 's'}`}
+                  {todayItemsQty > 0 ? `${todayItemsQty} pcs sold` : `${todaySummary.billedCount} sale${todaySummary.billedCount === 1 ? '' : 's'}`}
                 </span>
                 {todayItemCost > 0 && (
                   <span className={`font-extrabold ${todayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
@@ -13714,7 +13863,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
               )}
               <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-100 dark:border-[#1e2a3c] text-xs font-bold tabular-nums">
                 <span className="text-slate-500 dark:text-slate-400">
-                  {yesterdayItemsQty > 0 ? `${yesterdayItemsQty} pcs sold` : `${yesterdaySalesEntries.length} sale${yesterdaySalesEntries.length === 1 ? '' : 's'}`}
+                  {yesterdayItemsQty > 0 ? `${yesterdayItemsQty} pcs sold` : `${yesterdaySummary.billedCount} sale${yesterdaySummary.billedCount === 1 ? '' : 's'}`}
                 </span>
                 {yesterdayItemCost > 0 && (
                   <span className={`font-extrabold ${yesterdayItemProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
@@ -13853,7 +14002,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                       {group.date === todayStr ? ' (Today)' : group.date === yesterdayStr ? ' (Yesterday)' : ''}
                     </span>
                     <span className="text-[10px] text-slate-400 font-semibold">
-                      ({group.entries.length} sale{group.entries.length > 1 ? 's' : ''})
+                      ({includeLinkedSettlementInFilter && group.billedCount === 0 && group.settlementCount > 0
+                        ? `${group.settlementCount} payment${group.settlementCount === 1 ? '' : 's'}`
+                        : `${group.billedCount} sale${group.billedCount === 1 ? '' : 's'}${!includeLinkedSettlementInFilter && group.settlementCount > 0 ? `, ${group.settlementCount} payment${group.settlementCount === 1 ? '' : 's'}` : ''}`})
                     </span>
                   </div>
                   <span className="text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-0.5 rounded-md border border-emerald-200/60 dark:border-emerald-800/50 text-[11px] font-extrabold tabular-nums">
@@ -13868,6 +14019,10 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                     const entryItems = entry.items && entry.items.length > 0 ? entry.items : extracted.items;
                     const isChequeLike = entry.paymentMethod === 'Cheque' || entry.paymentMethod === 'Cash + Cheque';
                     const isPendingChqEntry = isPendingCashbookEntry(entry);
+                    const isLinkedSettlement = isLinkedCreditSettlementEntry(entry);
+                    const entryInvNo = extractLinkedInvoiceNo(entry);
+                    const settledForEntry = entry.paymentMethod === 'Credit' && entryInvNo ? (settledAmountByInvoiceMap[entryInvNo] || 0) : 0;
+                    const remainingDueForEntry = entry.paymentMethod === 'Credit' ? Math.max(0, (Number(entry.amount) || 0) - settledForEntry) : 0;
 
                     return (
                       <div
@@ -13894,14 +14049,33 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                                   ? 'bg-amber-50 text-amber-800 border-amber-300'
                                   : entry.paymentMethod === 'Cash + Cheque'
                                   ? 'bg-indigo-50 text-indigo-800 border-indigo-300'
+                                  : entry.paymentMethod === 'Credit'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/50'
                                   : 'bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]'
                               }`}>
                                 {entry.paymentMethod === 'Bank Transfer' ? <Building2 size={10} /> :
                                  entry.paymentMethod === 'Card' ? <CreditCard size={10} /> :
                                  isChequeLike ? <Landmark size={10} /> :
+                                 entry.paymentMethod === 'Credit' ? <Clock size={10} /> :
                                  <Banknote size={10} />}
                                 {entry.paymentMethod}
                               </span>
+                              {isLinkedSettlement && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-teal-50 text-teal-800 border-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:border-teal-800/50">
+                                  Credit Settlement
+                                </span>
+                              )}
+                              {entry.paymentMethod === 'Credit' && settledForEntry > 0 && (
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                  remainingDueForEntry <= 0
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
+                                    : 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800/50'
+                                }`}>
+                                  {remainingDueForEntry <= 0
+                                    ? 'Paid in Full'
+                                    : `Paid: LKR ${settledForEntry.toLocaleString()} • Due: LKR ${remainingDueForEntry.toLocaleString()}`}
+                                </span>
+                              )}
                               {isChequeLike && (
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                                   isPendingChqEntry
@@ -13972,9 +14146,20 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
-                            + LKR {(Number(entry.amount) || 0).toLocaleString()}
-                          </span>
+                          <div className="text-right">
+                            <span className={`font-black text-sm sm:text-base tabular-nums block ${
+                              isLinkedSettlement && !includeLinkedSettlementInFilter
+                                ? 'text-teal-700 dark:text-teal-300'
+                                : 'text-emerald-700 dark:text-emerald-400'
+                            }`}>
+                              + LKR {(Number(entry.amount) || 0).toLocaleString()}
+                            </span>
+                            {isLinkedSettlement && !includeLinkedSettlementInFilter && entryInvNo && (
+                              <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 block">
+                                Paid toward #{entryInvNo}
+                              </span>
+                            )}
+                          </div>
                           <div className="flex items-center gap-1">
                             {isPendingChqEntry && (
                               <button
@@ -16004,10 +16189,11 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 
-    // Compute Today, Yesterday, and Items Sold & Profit (including Cheque payments)
+    // Compute Today, Yesterday, and Items Sold & Profit (including Cheque payments, without double-counting linked credit settlements)
     const todaySales = salesInvoices.filter(e => e.date === todayStr);
-    const todayTotal = todaySales.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-    const todayChequeTotal = todaySales.reduce((sum, e) => sum + getCashbookEntryPaymentSplit(e).cheque, 0);
+    const todayInvSummary = calcSalesBreakdown(todaySales, false);
+    const todayTotal = todayInvSummary.totalAmount;
+    const todayChequeTotal = todayInvSummary.cheque;
     let todayItemsSoldQty = 0;
     let todayItemCost = 0;
     let todayItemProfit = 0;
@@ -16026,8 +16212,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     });
 
     const yesterdaySales = salesInvoices.filter(e => e.date === yesterdayStr);
-    const yesterdayTotal = yesterdaySales.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-    const yesterdayChequeTotal = yesterdaySales.reduce((sum, e) => sum + getCashbookEntryPaymentSplit(e).cheque, 0);
+    const yesterdayInvSummary = calcSalesBreakdown(yesterdaySales, false);
+    const yesterdayTotal = yesterdayInvSummary.totalAmount;
+    const yesterdayChequeTotal = yesterdayInvSummary.cheque;
     let yesterdayItemsSoldQty = 0;
     let yesterdayItemCost = 0;
     let yesterdayItemProfit = 0;
@@ -16048,9 +16235,7 @@ ON CONFLICT (id) DO UPDATE SET public = true;
     let filteredItemsSoldQty = 0;
     let filteredItemCost = 0;
     let filteredItemProfit = 0;
-    let filteredChequeTotal = 0;
     filteredInvoices.forEach(e => {
-      filteredChequeTotal += getCashbookEntryPaymentSplit(e).cheque;
       const eItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       eItems.forEach(it => {
         const qty = Number(it.qty) || 0;
@@ -16064,7 +16249,9 @@ ON CONFLICT (id) DO UPDATE SET public = true;
       });
     });
 
-    const totalInvoicesSum = filteredInvoices.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    const filteredInvSummary = calcSalesBreakdown(filteredInvoices, false);
+    const filteredChequeTotal = filteredInvSummary.cheque;
+    const totalInvoicesSum = filteredInvSummary.totalAmount;
 
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-[#080d16] text-slate-800 dark:text-slate-100 flex flex-col pb-28 no-scrollbar transition-colors">
@@ -16236,7 +16423,8 @@ ON CONFLICT (id) DO UPDATE SET public = true;
                   LKR {totalInvoicesSum.toLocaleString()}
                 </h3>
                 <p className="text-[10px] text-white/85 font-semibold mt-0.5 tabular-nums">
-                  {filteredInvoices.length} sale{filteredInvoices.length === 1 ? '' : 's'}
+                  {filteredInvSummary.billedCount} sale{filteredInvSummary.billedCount === 1 ? '' : 's'}
+                  {filteredInvSummary.settlementCount > 0 ? ` • ${filteredInvSummary.settlementCount} credit payment${filteredInvSummary.settlementCount === 1 ? '' : 's'}` : ''}
                   {filteredChequeTotal > 0 ? ` • Cheque: LKR ${filteredChequeTotal.toLocaleString()}` : ''}
                 </p>
               </div>
