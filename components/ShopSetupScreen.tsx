@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Store, Phone, MapPin, Upload, Image as ImageIcon, Check, Loader2, Sparkles, AlertCircle } from 'lucide-react';
-import { supabase } from '../supabaseClient';
+import { supabase, saveUserProfileCloud } from '../supabaseClient';
 import { UserProfile } from '../types';
 
 interface ShopSetupScreenProps {
@@ -106,53 +106,20 @@ export const ShopSetupScreen: React.FC<ShopSetupScreenProps> = ({
         }
       }
 
-      const profilePayload = {
-        id: userId,
-        full_name: initialFullName || 'Shop Owner',
-        shop_name: cleanShopName,
-        phone: cleanPhone,
-        address: cleanAddress,
-        tagline: tagline.trim() || 'Mobile Phone Repair & Service',
-        logo_url: finalLogoUrl,
-        receipt_terms: "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***",
-        setup_completed: true,
-        updated_at: new Date().toISOString(),
-      };
-
-      // Upsert to Supabase profiles table
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .upsert(profilePayload);
-
-      if (profileError) {
-        console.warn('Supabase profiles table upsert error:', profileError);
-        // If table doesn't exist yet, we still construct profile and allow user into app
-      }
-
-      // Save to localStorage scoped for this user
-      try {
-        localStorage.setItem(`st_shop_profile_${userId}`, JSON.stringify(profilePayload));
-        localStorage.setItem('st_shop_name', cleanShopName);
-        localStorage.setItem('st_shop_phone', cleanPhone);
-        localStorage.setItem('st_shop_address', cleanAddress);
-        localStorage.setItem('st_shop_tagline', tagline.trim());
-        localStorage.setItem('st_shop_receipt_terms', "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***");
-        if (finalLogoUrl) {
-          localStorage.setItem('st_shop_logo', finalLogoUrl);
-        }
-      } catch {}
-
+      const defaultTerms = "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***";
       const createdProfile: UserProfile = {
         id: userId,
         fullName: initialFullName || 'Shop Owner',
         shopName: cleanShopName,
         phone: cleanPhone,
         address: cleanAddress,
-        tagline: tagline.trim(),
+        tagline: tagline.trim() || 'Mobile Phone Repair & Service',
         logoUrl: finalLogoUrl,
-        receiptTerms: "Please present this receipt upon pickup\n• Repaired devices kept up to 30 days\n*** THANK YOU FOR YOUR BUSINESS! ***",
+        receiptTerms: defaultTerms,
         setupCompleted: true,
       };
+
+      await saveUserProfileCloud(createdProfile);
 
       onSetupComplete(createdProfile);
     } catch (err: any) {

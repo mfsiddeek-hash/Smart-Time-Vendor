@@ -16,7 +16,7 @@ import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, CashbookEntryItem, DaybookStockItem, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
 import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount, extractLinkedInvoiceNo, InvoicePaymentSummary } from './components/TransactionRow';
-import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile } from './supabaseClient';
+import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile, saveUserProfileCloud } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
 
@@ -237,6 +237,44 @@ export default function App() {
   });
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [isProfileLoading, setIsProfileLoading] = useState<boolean>(true);
+
+  const clearUnscopedUserCaches = () => {
+    try {
+      [
+        'st_cached_user_profile',
+        'st_cached_contacts',
+        'st_cached_transactions',
+        'st_cashbook_entries',
+        'st_daybook_items',
+        'st_daybook_items_ts',
+        'st_custom_item_categories',
+        'st_shop_name',
+        'st_shop_tagline',
+        'st_shop_phone',
+        'st_shop_address',
+        'st_shop_logo',
+        'st_shop_receipt_terms'
+      ].forEach(k => localStorage.removeItem(k));
+    } catch {}
+  };
+
+  const prepareLocalScopeForUser = (uid: string) => {
+    if (typeof window === 'undefined' || !uid) return;
+    try {
+      const prevUid = localStorage.getItem('st_last_uid');
+      if (prevUid && prevUid !== uid) {
+        clearUnscopedUserCaches();
+        setContacts([]);
+        setTransactions([]);
+        setCashbookEntries([]);
+        setDaybookItems([]);
+        daybookItemsRef.current = [];
+        setCustomItemCategories([]);
+        lastStockMutationTsRef.current = 0;
+      }
+      localStorage.setItem('st_last_uid', uid);
+    } catch {}
+  };
 
   const updateUserProfileState = (prof: UserProfile | null) => {
     setUserProfile(prof);
@@ -679,6 +717,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       } catch (err) {
         console.warn('Sign out warning:', err);
       }
+      fetchedUidRef.current = null;
+      lastStockMutationTsRef.current = 0;
       setAuthSession(null);
       setAuthUser(null);
       updateUserProfileState(null);
@@ -687,9 +727,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setShopAddress('');
       setShopLogo(null);
       setShopTagline('Mobile Phone Repair & Service');
+      setShopReceiptTerms(DEFAULT_RECEIPT_TERMS);
       setContacts([]);
       setTransactions([]);
       setCashbookEntries([]);
+      setDaybookItems([]);
+      daybookItemsRef.current = [];
+      setCustomItemCategories([]);
+      clearUnscopedUserCaches();
+      try { localStorage.removeItem('st_last_uid'); } catch {}
       setIsAuthenticated(false);
       sessionStorage.removeItem('st_auth_active');
       setCurrentView('DASHBOARD');
@@ -889,7 +935,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   };
 
   const persistDaybookItems = async (nextItems: DaybookStockItem[], uid?: string, deletedId?: string) => {
-    const targetUid = uid || authUser?.id;
+    let targetUid = uid || authUser?.id;
+    if (!targetUid) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        targetUid = data?.session?.user?.id;
+      } catch {}
+    }
     const nowTs = Date.now();
     daybookItemsRef.current = nextItems;
     lastStockMutationTsRef.current = nowTs;
@@ -898,6 +950,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       if (targetUid) {
         localStorage.setItem(`st_daybook_items_${targetUid}`, JSON.stringify(nextItems));
         localStorage.setItem(`st_daybook_items_ts_${targetUid}`, String(nowTs));
+        localStorage.setItem('st_last_uid', targetUid);
         if (deletedId) {
           const delKey = `st_daybook_deleted_ids_${targetUid}`;
           const prevDel = JSON.parse(localStorage.getItem(delKey) || '[]');
@@ -936,37 +989,41 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           }));
           const upsertRes = await supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' });
           if (upsertRes.error) {
-            console.warn('Daybook items upsert warning, applying row-level sync:', upsertRes.error.message);
-            for (const row of dbRows) {
-              try {
-                const { error: updErr } = await supabase
-                  .from('daybook_items')
-                  .update({
-                    item: row.item,
-                    sku: row.sku,
-                    category: row.category,
-                    qty: row.qty,
-                    cost: row.cost,
-                    wholesale_price: row.wholesale_price,
-                    retail_price: row.retail_price,
-                    updated_at: row.updated_at
-                  })
-                  .eq('id', row.id)
-                  .eq('user_id', targetUid);
-                if (updErr) {
-                  await supabase
-                    .from('daybook_items')
-                    .update({ qty: row.qty, updated_at: row.updated_at })
-                    .eq('id', row.id)
-                    .eq('user_id', targetUid);
+            const errMsg = (upsertRes.error.message || '').toLowerCase();
+            const isMissingTable = upsertRes.error.code === 'PGRST205' || errMsg.includes('schema cache') || errMsg.includes('could not find the table');
+            if (!isMissingTable) {
+              const isMissingCat = upsertRes.error.code === '42703' || upsertRes.error.code === 'PGRST204' || errMsg.includes('category');
+              const baseRows = dbRows.map(({ category: _c, ...rest }) => rest);
+              let retryErr: any = upsertRes.error;
+              if (isMissingCat) {
+                const baseUpsert = await supabase.from('daybook_items').upsert(baseRows, { onConflict: 'id' });
+                retryErr = baseUpsert.error;
+              }
+              if (retryErr) {
+                console.warn('Daybook items upsert warning, applying row-level sync:', retryErr.message);
+                const rowsToUse = isMissingCat ? baseRows : dbRows;
+                for (const row of rowsToUse) {
+                  try {
+                    const { id: rId, user_id: rUid, ...fields } = row as any;
+                    const { error: updErr } = await supabase
+                      .from('daybook_items')
+                      .update(fields)
+                      .eq('id', rId)
+                      .eq('user_id', rUid);
+                    if (updErr) {
+                      await supabase.from('daybook_items').insert(row);
+                    }
+                  } catch {}
                 }
-              } catch {}
+              }
             }
           }
         }
       } catch (dbErr) {
         console.warn('Daybook items table sync fallback:', dbErr);
       }
+
+      // 2. Mirror full catalog JSON to Supabase Storage
       try {
         const blob = new Blob([JSON.stringify(nextItems)], { type: 'application/json' });
         const { error: storageErr } = await supabase.storage
@@ -982,11 +1039,41 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       } catch (e) {
         console.warn('Daybook items cloud sync warning:', e);
       }
+
+      // 3. Mirror compact catalog snapshot in Supabase Auth user_metadata (capped <= 4500 chars to keep JWT small)
+      try {
+        const compactItems = nextItems.map(it => ({
+          i: it.id,
+          n: it.item,
+          s: it.sku || '',
+          c: it.category || '',
+          q: Number(it.qty) || 0,
+          k: Number(it.cost) || 0,
+          w: Number(it.wholesalePrice) || 0,
+          r: Number(it.retailPrice) || 0,
+          u: it.updatedAt || ''
+        }));
+        const serialized = JSON.stringify(compactItems);
+        await supabase.auth.updateUser({
+          data: {
+            daybook_items_sync: serialized.length <= 4500 ? compactItems : null,
+            daybook_items_sync_ts: nowTs
+          }
+        });
+      } catch (metaErr) {
+        console.warn('Daybook items auth metadata sync warning:', metaErr);
+      }
     }
   };
 
   const persistCustomItemCategories = async (nextCats: string[], uid?: string) => {
-    const targetUid = uid || authUser?.id;
+    let targetUid = uid || authUser?.id;
+    if (!targetUid) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        targetUid = data?.session?.user?.id;
+      } catch {}
+    }
     const dedupMap = new Map<string, string>();
     nextCats.forEach(c => {
       const clean = (c || '').trim();
@@ -1013,22 +1100,33 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       } catch (e) {
         console.warn('Item categories cloud sync warning:', e);
       }
+      try {
+        const catJson = JSON.stringify(cleaned);
+        if (catJson.length <= 1200) {
+          await supabase.auth.updateUser({
+            data: { item_categories_sync: cleaned }
+          });
+        }
+      } catch {}
     }
   };
 
-  const loadDaybookItemsCloud = async (uid: string) => {
+  const loadDaybookItemsCloud = async (uid: string, userMetadata?: any) => {
+    const lastUid = typeof window !== 'undefined' ? localStorage.getItem('st_last_uid') : null;
+    const allowUnscopedFallback = !lastUid || lastUid === uid;
+
     let localItems: DaybookStockItem[] = [];
     let localTs = lastStockMutationTsRef.current || 0;
     let deletedIds = new Set<string>();
     try {
-      const rawLocal = localStorage.getItem(`st_daybook_items_${uid}`) || localStorage.getItem('st_daybook_items');
+      const rawLocal = localStorage.getItem(`st_daybook_items_${uid}`) || (allowUnscopedFallback ? localStorage.getItem('st_daybook_items') : null);
       if (rawLocal) {
         const parsed = JSON.parse(rawLocal);
         if (Array.isArray(parsed)) localItems = parsed;
       }
       const storedTs = Number(
         localStorage.getItem(`st_daybook_items_ts_${uid}`) ||
-        localStorage.getItem('st_daybook_items_ts') ||
+        (allowUnscopedFallback ? localStorage.getItem('st_daybook_items_ts') : null) ||
         '0'
       );
       if (storedTs > localTs) localTs = storedTs;
@@ -1044,15 +1142,38 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setDaybookItems(localItems);
     }
 
+    let localCats: string[] = [];
     try {
-      const rawCats = localStorage.getItem(`st_custom_item_categories_${uid}`) || localStorage.getItem('st_custom_item_categories');
+      const rawCats = localStorage.getItem(`st_custom_item_categories_${uid}`) || (allowUnscopedFallback ? localStorage.getItem('st_custom_item_categories') : null);
       if (rawCats) {
         const parsedCats = JSON.parse(rawCats);
         if (Array.isArray(parsedCats)) {
-          setCustomItemCategories(parsedCats.map(c => String(c || '').trim()).filter(Boolean));
+          localCats = parsedCats.map(c => String(c || '').trim()).filter(Boolean);
+          if (localCats.length > 0) setCustomItemCategories(localCats);
         }
       }
     } catch {}
+
+    const normalizeRawItem = (r: any): DaybookStockItem | null => {
+      if (!r || typeof r !== 'object') return null;
+      const id = String(r.id || r.i || '').trim();
+      const item = String(r.item ?? r.n ?? '').trim();
+      const sku = String(r.sku ?? r.s ?? '').trim();
+      if (!id || (!item && !sku)) return null;
+      const cat = String(r.category ?? r.c ?? '').trim();
+      return {
+        id,
+        userId: r.user_id || r.userId || uid,
+        item: item || sku,
+        sku,
+        category: cat || undefined,
+        qty: Number(r.qty ?? r.q) || 0,
+        cost: Number(r.cost ?? r.k) || 0,
+        wholesalePrice: Number(r.wholesale_price ?? r.wholesalePrice ?? r.w) || 0,
+        retailPrice: Number(r.retail_price ?? r.retailPrice ?? r.r) || 0,
+        updatedAt: String(r.updated_at || r.updatedAt || r.u || new Date().toISOString())
+      };
+    };
 
     const mergeCloudWithLocal = (cloudList: DaybookStockItem[]): { merged: DaybookStockItem[]; needsPushBack: boolean } => {
       const localMap = new Map<string, DaybookStockItem>(localItems.map(i => [i.id, i]));
@@ -1084,7 +1205,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         if (deletedIds.has(lItem.id)) return;
         if (!mergedMap.has(lItem.id)) {
           const lMs = Date.parse(lItem.updatedAt || '') || 0;
-          if (hasVeryRecentLocalMutation || lMs > 0) {
+          if (hasVeryRecentLocalMutation || lMs > 0 || cloudList.length === 0) {
             mergedMap.set(lItem.id, lItem);
             needsPushBack = true;
           }
@@ -1094,119 +1215,152 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       return { merged: Array.from(mergedMap.values()), needsPushBack };
     };
 
-    let loadedFromTable = false;
-    try {
-      const { data: tableRows, error: tableErr } = await supabase
-        .from('daybook_items')
-        .select('*')
-        .eq('user_id', uid)
-        .order('updated_at', { ascending: false });
+    // Fetch all 3 cloud sources in parallel: daybook_items table, Storage JSON (authenticated download first), and Auth metadata
+    let resolvedMeta = userMetadata || authUser?.user_metadata;
+    let tableItems: DaybookStockItem[] | null = null;
+    let storageItems: DaybookStockItem[] | null = null;
+    let metaItems: DaybookStockItem[] | null = null;
+    let metaCats: string[] = [];
+    let storageCats: string[] = [];
 
-      if (!tableErr && Array.isArray(tableRows) && tableRows.length > 0) {
-        const mappedItems: DaybookStockItem[] = tableRows.map((r: any) => ({
-          id: r.id,
-          userId: r.user_id,
-          item: r.item || '',
-          sku: r.sku || '',
-          category: r.category || undefined,
-          qty: Number(r.qty) || 0,
-          cost: Number(r.cost) || 0,
-          wholesalePrice: Number(r.wholesale_price) || 0,
-          retailPrice: Number(r.retail_price) || 0,
-          updatedAt: r.updated_at || new Date().toISOString()
-        }));
-        const { merged, needsPushBack } = mergeCloudWithLocal(mappedItems);
-        daybookItemsRef.current = merged;
-        setDaybookItems(merged);
+    await Promise.all([
+      (async () => {
         try {
-          localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(merged));
-          localStorage.setItem('st_daybook_items', JSON.stringify(merged));
-        } catch {}
-        loadedFromTable = true;
-        if (needsPushBack) {
-          persistDaybookItems(merged, uid).catch(() => {});
-        }
-      }
-    } catch (e) {
-      console.warn('daybook_items table query fallback:', e);
-    }
-
-    if (!loadedFromTable) {
-      try {
-        let cloudParsed: DaybookStockItem[] | null = null;
-        try {
-          const { data: pubData } = supabase.storage
-            .from('shop-logos')
-            .getPublicUrl(`${uid}/daybook-items.json`);
-          if (pubData?.publicUrl) {
-            const bustRes = await fetch(`${pubData.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
-            if (bustRes.ok) {
-              const parsed = await bustRes.json();
-              if (Array.isArray(parsed)) cloudParsed = parsed;
-            }
+          const { data: tableRows, error: tableErr } = await supabase
+            .from('daybook_items')
+            .select('*')
+            .eq('user_id', uid)
+            .order('updated_at', { ascending: false });
+          if (!tableErr && Array.isArray(tableRows)) {
+            tableItems = tableRows.map(normalizeRawItem).filter((x): x is DaybookStockItem => Boolean(x));
           }
-        } catch {}
-
-        if (!cloudParsed) {
+        } catch (e) {
+          console.warn('daybook_items table query fallback:', e);
+        }
+      })(),
+      (async () => {
+        try {
+          // Authenticated download FIRST to bypass stale public CDN caches
           const { data: blobData, error } = await supabase.storage
             .from('shop-logos')
             .download(`${uid}/daybook-items.json`);
           if (!error && blobData) {
-            const text = await blobData.text();
-            const parsed = JSON.parse(text);
-            if (Array.isArray(parsed)) cloudParsed = parsed;
+            const parsed = JSON.parse(await blobData.text());
+            if (Array.isArray(parsed)) {
+              storageItems = parsed.map(normalizeRawItem).filter((x): x is DaybookStockItem => Boolean(x));
+            }
           }
-        }
-
-        if (Array.isArray(cloudParsed)) {
-          const { merged, needsPushBack } = mergeCloudWithLocal(cloudParsed);
-          daybookItemsRef.current = merged;
-          setDaybookItems(merged);
+        } catch {}
+        if (storageItems === null) {
           try {
-            localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(merged));
-            localStorage.setItem('st_daybook_items', JSON.stringify(merged));
+            const { data: pubData } = supabase.storage
+              .from('shop-logos')
+              .getPublicUrl(`${uid}/daybook-items.json`);
+            if (pubData?.publicUrl) {
+              const bustRes = await fetch(`${pubData.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
+              if (bustRes.ok) {
+                const parsed = await bustRes.json();
+                if (Array.isArray(parsed)) {
+                  storageItems = parsed.map(normalizeRawItem).filter((x): x is DaybookStockItem => Boolean(x));
+                }
+              }
+            }
           } catch {}
-          if (needsPushBack) {
-            persistDaybookItems(merged, uid).catch(() => {});
-          } else if (merged.length > 0) {
-            const dbRows = merged.map((it: any) => ({
-              id: it.id || generateUUID(),
-              user_id: uid,
-              item: it.item || '',
-              sku: it.sku || '',
-              category: it.category || null,
-              qty: Number(it.qty) || 0,
-              cost: Number(it.cost) || 0,
-              wholesale_price: Number(it.wholesalePrice) || 0,
-              retail_price: Number(it.retailPrice) || 0,
-              updated_at: it.updatedAt || new Date().toISOString()
-            }));
-            supabase.from('daybook_items').upsert(dbRows, { onConflict: 'id' }).then(() => {}, () => {});
-          }
         }
-      } catch (e) {
-        console.warn('Daybook items cloud load warning:', e);
+      })(),
+      (async () => {
+        try {
+          if (!resolvedMeta) {
+            const { data: uData } = await supabase.auth.getUser();
+            if (uData?.user?.id === uid) resolvedMeta = uData.user.user_metadata;
+          }
+          if (Array.isArray(resolvedMeta?.daybook_items_sync)) {
+            metaItems = resolvedMeta.daybook_items_sync
+              .map(normalizeRawItem)
+              .filter((x): x is DaybookStockItem => Boolean(x));
+          }
+          if (Array.isArray(resolvedMeta?.item_categories_sync)) {
+            metaCats = resolvedMeta.item_categories_sync.map((c: any) => String(c || '').trim()).filter(Boolean);
+          }
+        } catch {}
+      })(),
+      (async () => {
+        try {
+          const { data: catBlob, error: catErr } = await supabase.storage
+            .from('shop-logos')
+            .download(`${uid}/item-categories.json`);
+          if (!catErr && catBlob) {
+            const cloudCats = JSON.parse(await catBlob.text());
+            if (Array.isArray(cloudCats)) {
+              storageCats = cloudCats.map((c: any) => String(c || '').trim()).filter(Boolean);
+            }
+          }
+        } catch (e) {
+          console.warn('Item categories cloud load warning:', e);
+        }
+      })()
+    ]);
+
+    // Combine cloud sources by ID keeping the newest updatedAt
+    const cloudMap = new Map<string, DaybookStockItem>();
+    const absorbCloud = (list: DaybookStockItem[] | null) => {
+      if (!Array.isArray(list)) return;
+      for (const item of list) {
+        const prev = cloudMap.get(item.id);
+        if (!prev) {
+          cloudMap.set(item.id, item);
+        } else {
+          const prevMs = Date.parse(prev.updatedAt || '') || 0;
+          const nextMs = Date.parse(item.updatedAt || '') || 0;
+          if (nextMs >= prevMs) cloudMap.set(item.id, item);
+        }
       }
+    };
+    absorbCloud(metaItems);
+    absorbCloud(storageItems);
+    absorbCloud(tableItems);
+
+    const cloudList = Array.from(cloudMap.values());
+    const { merged, needsPushBack } = mergeCloudWithLocal(cloudList);
+
+    if (merged.length > 0 || tableItems !== null || storageItems !== null || metaItems !== null) {
+      daybookItemsRef.current = merged;
+      setDaybookItems(merged);
+      try {
+        localStorage.setItem(`st_daybook_items_${uid}`, JSON.stringify(merged));
+        localStorage.setItem('st_daybook_items', JSON.stringify(merged));
+      } catch {}
     }
 
-    try {
-      const { data: catBlob, error: catErr } = await supabase.storage
-        .from('shop-logos')
-        .download(`${uid}/item-categories.json`);
-      if (!catErr && catBlob) {
-        const text = await catBlob.text();
-        const cloudCats = JSON.parse(text);
-        if (Array.isArray(cloudCats)) {
-          const cleaned = cloudCats.map(c => String(c || '').trim()).filter(Boolean);
-          setCustomItemCategories(cleaned);
-          try {
-            localStorage.setItem(`st_custom_item_categories_${uid}`, JSON.stringify(cleaned));
-            localStorage.setItem('st_custom_item_categories', JSON.stringify(cleaned));
-          } catch {}
-        }
+    const anyCloudMissingItems =
+      merged.length > 0 && (
+        (storageItems === null || storageItems.length < merged.length) ||
+        (tableItems !== null && tableItems.length < merged.length) ||
+        (metaItems === null && merged.length <= 20)
+      );
+
+    if (needsPushBack || anyCloudMissingItems) {
+      persistDaybookItems(merged, uid).catch(() => {});
+    }
+
+    // Merge and hydrate custom item categories
+    const mergedCatMap = new Map<string, string>();
+    [...storageCats, ...metaCats, ...localCats].forEach(c => {
+      const clean = c.trim();
+      if (clean && !mergedCatMap.has(clean.toLowerCase())) {
+        mergedCatMap.set(clean.toLowerCase(), clean);
       }
-    } catch (e) {
-      console.warn('Item categories cloud load warning:', e);
+    });
+    const mergedCats = Array.from(mergedCatMap.values());
+    if (mergedCats.length > 0) {
+      setCustomItemCategories(mergedCats);
+      try {
+        localStorage.setItem(`st_custom_item_categories_${uid}`, JSON.stringify(mergedCats));
+        localStorage.setItem('st_custom_item_categories', JSON.stringify(mergedCats));
+      } catch {}
+      if (localCats.length > storageCats.length || (mergedCats.length > 0 && storageCats.length === 0)) {
+        persistCustomItemCategories(mergedCats, uid).catch(() => {});
+      }
     }
   };
 
@@ -4083,7 +4237,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       const [contactsRes, transRes, cashbookRes] = await Promise.all([
         supabase.from('contacts').select('*').eq('user_id', activeUid),
         supabase.from('transactions').select('*').eq('user_id', activeUid).order('date', { ascending: false }),
-        supabase.from('cashbook_entries').select('*').eq('user_id', activeUid).order('date', { ascending: false })
+        supabase.from('cashbook_entries').select('*').eq('user_id', activeUid).order('date', { ascending: false }),
+        loadDaybookItemsCloud(activeUid).catch(() => {})
       ]);
 
       if (contactsRes.error) {
@@ -4259,9 +4414,6 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             };
           });
 
-        // Hydrate Daybook Items catalog from daybook_items table + Supabase Storage
-        loadDaybookItemsCloud(activeUid).catch(() => {});
-
         // Auto-link any customer or service sales payments if missing in Sales Daybook
         const existingCbIds = new Set(mappedCb.map(c => c.id));
         const allContactsMap = new Map(mappedContacts.map(c => [c.id, c]));
@@ -4368,22 +4520,35 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   useEffect(() => {
     let mounted = true;
+    let activeUserDetected = false;
 
-    // Safety timeout: Ensure the loading screen never stays longer than 1.5 seconds
+    const applyProfileToShopState = (prof: UserProfile | null, uid: string) => {
+      updateUserProfileState(prof);
+      const isSameLocalUser = typeof window !== 'undefined' && localStorage.getItem('st_last_uid') === uid;
+      setShopName(prof?.shopName || (isSameLocalUser ? localStorage.getItem('st_shop_name') || '' : ''));
+      setShopTagline(prof?.tagline || (isSameLocalUser ? localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service' : 'Mobile Phone Repair & Service'));
+      setShopPhone(prof?.phone || (isSameLocalUser ? localStorage.getItem('st_shop_phone') || '' : ''));
+      setShopAddress(prof?.address || (isSameLocalUser ? localStorage.getItem('st_shop_address') || '' : ''));
+      setShopLogo(prof?.logoUrl || (isSameLocalUser ? localStorage.getItem('st_shop_logo') || null : null));
+      setShopReceiptTerms(prof?.receiptTerms || (isSameLocalUser ? localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS : DEFAULT_RECEIPT_TERMS));
+    };
+
+    // Safety timeout: prevent permanent spinner if Supabase locks stall, without cutting off an active profile fetch prematurely
     const safetyTimer = setTimeout(() => {
       if (mounted) {
         setIsAuthLoading(false);
-        setIsProfileLoading(false);
+        if (!activeUserDetected) {
+          setIsProfileLoading(false);
+        }
       }
-    }, 1500);
+    }, 6500);
 
     const initAuth = async () => {
       try {
         setIsProfileLoading(true);
-        // Race getSession with a 1.2s fallback in case of slow or blocked lock in iframe
         const sessionPromise = supabase.auth.getSession();
         const fallbackPromise = new Promise<{ data: { session: any } }>((resolve) =>
-          setTimeout(() => resolve({ data: { session: null } }), 1200)
+          setTimeout(() => resolve({ data: { session: null } }), 3500)
         );
         const { data: { session } } = await Promise.race([sessionPromise, fallbackPromise]);
         if (!mounted) return;
@@ -4391,6 +4556,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         setAuthUser(session?.user || null);
 
         if (session?.user) {
+          activeUserDetected = true;
+          prepareLocalScopeForUser(session.user.id);
           if (session.user.email_confirmed_at) {
             setIsAuthenticated(true);
             sessionStorage.setItem('st_auth_active', 'true');
@@ -4398,13 +4565,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
           const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
           if (mounted) {
-            updateUserProfileState(prof);
-            setShopName(prof?.shopName || localStorage.getItem('st_shop_name') || '');
-            setShopTagline(prof?.tagline || localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
-            setShopPhone(prof?.phone || localStorage.getItem('st_shop_phone') || '');
-            setShopAddress(prof?.address || localStorage.getItem('st_shop_address') || '');
-            setShopLogo(prof?.logoUrl || localStorage.getItem('st_shop_logo') || null);
-            setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
+            applyProfileToShopState(prof, session.user.id);
           }
 
           fetchedUidRef.current = session.user.id;
@@ -4443,6 +4604,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       setAuthUser(session?.user || null);
 
       if (session?.user) {
+        activeUserDetected = true;
+        prepareLocalScopeForUser(session.user.id);
         const alreadyFetchedForUser = fetchedUidRef.current === session.user.id;
         if (event === 'TOKEN_REFRESHED' || (alreadyFetchedForUser && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN'))) {
           if (mounted) {
@@ -4461,19 +4624,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
         const prof = await loadUserProfile(session.user.id, session.user.user_metadata);
         if (mounted) {
-          updateUserProfileState(prof);
-          setShopName(prof?.shopName || localStorage.getItem('st_shop_name') || '');
-          setShopTagline(prof?.tagline || localStorage.getItem('st_shop_tagline') || 'Mobile Phone Repair & Service');
-          setShopPhone(prof?.phone || localStorage.getItem('st_shop_phone') || '');
-          setShopAddress(prof?.address || localStorage.getItem('st_shop_address') || '');
-          setShopLogo(prof?.logoUrl || localStorage.getItem('st_shop_logo') || null);
-          setShopReceiptTerms(prof?.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
+          applyProfileToShopState(prof, session.user.id);
         }
 
         fetchedUidRef.current = session.user.id;
         fetchData(session.user.id).catch(e => console.warn('Fetch data on change warning:', e));
       } else {
+        activeUserDetected = false;
         fetchedUidRef.current = null;
+        lastStockMutationTsRef.current = 0;
         updateUserProfileState(null);
         setShopName('');
         setShopPhone('');
@@ -4484,6 +4643,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         setContacts([]);
         setTransactions([]);
         setCashbookEntries([]);
+        setDaybookItems([]);
+        daybookItemsRef.current = [];
+        setCustomItemCategories([]);
+        clearUnscopedUserCaches();
+        try { localStorage.removeItem('st_last_uid'); } catch {}
         setIsAuthenticated(false);
         sessionStorage.removeItem('st_auth_active');
       }
@@ -9456,23 +9620,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     if (authUser) {
       try {
-        const payload = {
+        const updatedProf: UserProfile = {
           id: authUser.id,
-          full_name: userProfile?.fullName || authUser.user_metadata?.full_name || 'Shop Owner',
-          shop_name: shopName.trim(),
-          tagline: shopTagline.trim(),
+          fullName: userProfile?.fullName || authUser.user_metadata?.full_name || 'Shop Owner',
+          shopName: shopName.trim(),
+          tagline: shopTagline.trim() || 'Mobile Phone Repair & Service',
           phone: shopPhone.trim(),
           address: shopAddress.trim(),
-          logo_url: shopLogo,
-          receipt_terms: cleanTerms,
-          setup_completed: true,
-          updated_at: new Date().toISOString()
+          logoUrl: shopLogo || null,
+          receiptTerms: cleanTerms,
+          setupCompleted: true
         };
-        await supabase.from('profiles').upsert(payload);
-        try {
-          localStorage.setItem(`st_shop_profile_${authUser.id}`, JSON.stringify({ ...payload, receiptTerms: cleanTerms }));
-        } catch {}
-        setUserProfile(prev => prev ? { ...prev, ...payload, receiptTerms: cleanTerms, setupCompleted: true } : { ...payload, receiptTerms: cleanTerms, setupCompleted: true });
+        await saveUserProfileCloud(updatedProf);
+        updateUserProfileState(updatedProf);
       } catch (err) {
         console.warn('Profile sync to Supabase warning:', err);
       }
@@ -10248,9 +10408,18 @@ CREATE POLICY "Users can manage own transactions" ON public.transactions FOR ALL
 DROP POLICY IF EXISTS "Users can manage own cashbook" ON public.cashbook_entries;
 CREATE POLICY "Users can manage own cashbook" ON public.cashbook_entries FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- 8. Storage Bucket for Shop Logos & Attachments
+-- 8. Storage Bucket for Shop Logos, Stock Catalog & Attachments
 INSERT INTO storage.buckets (id, name, public) VALUES ('shop-logos', 'shop-logos', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
+
+DROP POLICY IF EXISTS "Public read shop-logos" ON storage.objects;
+CREATE POLICY "Public read shop-logos" ON storage.objects FOR SELECT USING (bucket_id = 'shop-logos');
+DROP POLICY IF EXISTS "Users upload own shop-logos" ON storage.objects;
+CREATE POLICY "Users upload own shop-logos" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'shop-logos' AND (storage.foldername(name))[1] = auth.uid()::text);
+DROP POLICY IF EXISTS "Users update own shop-logos" ON storage.objects;
+CREATE POLICY "Users update own shop-logos" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'shop-logos' AND (storage.foldername(name))[1] = auth.uid()::text);
+DROP POLICY IF EXISTS "Users delete own shop-logos" ON storage.objects;
+CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'shop-logos' AND (storage.foldername(name))[1] = auth.uid()::text);
 `;
 
     return (
@@ -16864,19 +17033,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         onAuthSuccess={async (user, profile) => {
           sessionStorage.removeItem('st_password_recovery');
           setIsPasswordRecoveryMode(false);
+          prepareLocalScopeForUser(user.id);
           setAuthUser(user);
-          if (profile) {
-            updateUserProfileState(profile);
-            setShopName(profile.shopName || '');
-            setShopPhone(profile.phone || '');
-            setShopAddress(profile.address || '');
-            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
-            setShopLogo(profile.logoUrl || null);
-            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
-          }
+          setIsProfileLoading(true);
+          const resolvedProfile = profile || await loadUserProfile(user.id, user.user_metadata);
+          updateUserProfileState(resolvedProfile);
+          setShopName(resolvedProfile.shopName || '');
+          setShopPhone(resolvedProfile.phone || '');
+          setShopAddress(resolvedProfile.address || '');
+          setShopTagline(resolvedProfile.tagline || 'Mobile Phone Repair & Service');
+          setShopLogo(resolvedProfile.logoUrl || null);
+          setShopReceiptTerms(resolvedProfile.receiptTerms || DEFAULT_RECEIPT_TERMS);
           setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
+          fetchedUidRef.current = user.id;
           if (typeof window !== 'undefined' && window.history?.replaceState) {
             window.history.replaceState(null, '', window.location.pathname);
           }
@@ -16893,19 +17064,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         onEnterRecoveryMode={() => setIsPasswordRecoveryMode(true)}
         onAuthSuccess={async (user, profile) => {
           sessionStorage.removeItem('st_password_recovery');
+          prepareLocalScopeForUser(user.id);
           setAuthUser(user);
-          if (profile) {
-            updateUserProfileState(profile);
-            setShopName(profile.shopName || '');
-            setShopPhone(profile.phone || '');
-            setShopAddress(profile.address || '');
-            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
-            setShopLogo(profile.logoUrl || null);
-            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
-          }
+          setIsProfileLoading(true);
+          const resolvedProfile = profile || await loadUserProfile(user.id, user.user_metadata);
+          updateUserProfileState(resolvedProfile);
+          setShopName(resolvedProfile.shopName || '');
+          setShopPhone(resolvedProfile.phone || '');
+          setShopAddress(resolvedProfile.address || '');
+          setShopTagline(resolvedProfile.tagline || 'Mobile Phone Repair & Service');
+          setShopLogo(resolvedProfile.logoUrl || null);
+          setShopReceiptTerms(resolvedProfile.receiptTerms || DEFAULT_RECEIPT_TERMS);
           setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
+          fetchedUidRef.current = user.id;
           await fetchData(user.id);
         }}
       />
@@ -16919,19 +17092,21 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         initialMode="VERIFY_EMAIL"
         initialEmail={authUser.email || ''}
         onAuthSuccess={async (user, profile) => {
+          prepareLocalScopeForUser(user.id);
           setAuthUser(user);
-          if (profile) {
-            updateUserProfileState(profile);
-            setShopName(profile.shopName || '');
-            setShopPhone(profile.phone || '');
-            setShopAddress(profile.address || '');
-            setShopTagline(profile.tagline || 'Mobile Phone Repair & Service');
-            setShopLogo(profile.logoUrl || null);
-            setShopReceiptTerms(profile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
-          }
+          setIsProfileLoading(true);
+          const resolvedProfile = profile || await loadUserProfile(user.id, user.user_metadata);
+          updateUserProfileState(resolvedProfile);
+          setShopName(resolvedProfile.shopName || '');
+          setShopPhone(resolvedProfile.phone || '');
+          setShopAddress(resolvedProfile.address || '');
+          setShopTagline(resolvedProfile.tagline || 'Mobile Phone Repair & Service');
+          setShopLogo(resolvedProfile.logoUrl || null);
+          setShopReceiptTerms(resolvedProfile.receiptTerms || DEFAULT_RECEIPT_TERMS);
           setIsProfileLoading(false);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
+          fetchedUidRef.current = user.id;
           await fetchData(user.id);
         }}
       />
@@ -16946,15 +17121,17 @@ ON CONFLICT (id) DO UPDATE SET public = true;
         userEmail={authUser.email || ''}
         initialFullName={authUser.user_metadata?.full_name || ''}
         onSetupComplete={async (newProfile) => {
+          prepareLocalScopeForUser(authUser.id);
           updateUserProfileState(newProfile);
           setShopName(newProfile.shopName || '');
           setShopPhone(newProfile.phone || '');
           setShopAddress(newProfile.address || '');
           setShopTagline(newProfile.tagline || 'Mobile Phone Repair & Service');
           setShopLogo(newProfile.logoUrl || null);
-          setShopReceiptTerms(newProfile.receiptTerms || localStorage.getItem('st_shop_receipt_terms') || DEFAULT_RECEIPT_TERMS);
+          setShopReceiptTerms(newProfile.receiptTerms || DEFAULT_RECEIPT_TERMS);
           setIsAuthenticated(true);
           sessionStorage.setItem('st_auth_active', 'true');
+          fetchedUidRef.current = authUser.id;
           await fetchData(authUser.id);
         }}
       />
