@@ -674,6 +674,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   });
   const [profileToast, setProfileToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
+  // Backup Import States
+  const backupImportInputRef = useRef<HTMLInputElement>(null);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [pendingImportBackup, setPendingImportBackup] = useState<any | null>(null);
+  const [importMode, setImportMode] = useState<'MERGE' | 'REPLACE'>('MERGE');
+  const [importRestoreShopProfile, setImportRestoreShopProfile] = useState(true);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
+  const [importBackupError, setImportBackupError] = useState('');
+
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   const currentUser = useMemo(() => {
@@ -9761,27 +9770,559 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const handleExportBackup = () => {
     try {
       const backupData = {
-        version: '1.0',
+        version: '2.0',
         exportDate: new Date().toISOString(),
         shopName,
         shopTagline,
         shopPhone,
         shopAddress,
+        shopLogo,
+        shopReceiptTerms,
         contacts,
         transactions,
+        cashbookEntries,
+        daybookItems,
+        customItemCategories,
         users: users.map(u => ({ ...u, pin: '****' }))
       };
       const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${shopName.replace(/[^a-z0-9]/gi, '_')}_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `${(shopName || 'LedgerBook').replace(/[^a-z0-9]/gi, '_')}_backup_${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showProfileToast('Backup exported successfully!');
+      showProfileToast('Full backup exported successfully!');
     } catch (e) {
       showProfileToast('Failed to export backup', 'error');
     }
+  };
+
+  const handleBackupFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = JSON.parse(String(reader.result || '{}'));
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          showProfileToast('Invalid backup file format.', 'error');
+          return;
+        }
+        const hasAnySection =
+          Array.isArray(raw.contacts) ||
+          Array.isArray(raw.transactions) ||
+          Array.isArray(raw.cashbookEntries) ||
+          Array.isArray(raw.daybookItems) ||
+          typeof raw.shopName === 'string';
+        if (!hasAnySection) {
+          showProfileToast('This JSON file does not appear to be a Ledger Book backup.', 'error');
+          return;
+        }
+        setPendingImportBackup(raw);
+        setImportMode('MERGE');
+        setImportRestoreShopProfile(Boolean((raw.shopName || '').trim()));
+        setImportBackupError('');
+        setIsImportModalOpen(true);
+      } catch {
+        showProfileToast('Could not read JSON backup file. Please verify the file.', 'error');
+      }
+    };
+    reader.onerror = () => {
+      showProfileToast('Failed to read selected backup file.', 'error');
+    };
+    reader.readAsText(file);
+  };
+
+  const upsertChunks = async (
+    table: string,
+    rows: any[],
+    buildFallback?: (row: any) => any
+  ) => {
+    if (rows.length === 0) return;
+    const chunkSize = 50;
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const chunk = rows.slice(i, i + chunkSize);
+      try {
+        const res = await supabase.from(table).upsert(chunk, { onConflict: 'id' });
+        if (res.error) {
+          const msg = (res.error.message || '').toLowerCase();
+          const isMissingTable = res.error.code === 'PGRST205' || msg.includes('schema cache') || msg.includes('could not find the table');
+          if (!isMissingTable && buildFallback && (res.error.code === 'PGRST204' || res.error.code === '42703' || msg.includes('column'))) {
+            const fallbackChunk = chunk.map(buildFallback);
+            await supabase.from(table).upsert(fallbackChunk, { onConflict: 'id' });
+          }
+        }
+      } catch (err) {
+        console.warn(`Backup chunk upsert warning (${table}):`, err);
+      }
+    }
+  };
+
+  const handleConfirmImportBackup = async () => {
+    if (!pendingImportBackup || isImportingBackup) return;
+    setImportBackupError('');
+    setIsImportingBackup(true);
+
+    try {
+      let targetUid = authUser?.id;
+      if (!targetUid) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          targetUid = data?.session?.user?.id;
+        } catch {}
+      }
+
+      const raw = pendingImportBackup;
+      const isReplace = importMode === 'REPLACE';
+
+      const incomingContacts: Contact[] = Array.isArray(raw.contacts)
+        ? raw.contacts
+            .filter((c: any) => c && c.id && c.name)
+            .map((c: any) => ({
+              id: String(c.id),
+              userId: targetUid || c.userId,
+              name: String(c.name || ''),
+              phone: String(c.phone || ''),
+              city: c.city ? String(c.city) : '',
+              type: (c.type === 'RENT' || c.type === 'SERVICE' ? c.type : 'CUSTOMER') as ContactType,
+              balance: Number(c.balance) || 0,
+              targetAmount: c.targetAmount != null ? Number(c.targetAmount) : (c.type === 'RENT' ? 30000 : undefined),
+              phoneModel: c.phoneModel || c.startDate || '',
+              deviceIssue: c.deviceIssue || '',
+              serviceStatus: c.serviceStatus || 'Pending',
+              totalCost: c.totalCost != null ? Number(c.totalCost) : 0,
+              advancePayment: c.advancePayment != null ? Number(c.advancePayment) : 0,
+              advanceDate: c.advanceDate || '',
+              orderDate: c.orderDate || '',
+              collectedItems: Array.isArray(c.collectedItems) ? c.collectedItems : [],
+              otherCollectedItems: c.otherCollectedItems || '',
+              lastUpdated: c.lastUpdated || new Date().toISOString()
+            }))
+        : [];
+
+      const incomingTransactions: Transaction[] = Array.isArray(raw.transactions)
+        ? raw.transactions
+            .filter((t: any) => t && t.id && t.contactId)
+            .map((t: any) => ({
+              id: String(t.id),
+              userId: targetUid || t.userId,
+              contactId: String(t.contactId),
+              date: String(t.date || new Date().toISOString().slice(0, 10)),
+              description: t.description != null ? String(t.description) : '',
+              paymentMethod: t.paymentMethod,
+              chequeStatus: t.chequeStatus,
+              chequeNumber: t.chequeNumber,
+              chequeDate: t.chequeDate,
+              cashAmount: t.cashAmount != null ? Number(t.cashAmount) : undefined,
+              chequeAmount: t.chequeAmount != null ? Number(t.chequeAmount) : undefined,
+              amount: Number(t.amount) || 0,
+              type: (t.type === 'PAYMENT' ? 'PAYMENT' : 'CREDIT') as TransactionType,
+              balanceAfter: Number(t.balanceAfter) || 0,
+              hasAttachment: Boolean(t.hasAttachment || t.attachmentUrl),
+              attachmentUrl: t.attachmentUrl || null,
+              attachmentDocType: t.attachmentDocType
+            }))
+        : [];
+
+      const incomingCashbook: CashbookEntry[] = Array.isArray(raw.cashbookEntries)
+        ? raw.cashbookEntries
+            .filter((e: any) => e && e.id && (e.type as string) !== 'EXPENSE')
+            .map((e: any) => ({
+              id: String(e.id),
+              userId: targetUid || e.userId,
+              type: 'SALE' as CashbookEntryType,
+              amount: Number(e.amount) || 0,
+              date: String(e.date || new Date().toISOString().slice(0, 10)),
+              category: String(e.category || ''),
+              description: e.description != null ? String(e.description) : '',
+              paymentMethod: (e.paymentMethod || 'Cash') as PaymentMethod,
+              referenceNo: e.referenceNo || '',
+              contactName: e.contactName || '',
+              contactId: e.contactId || undefined,
+              items: Array.isArray(e.items) && e.items.length > 0 ? e.items : undefined,
+              createdAt: e.createdAt || new Date().toISOString()
+            }))
+        : [];
+
+      const incomingStock: DaybookStockItem[] = Array.isArray(raw.daybookItems)
+        ? raw.daybookItems
+            .filter((i: any) => i && i.id && (i.item || i.sku))
+            .map((i: any) => ({
+              id: String(i.id),
+              userId: targetUid || i.userId,
+              item: String(i.item || i.sku || ''),
+              sku: String(i.sku || ''),
+              category: i.category ? String(i.category).trim() : undefined,
+              qty: Number(i.qty) || 0,
+              cost: Number(i.cost) || 0,
+              wholesalePrice: Number(i.wholesalePrice) || 0,
+              retailPrice: Number(i.retailPrice) || 0,
+              updatedAt: i.updatedAt || new Date().toISOString()
+            }))
+        : [];
+
+      const incomingCats: string[] = Array.isArray(raw.customItemCategories)
+        ? raw.customItemCategories.map((c: any) => String(c || '').trim()).filter(Boolean)
+        : [];
+
+      // If REPLACE mode, clear existing Supabase rows for this user first
+      if (isReplace && targetUid) {
+        await Promise.allSettled([
+          supabase.from('transactions').delete().eq('user_id', targetUid),
+          supabase.from('cashbook_entries').delete().eq('user_id', targetUid),
+          supabase.from('contacts').delete().eq('user_id', targetUid),
+          supabase.from('daybook_items').delete().eq('user_id', targetUid)
+        ]);
+      }
+
+      // 1. Merge or Replace Contacts
+      const contactMap = new Map<string, Contact>((isReplace ? [] : contacts).map(c => [c.id, c]));
+      incomingContacts.forEach(c => contactMap.set(c.id, c));
+      const finalContacts = Array.from(contactMap.values());
+
+      if (targetUid && incomingContacts.length > 0) {
+        const contactRows = incomingContacts.map(c => {
+          const isService = c.type === 'SERVICE';
+          const cleanCity = (c.city || '').trim();
+          const serviceMeta = isService ? {
+            status: c.serviceStatus || 'Pending',
+            advance: Number(c.advancePayment) || 0,
+            advanceDate: c.advanceDate || '',
+            orderDate: c.orderDate || '',
+            collectedItems: Array.isArray(c.collectedItems) ? c.collectedItems : [],
+            otherCollectedItems: c.otherCollectedItems || '',
+            deviceIssue: c.deviceIssue || '',
+            ...(cleanCity ? { city: cleanCity } : {})
+          } : null;
+          return {
+            id: c.id,
+            user_id: targetUid,
+            name: c.name,
+            phone: c.phone || '',
+            city: cleanCity,
+            type: c.type,
+            balance: Number(c.balance) || 0,
+            target_amount: c.targetAmount != null ? Number(c.targetAmount) : null,
+            start_date: isService ? (c.phoneModel || '') : null,
+            end_date: isService ? JSON.stringify(serviceMeta) : (cleanCity ? JSON.stringify({ city: cleanCity }) : null),
+            last_updated: c.lastUpdated || new Date().toISOString()
+          };
+        });
+        await upsertChunks('contacts', contactRows, ({ city: _c, ...rest }) => rest);
+      }
+
+      setContacts(finalContacts);
+      try {
+        if (targetUid) localStorage.setItem(`st_cached_contacts_${targetUid}`, JSON.stringify(finalContacts));
+        localStorage.setItem('st_cached_contacts', JSON.stringify(finalContacts));
+      } catch {}
+
+      // 2. Merge or Replace Transactions
+      const txMap = new Map<string, Transaction>((isReplace ? [] : transactions).map(t => [t.id, t]));
+      incomingTransactions.forEach(t => {
+        if (contactMap.has(t.contactId)) {
+          txMap.set(t.id, t);
+          if (t.attachmentUrl) {
+            saveTxAttachment(t.id, t.attachmentUrl, t.attachmentDocType || 'Cheque', targetUid);
+          }
+        }
+      });
+      const finalTransactions = Array.from(txMap.values());
+
+      if (targetUid && incomingTransactions.length > 0) {
+        const validTxForDb = incomingTransactions.filter(t => contactMap.has(t.contactId));
+        const txRows = validTxForDb.map(t => ({
+          id: t.id,
+          user_id: targetUid,
+          contact_id: t.contactId,
+          date: t.date,
+          amount: Number(t.amount) || 0,
+          type: t.type,
+          description: t.description || '',
+          payment_method: t.paymentMethod || null,
+          cheque_status: t.chequeStatus || null,
+          cheque_number: t.chequeNumber || null,
+          cheque_date: t.chequeDate || null,
+          balance_after: Number(t.balanceAfter) || 0
+        }));
+        await upsertChunks('transactions', txRows, ({ payment_method: _pm, cheque_status: _cs, cheque_number: _cn, cheque_date: _cd, ...base }) => base);
+      }
+
+      setTransactions(finalTransactions);
+      try {
+        if (targetUid) localStorage.setItem(`st_cached_transactions_${targetUid}`, JSON.stringify(finalTransactions));
+        localStorage.setItem('st_cached_transactions', JSON.stringify(finalTransactions));
+      } catch {}
+
+      // 3. Merge or Replace Sales Daybook Entries
+      const cbMap = new Map<string, CashbookEntry>((isReplace ? [] : cashbookEntries).map(e => [e.id, e]));
+      incomingCashbook.forEach(e => cbMap.set(e.id, e));
+      const finalCashbook = Array.from(cbMap.values());
+
+      if (targetUid && incomingCashbook.length > 0) {
+        const cbRows = incomingCashbook.map(e => ({
+          id: e.id,
+          user_id: targetUid,
+          contact_id: e.contactId && contactMap.has(e.contactId) ? e.contactId : null,
+          type: 'SALE',
+          amount: Number(e.amount) || 0,
+          date: e.date,
+          category: e.category || '',
+          description: e.description || '',
+          payment_method: e.paymentMethod || 'Cash',
+          reference_no: e.referenceNo || '',
+          contact_name: e.contactName || '',
+          items_json: e.items && e.items.length > 0 ? e.items : null
+        }));
+        await upsertChunks('cashbook_entries', cbRows, ({ contact_id: _cid, items_json: _ij, ...base }) => base);
+      }
+
+      setCashbookEntries(finalCashbook);
+      try {
+        if (targetUid) localStorage.setItem(`st_cashbook_entries_${targetUid}`, JSON.stringify(finalCashbook));
+        localStorage.setItem('st_cashbook_entries', JSON.stringify(finalCashbook));
+      } catch {}
+
+      // 4. Merge or Replace Items & Stock + Categories
+      const stockMap = new Map<string, DaybookStockItem>((isReplace ? [] : daybookItemsRef.current).map(i => [i.id, i]));
+      incomingStock.forEach(i => stockMap.set(i.id, i));
+      const finalStock = Array.from(stockMap.values());
+      if (isReplace) {
+        try {
+          if (targetUid) localStorage.removeItem(`st_daybook_deleted_ids_${targetUid}`);
+        } catch {}
+      }
+      if (incomingStock.length > 0 || isReplace) {
+        await persistDaybookItems(finalStock, targetUid);
+      }
+
+      const catBase = isReplace ? [] : customItemCategories;
+      const stockDerivedCats = incomingStock.map(i => i.category || '').filter(Boolean);
+      const mergedCats = [...catBase, ...incomingCats, ...stockDerivedCats];
+      if (mergedCats.length > 0 || isReplace) {
+        await persistCustomItemCategories(mergedCats, targetUid);
+      }
+
+      // 5. Optionally restore Shop Profile Details & Logo
+      if (importRestoreShopProfile && (raw.shopName || '').trim()) {
+        const cleanShop = String(raw.shopName).trim();
+        const cleanTag = String(raw.shopTagline || shopTagline || 'Mobile Phone Repair & Service').trim();
+        const cleanPhone = String(raw.shopPhone || '').trim();
+        const cleanAddr = String(raw.shopAddress || '').trim();
+        const cleanLogo = raw.shopLogo !== undefined ? raw.shopLogo : shopLogo;
+        const cleanTerms = String(raw.shopReceiptTerms || shopReceiptTerms || DEFAULT_RECEIPT_TERMS).trim();
+
+        setShopName(cleanShop);
+        setShopTagline(cleanTag);
+        setShopPhone(cleanPhone);
+        setShopAddress(cleanAddr);
+        setShopLogo(cleanLogo || null);
+        setShopReceiptTerms(cleanTerms);
+
+        if (targetUid) {
+          const updatedProf: UserProfile = {
+            id: targetUid,
+            fullName: userProfile?.fullName || authUser?.user_metadata?.full_name || 'Shop Owner',
+            shopName: cleanShop,
+            tagline: cleanTag,
+            phone: cleanPhone,
+            address: cleanAddr,
+            logoUrl: cleanLogo || null,
+            receiptTerms: cleanTerms,
+            setupCompleted: true
+          };
+          await saveUserProfileCloud(updatedProf);
+          updateUserProfileState(updatedProf);
+        }
+      }
+
+      // 6. Refresh from Supabase to verify sync
+      if (targetUid) {
+        await fetchData(targetUid).catch(() => {});
+      }
+
+      setIsImportModalOpen(false);
+      setPendingImportBackup(null);
+      showProfileToast(
+        `Backup imported (${incomingContacts.length} contacts, ${incomingTransactions.length} transactions, ${incomingCashbook.length} sales, ${incomingStock.length} stock items)!`
+      );
+    } catch (err: any) {
+      setImportBackupError(err?.message || 'Failed to import backup. Please try again.');
+    } finally {
+      setIsImportingBackup(false);
+    }
+  };
+
+  const renderImportBackupModal = () => {
+    if (!isImportModalOpen || !pendingImportBackup) return null;
+    const raw = pendingImportBackup;
+    const cCount = Array.isArray(raw.contacts) ? raw.contacts.length : 0;
+    const tCount = Array.isArray(raw.transactions) ? raw.transactions.length : 0;
+    const cbCount = Array.isArray(raw.cashbookEntries) ? raw.cashbookEntries.length : 0;
+    const stockCount = Array.isArray(raw.daybookItems) ? raw.daybookItems.length : 0;
+    const catCount = Array.isArray(raw.customItemCategories) ? raw.customItemCategories.length : 0;
+    const hasShopDetails = Boolean((raw.shopName || '').trim());
+
+    return (
+      <div className="fixed inset-0 bg-black/75 z-[140] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[90vh]">
+          <div className="bg-slate-900 text-white p-5 flex justify-between items-center shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-inner">
+                <Upload size={19} />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm">Import Backup (JSON)</h3>
+                <p className="text-[11px] text-slate-400">
+                  {raw.exportDate ? `Exported ${formatDisplayDate(String(raw.exportDate).slice(0, 10))}` : 'Restore ledger & stock data'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (isImportingBackup) return;
+                setIsImportModalOpen(false);
+                setPendingImportBackup(null);
+              }}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="p-5 overflow-y-auto space-y-4 text-xs">
+            {/* Backup Summary */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
+                <span className="font-bold text-slate-700 dark:text-slate-200">Backup Contents</span>
+                {hasShopDetails && (
+                  <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate max-w-[160px]">{raw.shopName}</span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Contacts:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{cCount}</span>
+                </div>
+                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Transactions:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{tCount}</span>
+                </div>
+                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Sales Entries:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{cbCount}</span>
+                </div>
+                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Items & Stock:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{stockCount}{catCount > 0 ? ` (${catCount} cat)` : ''}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Import Mode */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Restore Mode</label>
+              <button
+                type="button"
+                onClick={() => setImportMode('MERGE')}
+                className={`w-full text-left p-3 rounded-2xl border transition-all ${
+                  importMode === 'MERGE'
+                    ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-500 ring-1 ring-blue-500'
+                    : 'bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-900 dark:text-white">Merge with Existing Data (Recommended)</span>
+                  <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${importMode === 'MERGE' ? 'border-blue-600' : 'border-slate-300'}`}>
+                    {importMode === 'MERGE' && <span className="w-2 h-2 rounded-full bg-blue-600" />}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  Keeps your current records and adds/updates records from this backup file.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setImportMode('REPLACE')}
+                className={`w-full text-left p-3 rounded-2xl border transition-all ${
+                  importMode === 'REPLACE'
+                    ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-500 ring-1 ring-rose-500'
+                    : 'bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-rose-700 dark:text-rose-400">Replace All Existing Data</span>
+                  <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${importMode === 'REPLACE' ? 'border-rose-600' : 'border-slate-300'}`}>
+                    {importMode === 'REPLACE' && <span className="w-2 h-2 rounded-full bg-rose-600" />}
+                  </span>
+                </div>
+                <p className="text-[11px] text-rose-600/80 dark:text-rose-400/70 mt-1">
+                  Clears current data in this account and restores strictly from the backup file.
+                </p>
+              </button>
+            </div>
+
+            {hasShopDetails && (
+              <label className="flex items-center gap-2.5 p-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={importRestoreShopProfile}
+                  onChange={e => setImportRestoreShopProfile(e.target.checked)}
+                  className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                  Also restore Store Name, Phone, Address & Logo
+                </span>
+              </label>
+            )}
+
+            {importBackupError && (
+              <div className="p-2.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-400 font-semibold">
+                <AlertCircle size={15} className="shrink-0" />
+                <span>{importBackupError}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 bg-slate-50 dark:bg-slate-900/70 border-t border-slate-200 dark:border-slate-800 flex gap-2.5 shrink-0">
+            <button
+              type="button"
+              disabled={isImportingBackup}
+              onClick={() => {
+                setIsImportModalOpen(false);
+                setPendingImportBackup(null);
+              }}
+              className="flex-1 py-3 bg-slate-200/80 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-xl transition-all disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isImportingBackup}
+              onClick={handleConfirmImportBackup}
+              className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-600/25 active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              {isImportingBackup ? (
+                <>
+                  <Loader2 size={15} className="animate-spin" />
+                  <span>Restoring...</span>
+                </>
+              ) : (
+                <>
+                  <Check size={15} />
+                  <span>Restore Backup</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
 
@@ -11110,21 +11651,35 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                   </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
                   <button
                     type="button"
                     onClick={() => setIsSqlModalOpen(true)}
-                    className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95"
+                    className="bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95"
                   >
-                    <Copy size={14} /> View SQL Migration Script
+                    <Copy size={14} /> SQL Script
                   </button>
                   <button
                     type="button"
                     onClick={handleExportBackup}
-                    className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all active:scale-95"
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all active:scale-95"
                   >
-                    <Download size={14} /> Export Backup (JSON)
+                    <Download size={14} /> Export Backup
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => backupImportInputRef.current?.click()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-95"
+                  >
+                    <Upload size={14} /> Import Backup
+                  </button>
+                  <input
+                    ref={backupImportInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={handleBackupFileSelect}
+                    className="hidden"
+                  />
                 </div>
               </div>
 
@@ -17158,6 +17713,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       {renderUserModal()}
       {renderPasswordModal()}
       {renderWipeModal()}
+      {renderImportBackupModal()}
       {renderSqlModal()}
       {renderCashbookModal()}
       {renderDaybookItemModal()}
