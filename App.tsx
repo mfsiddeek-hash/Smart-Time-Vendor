@@ -679,6 +679,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pendingImportBackup, setPendingImportBackup] = useState<any | null>(null);
   const [importMode, setImportMode] = useState<'MERGE' | 'REPLACE'>('MERGE');
+  const [importIncludeCustomers, setImportIncludeCustomers] = useState(true);
+  const [importIncludeStock, setImportIncludeStock] = useState(true);
+  const [importIncludeSales, setImportIncludeSales] = useState(true);
   const [importRestoreShopProfile, setImportRestoreShopProfile] = useState(true);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [importBackupError, setImportBackupError] = useState('');
@@ -9769,21 +9772,25 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handleExportBackup = () => {
     try {
+      const customerContacts = contacts.filter(c => c.type === 'CUSTOMER');
+      const customerIdSet = new Set(customerContacts.map(c => c.id));
+      const customerTransactions = transactions.filter(t => customerIdSet.has(t.contactId));
+
       const backupData = {
-        version: '2.0',
+        version: '3.0',
         exportDate: new Date().toISOString(),
+        backupModules: ['Customers', 'Items & Stock', 'Sales Details'],
         shopName,
         shopTagline,
         shopPhone,
         shopAddress,
         shopLogo,
         shopReceiptTerms,
-        contacts,
-        transactions,
-        cashbookEntries,
-        daybookItems,
-        customItemCategories,
-        users: users.map(u => ({ ...u, pin: '****' }))
+        customers: customerContacts,
+        customerTransactions,
+        itemsAndStock: daybookItems,
+        itemCategories: customItemCategories,
+        salesDetails: cashbookEntries
       };
       const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -9792,10 +9799,30 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       a.download = `${(shopName || 'LedgerBook').replace(/[^a-z0-9]/gi, '_')}_backup_${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showProfileToast('Full backup exported successfully!');
+      showProfileToast('Backup exported (Customers, Items & Stock, Sales Details)!');
     } catch (e) {
       showProfileToast('Failed to export backup', 'error');
     }
+  };
+
+  const getBackupModulesData = (raw: any) => {
+    const rawCustomers = Array.isArray(raw?.customers)
+      ? raw.customers
+      : (Array.isArray(raw?.contacts) ? raw.contacts.filter((c: any) => !c?.type || c.type === 'CUSTOMER') : []);
+    const custIdSet = new Set(rawCustomers.map((c: any) => String(c?.id || '')));
+    const rawCustTx = Array.isArray(raw?.customerTransactions)
+      ? raw.customerTransactions
+      : (Array.isArray(raw?.transactions) ? raw.transactions.filter((t: any) => custIdSet.has(String(t?.contactId || ''))) : []);
+    const rawStock = Array.isArray(raw?.itemsAndStock)
+      ? raw.itemsAndStock
+      : (Array.isArray(raw?.daybookItems) ? raw.daybookItems : []);
+    const rawCats = Array.isArray(raw?.itemCategories)
+      ? raw.itemCategories
+      : (Array.isArray(raw?.customItemCategories) ? raw.customItemCategories : []);
+    const rawSales = Array.isArray(raw?.salesDetails)
+      ? raw.salesDetails
+      : (Array.isArray(raw?.cashbookEntries) ? raw.cashbookEntries : []);
+    return { rawCustomers, rawCustTx, rawStock, rawCats, rawSales };
   };
 
   const handleBackupFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -9811,19 +9838,24 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           showProfileToast('Invalid backup file format.', 'error');
           return;
         }
+        const { rawCustomers, rawCustTx, rawStock, rawSales } = getBackupModulesData(raw);
         const hasAnySection =
+          Array.isArray(raw.customers) ||
           Array.isArray(raw.contacts) ||
-          Array.isArray(raw.transactions) ||
-          Array.isArray(raw.cashbookEntries) ||
+          Array.isArray(raw.itemsAndStock) ||
           Array.isArray(raw.daybookItems) ||
-          typeof raw.shopName === 'string';
+          Array.isArray(raw.salesDetails) ||
+          Array.isArray(raw.cashbookEntries);
         if (!hasAnySection) {
-          showProfileToast('This JSON file does not appear to be a Ledger Book backup.', 'error');
+          showProfileToast('This JSON file does not contain Customers, Items & Stock, or Sales Details.', 'error');
           return;
         }
         setPendingImportBackup(raw);
         setImportMode('MERGE');
-        setImportRestoreShopProfile(Boolean((raw.shopName || '').trim()));
+        setImportIncludeCustomers(rawCustomers.length > 0 || rawCustTx.length > 0);
+        setImportIncludeStock(rawStock.length > 0);
+        setImportIncludeSales(rawSales.length > 0);
+        setImportRestoreShopProfile(false);
         setImportBackupError('');
         setIsImportModalOpen(true);
       } catch {
@@ -9863,6 +9895,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
   const handleConfirmImportBackup = async () => {
     if (!pendingImportBackup || isImportingBackup) return;
+    if (!importIncludeCustomers && !importIncludeStock && !importIncludeSales && !importRestoreShopProfile) {
+      setImportBackupError('Please select at least one section to restore.');
+      return;
+    }
     setImportBackupError('');
     setIsImportingBackup(true);
 
@@ -9877,236 +9913,233 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
       const raw = pendingImportBackup;
       const isReplace = importMode === 'REPLACE';
+      const { rawCustomers, rawCustTx, rawStock, rawCats, rawSales } = getBackupModulesData(raw);
 
-      const incomingContacts: Contact[] = Array.isArray(raw.contacts)
-        ? raw.contacts
-            .filter((c: any) => c && c.id && c.name)
-            .map((c: any) => ({
-              id: String(c.id),
-              userId: targetUid || c.userId,
-              name: String(c.name || ''),
-              phone: String(c.phone || ''),
-              city: c.city ? String(c.city) : '',
-              type: (c.type === 'RENT' || c.type === 'SERVICE' ? c.type : 'CUSTOMER') as ContactType,
-              balance: Number(c.balance) || 0,
-              targetAmount: c.targetAmount != null ? Number(c.targetAmount) : (c.type === 'RENT' ? 30000 : undefined),
-              phoneModel: c.phoneModel || c.startDate || '',
-              deviceIssue: c.deviceIssue || '',
-              serviceStatus: c.serviceStatus || 'Pending',
-              totalCost: c.totalCost != null ? Number(c.totalCost) : 0,
-              advancePayment: c.advancePayment != null ? Number(c.advancePayment) : 0,
-              advanceDate: c.advanceDate || '',
-              orderDate: c.orderDate || '',
-              collectedItems: Array.isArray(c.collectedItems) ? c.collectedItems : [],
-              otherCollectedItems: c.otherCollectedItems || '',
-              lastUpdated: c.lastUpdated || new Date().toISOString()
-            }))
-        : [];
+      const incomingCustomers: Contact[] = rawCustomers
+        .filter((c: any) => c && c.id && c.name)
+        .map((c: any) => ({
+          id: String(c.id),
+          userId: targetUid || c.userId,
+          name: String(c.name || ''),
+          phone: String(c.phone || ''),
+          city: c.city ? String(c.city) : '',
+          type: 'CUSTOMER' as ContactType,
+          balance: Number(c.balance) || 0,
+          lastUpdated: c.lastUpdated || new Date().toISOString()
+        }));
 
-      const incomingTransactions: Transaction[] = Array.isArray(raw.transactions)
-        ? raw.transactions
-            .filter((t: any) => t && t.id && t.contactId)
-            .map((t: any) => ({
-              id: String(t.id),
-              userId: targetUid || t.userId,
-              contactId: String(t.contactId),
-              date: String(t.date || new Date().toISOString().slice(0, 10)),
-              description: t.description != null ? String(t.description) : '',
-              paymentMethod: t.paymentMethod,
-              chequeStatus: t.chequeStatus,
-              chequeNumber: t.chequeNumber,
-              chequeDate: t.chequeDate,
-              cashAmount: t.cashAmount != null ? Number(t.cashAmount) : undefined,
-              chequeAmount: t.chequeAmount != null ? Number(t.chequeAmount) : undefined,
-              amount: Number(t.amount) || 0,
-              type: (t.type === 'PAYMENT' ? 'PAYMENT' : 'CREDIT') as TransactionType,
-              balanceAfter: Number(t.balanceAfter) || 0,
-              hasAttachment: Boolean(t.hasAttachment || t.attachmentUrl),
-              attachmentUrl: t.attachmentUrl || null,
-              attachmentDocType: t.attachmentDocType
-            }))
-        : [];
-
-      const incomingCashbook: CashbookEntry[] = Array.isArray(raw.cashbookEntries)
-        ? raw.cashbookEntries
-            .filter((e: any) => e && e.id && (e.type as string) !== 'EXPENSE')
-            .map((e: any) => ({
-              id: String(e.id),
-              userId: targetUid || e.userId,
-              type: 'SALE' as CashbookEntryType,
-              amount: Number(e.amount) || 0,
-              date: String(e.date || new Date().toISOString().slice(0, 10)),
-              category: String(e.category || ''),
-              description: e.description != null ? String(e.description) : '',
-              paymentMethod: (e.paymentMethod || 'Cash') as PaymentMethod,
-              referenceNo: e.referenceNo || '',
-              contactName: e.contactName || '',
-              contactId: e.contactId || undefined,
-              items: Array.isArray(e.items) && e.items.length > 0 ? e.items : undefined,
-              createdAt: e.createdAt || new Date().toISOString()
-            }))
-        : [];
-
-      const incomingStock: DaybookStockItem[] = Array.isArray(raw.daybookItems)
-        ? raw.daybookItems
-            .filter((i: any) => i && i.id && (i.item || i.sku))
-            .map((i: any) => ({
-              id: String(i.id),
-              userId: targetUid || i.userId,
-              item: String(i.item || i.sku || ''),
-              sku: String(i.sku || ''),
-              category: i.category ? String(i.category).trim() : undefined,
-              qty: Number(i.qty) || 0,
-              cost: Number(i.cost) || 0,
-              wholesalePrice: Number(i.wholesalePrice) || 0,
-              retailPrice: Number(i.retailPrice) || 0,
-              updatedAt: i.updatedAt || new Date().toISOString()
-            }))
-        : [];
-
-      const incomingCats: string[] = Array.isArray(raw.customItemCategories)
-        ? raw.customItemCategories.map((c: any) => String(c || '').trim()).filter(Boolean)
-        : [];
-
-      // If REPLACE mode, clear existing Supabase rows for this user first
-      if (isReplace && targetUid) {
-        await Promise.allSettled([
-          supabase.from('transactions').delete().eq('user_id', targetUid),
-          supabase.from('cashbook_entries').delete().eq('user_id', targetUid),
-          supabase.from('contacts').delete().eq('user_id', targetUid),
-          supabase.from('daybook_items').delete().eq('user_id', targetUid)
-        ]);
-      }
-
-      // 1. Merge or Replace Contacts
-      const contactMap = new Map<string, Contact>((isReplace ? [] : contacts).map(c => [c.id, c]));
-      incomingContacts.forEach(c => contactMap.set(c.id, c));
-      const finalContacts = Array.from(contactMap.values());
-
-      if (targetUid && incomingContacts.length > 0) {
-        const contactRows = incomingContacts.map(c => {
-          const isService = c.type === 'SERVICE';
-          const cleanCity = (c.city || '').trim();
-          const serviceMeta = isService ? {
-            status: c.serviceStatus || 'Pending',
-            advance: Number(c.advancePayment) || 0,
-            advanceDate: c.advanceDate || '',
-            orderDate: c.orderDate || '',
-            collectedItems: Array.isArray(c.collectedItems) ? c.collectedItems : [],
-            otherCollectedItems: c.otherCollectedItems || '',
-            deviceIssue: c.deviceIssue || '',
-            ...(cleanCity ? { city: cleanCity } : {})
-          } : null;
-          return {
-            id: c.id,
-            user_id: targetUid,
-            name: c.name,
-            phone: c.phone || '',
-            city: cleanCity,
-            type: c.type,
-            balance: Number(c.balance) || 0,
-            target_amount: c.targetAmount != null ? Number(c.targetAmount) : null,
-            start_date: isService ? (c.phoneModel || '') : null,
-            end_date: isService ? JSON.stringify(serviceMeta) : (cleanCity ? JSON.stringify({ city: cleanCity }) : null),
-            last_updated: c.lastUpdated || new Date().toISOString()
-          };
-        });
-        await upsertChunks('contacts', contactRows, ({ city: _c, ...rest }) => rest);
-      }
-
-      setContacts(finalContacts);
-      try {
-        if (targetUid) localStorage.setItem(`st_cached_contacts_${targetUid}`, JSON.stringify(finalContacts));
-        localStorage.setItem('st_cached_contacts', JSON.stringify(finalContacts));
-      } catch {}
-
-      // 2. Merge or Replace Transactions
-      const txMap = new Map<string, Transaction>((isReplace ? [] : transactions).map(t => [t.id, t]));
-      incomingTransactions.forEach(t => {
-        if (contactMap.has(t.contactId)) {
-          txMap.set(t.id, t);
-          if (t.attachmentUrl) {
-            saveTxAttachment(t.id, t.attachmentUrl, t.attachmentDocType || 'Cheque', targetUid);
-          }
-        }
-      });
-      const finalTransactions = Array.from(txMap.values());
-
-      if (targetUid && incomingTransactions.length > 0) {
-        const validTxForDb = incomingTransactions.filter(t => contactMap.has(t.contactId));
-        const txRows = validTxForDb.map(t => ({
-          id: t.id,
-          user_id: targetUid,
-          contact_id: t.contactId,
-          date: t.date,
+      const incomingTransactions: Transaction[] = rawCustTx
+        .filter((t: any) => t && t.id && t.contactId)
+        .map((t: any) => ({
+          id: String(t.id),
+          userId: targetUid || t.userId,
+          contactId: String(t.contactId),
+          date: String(t.date || new Date().toISOString().slice(0, 10)),
+          description: t.description != null ? String(t.description) : '',
+          paymentMethod: t.paymentMethod,
+          chequeStatus: t.chequeStatus,
+          chequeNumber: t.chequeNumber,
+          chequeDate: t.chequeDate,
+          cashAmount: t.cashAmount != null ? Number(t.cashAmount) : undefined,
+          chequeAmount: t.chequeAmount != null ? Number(t.chequeAmount) : undefined,
           amount: Number(t.amount) || 0,
-          type: t.type,
-          description: t.description || '',
-          payment_method: t.paymentMethod || null,
-          cheque_status: t.chequeStatus || null,
-          cheque_number: t.chequeNumber || null,
-          cheque_date: t.chequeDate || null,
-          balance_after: Number(t.balanceAfter) || 0
+          type: (t.type === 'PAYMENT' ? 'PAYMENT' : 'CREDIT') as TransactionType,
+          balanceAfter: Number(t.balanceAfter) || 0,
+          hasAttachment: Boolean(t.hasAttachment || t.attachmentUrl),
+          attachmentUrl: t.attachmentUrl || null,
+          attachmentDocType: t.attachmentDocType
         }));
-        await upsertChunks('transactions', txRows, ({ payment_method: _pm, cheque_status: _cs, cheque_number: _cn, cheque_date: _cd, ...base }) => base);
-      }
 
-      setTransactions(finalTransactions);
-      try {
-        if (targetUid) localStorage.setItem(`st_cached_transactions_${targetUid}`, JSON.stringify(finalTransactions));
-        localStorage.setItem('st_cached_transactions', JSON.stringify(finalTransactions));
-      } catch {}
+      const incomingStock: DaybookStockItem[] = rawStock
+        .filter((i: any) => i && i.id && (i.item || i.sku))
+        .map((i: any) => ({
+          id: String(i.id),
+          userId: targetUid || i.userId,
+          item: String(i.item || i.sku || ''),
+          sku: String(i.sku || ''),
+          category: i.category ? String(i.category).trim() : undefined,
+          qty: Number(i.qty) || 0,
+          cost: Number(i.cost) || 0,
+          wholesalePrice: Number(i.wholesalePrice) || 0,
+          retailPrice: Number(i.retailPrice) || 0,
+          updatedAt: i.updatedAt || new Date().toISOString()
+        }));
 
-      // 3. Merge or Replace Sales Daybook Entries
-      const cbMap = new Map<string, CashbookEntry>((isReplace ? [] : cashbookEntries).map(e => [e.id, e]));
-      incomingCashbook.forEach(e => cbMap.set(e.id, e));
-      const finalCashbook = Array.from(cbMap.values());
+      const incomingCats: string[] = rawCats
+        .map((c: any) => String(c || '').trim())
+        .filter(Boolean);
 
-      if (targetUid && incomingCashbook.length > 0) {
-        const cbRows = incomingCashbook.map(e => ({
-          id: e.id,
-          user_id: targetUid,
-          contact_id: e.contactId && contactMap.has(e.contactId) ? e.contactId : null,
-          type: 'SALE',
+      const incomingSales: CashbookEntry[] = rawSales
+        .filter((e: any) => e && e.id && (e.type as string) !== 'EXPENSE')
+        .map((e: any) => ({
+          id: String(e.id),
+          userId: targetUid || e.userId,
+          type: 'SALE' as CashbookEntryType,
           amount: Number(e.amount) || 0,
-          date: e.date,
-          category: e.category || '',
-          description: e.description || '',
-          payment_method: e.paymentMethod || 'Cash',
-          reference_no: e.referenceNo || '',
-          contact_name: e.contactName || '',
-          items_json: e.items && e.items.length > 0 ? e.items : null
+          date: String(e.date || new Date().toISOString().slice(0, 10)),
+          category: String(e.category || ''),
+          description: e.description != null ? String(e.description) : '',
+          paymentMethod: (e.paymentMethod || 'Cash') as PaymentMethod,
+          referenceNo: e.referenceNo || '',
+          contactName: e.contactName || '',
+          contactId: e.contactId || undefined,
+          items: Array.isArray(e.items) && e.items.length > 0 ? e.items : undefined,
+          createdAt: e.createdAt || new Date().toISOString()
         }));
-        await upsertChunks('cashbook_entries', cbRows, ({ contact_id: _cid, items_json: _ij, ...base }) => base);
-      }
 
-      setCashbookEntries(finalCashbook);
-      try {
-        if (targetUid) localStorage.setItem(`st_cashbook_entries_${targetUid}`, JSON.stringify(finalCashbook));
-        localStorage.setItem('st_cashbook_entries', JSON.stringify(finalCashbook));
-      } catch {}
+      const restoredParts: string[] = [];
 
-      // 4. Merge or Replace Items & Stock + Categories
-      const stockMap = new Map<string, DaybookStockItem>((isReplace ? [] : daybookItemsRef.current).map(i => [i.id, i]));
-      incomingStock.forEach(i => stockMap.set(i.id, i));
-      const finalStock = Array.from(stockMap.values());
-      if (isReplace) {
+      // 1. Restore Customers (+ Customer Ledger Transactions)
+      let currentContactIdSet = new Set(contacts.map(c => c.id));
+      if (importIncludeCustomers) {
+        const nonCustomerContacts = contacts.filter(c => c.type !== 'CUSTOMER');
+        const oldCustomerIds = contacts.filter(c => c.type === 'CUSTOMER').map(c => c.id);
+
+        if (isReplace && targetUid) {
+          if (oldCustomerIds.length > 0) {
+            await supabase.from('transactions').delete().eq('user_id', targetUid).in('contact_id', oldCustomerIds);
+          }
+          await supabase.from('contacts').delete().eq('user_id', targetUid).eq('type', 'CUSTOMER');
+        }
+
+        const custMap = new Map<string, Contact>(
+          (isReplace ? [] : contacts.filter(c => c.type === 'CUSTOMER')).map(c => [c.id, c])
+        );
+        incomingCustomers.forEach(c => custMap.set(c.id, c));
+        const finalContacts = [...nonCustomerContacts, ...Array.from(custMap.values())];
+        currentContactIdSet = new Set(finalContacts.map(c => c.id));
+
+        if (targetUid && incomingCustomers.length > 0) {
+          const contactRows = incomingCustomers.map(c => {
+            const cleanCity = (c.city || '').trim();
+            return {
+              id: c.id,
+              user_id: targetUid,
+              name: c.name,
+              phone: c.phone || '',
+              city: cleanCity,
+              type: 'CUSTOMER',
+              balance: Number(c.balance) || 0,
+              target_amount: null,
+              start_date: null,
+              end_date: cleanCity ? JSON.stringify({ city: cleanCity }) : null,
+              last_updated: c.lastUpdated || new Date().toISOString()
+            };
+          });
+          await upsertChunks('contacts', contactRows, ({ city: _c, ...rest }) => rest);
+        }
+
+        setContacts(finalContacts);
         try {
-          if (targetUid) localStorage.removeItem(`st_daybook_deleted_ids_${targetUid}`);
+          if (targetUid) localStorage.setItem(`st_cached_contacts_${targetUid}`, JSON.stringify(finalContacts));
+          localStorage.setItem('st_cached_contacts', JSON.stringify(finalContacts));
         } catch {}
+
+        const oldCustIdSet = new Set(oldCustomerIds);
+        const preservedTransactions = isReplace
+          ? transactions.filter(t => !oldCustIdSet.has(t.contactId))
+          : transactions;
+        const txMap = new Map<string, Transaction>(preservedTransactions.map(t => [t.id, t]));
+        incomingTransactions.forEach(t => {
+          if (currentContactIdSet.has(t.contactId)) {
+            txMap.set(t.id, t);
+            if (t.attachmentUrl) {
+              saveTxAttachment(t.id, t.attachmentUrl, t.attachmentDocType || 'Cheque', targetUid);
+            }
+          }
+        });
+        const finalTransactions = Array.from(txMap.values());
+
+        if (targetUid && incomingTransactions.length > 0) {
+          const validTxForDb = incomingTransactions.filter(t => currentContactIdSet.has(t.contactId));
+          const txRows = validTxForDb.map(t => ({
+            id: t.id,
+            user_id: targetUid,
+            contact_id: t.contactId,
+            date: t.date,
+            amount: Number(t.amount) || 0,
+            type: t.type,
+            description: t.description || '',
+            payment_method: t.paymentMethod || null,
+            cheque_status: t.chequeStatus || null,
+            cheque_number: t.chequeNumber || null,
+            cheque_date: t.chequeDate || null,
+            balance_after: Number(t.balanceAfter) || 0
+          }));
+          await upsertChunks('transactions', txRows, ({ payment_method: _pm, cheque_status: _cs, cheque_number: _cn, cheque_date: _cd, ...base }) => base);
+        }
+
+        setTransactions(finalTransactions);
+        try {
+          if (targetUid) localStorage.setItem(`st_cached_transactions_${targetUid}`, JSON.stringify(finalTransactions));
+          localStorage.setItem('st_cached_transactions', JSON.stringify(finalTransactions));
+        } catch {}
+
+        restoredParts.push(`Customers (${incomingCustomers.length})`);
       }
-      if (incomingStock.length > 0 || isReplace) {
+
+      // 2. Restore Items & Stock (+ Categories)
+      if (importIncludeStock) {
+        if (isReplace && targetUid) {
+          await supabase.from('daybook_items').delete().eq('user_id', targetUid);
+          try {
+            localStorage.removeItem(`st_daybook_deleted_ids_${targetUid}`);
+          } catch {}
+        }
+
+        const stockMap = new Map<string, DaybookStockItem>((isReplace ? [] : daybookItemsRef.current).map(i => [i.id, i]));
+        incomingStock.forEach(i => stockMap.set(i.id, i));
+        const finalStock = Array.from(stockMap.values());
         await persistDaybookItems(finalStock, targetUid);
+
+        const catBase = isReplace ? [] : customItemCategories;
+        const stockDerivedCats = incomingStock.map(i => i.category || '').filter(Boolean);
+        const mergedCats = [...catBase, ...incomingCats, ...stockDerivedCats];
+        if (mergedCats.length > 0 || isReplace) {
+          await persistCustomItemCategories(mergedCats, targetUid);
+        }
+
+        restoredParts.push(`Items & Stock (${incomingStock.length})`);
       }
 
-      const catBase = isReplace ? [] : customItemCategories;
-      const stockDerivedCats = incomingStock.map(i => i.category || '').filter(Boolean);
-      const mergedCats = [...catBase, ...incomingCats, ...stockDerivedCats];
-      if (mergedCats.length > 0 || isReplace) {
-        await persistCustomItemCategories(mergedCats, targetUid);
+      // 3. Restore Sales Details
+      if (importIncludeSales) {
+        if (isReplace && targetUid) {
+          await supabase.from('cashbook_entries').delete().eq('user_id', targetUid);
+        }
+
+        const cbMap = new Map<string, CashbookEntry>((isReplace ? [] : cashbookEntries).map(e => [e.id, e]));
+        incomingSales.forEach(e => cbMap.set(e.id, e));
+        const finalCashbook = Array.from(cbMap.values());
+
+        if (targetUid && incomingSales.length > 0) {
+          const cbRows = incomingSales.map(e => ({
+            id: e.id,
+            user_id: targetUid,
+            contact_id: e.contactId && currentContactIdSet.has(e.contactId) ? e.contactId : null,
+            type: 'SALE',
+            amount: Number(e.amount) || 0,
+            date: e.date,
+            category: e.category || '',
+            description: e.description || '',
+            payment_method: e.paymentMethod || 'Cash',
+            reference_no: e.referenceNo || '',
+            contact_name: e.contactName || '',
+            items_json: e.items && e.items.length > 0 ? e.items : null
+          }));
+          await upsertChunks('cashbook_entries', cbRows, ({ contact_id: _cid, items_json: _ij, ...base }) => base);
+        }
+
+        setCashbookEntries(finalCashbook);
+        try {
+          if (targetUid) localStorage.setItem(`st_cashbook_entries_${targetUid}`, JSON.stringify(finalCashbook));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(finalCashbook));
+        } catch {}
+
+        restoredParts.push(`Sales Details (${incomingSales.length})`);
       }
 
-      // 5. Optionally restore Shop Profile Details & Logo
+      // 4. Optionally restore Store Details & Logo
       if (importRestoreShopProfile && (raw.shopName || '').trim()) {
         const cleanShop = String(raw.shopName).trim();
         const cleanTag = String(raw.shopTagline || shopTagline || 'Mobile Phone Repair & Service').trim();
@@ -10139,16 +10172,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         }
       }
 
-      // 6. Refresh from Supabase to verify sync
       if (targetUid) {
         await fetchData(targetUid).catch(() => {});
       }
 
       setIsImportModalOpen(false);
       setPendingImportBackup(null);
-      showProfileToast(
-        `Backup imported (${incomingContacts.length} contacts, ${incomingTransactions.length} transactions, ${incomingCashbook.length} sales, ${incomingStock.length} stock items)!`
-      );
+      showProfileToast(`Backup restored: ${restoredParts.join(', ') || 'Updated'}!`);
     } catch (err: any) {
       setImportBackupError(err?.message || 'Failed to import backup. Please try again.');
     } finally {
@@ -10159,11 +10189,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const renderImportBackupModal = () => {
     if (!isImportModalOpen || !pendingImportBackup) return null;
     const raw = pendingImportBackup;
-    const cCount = Array.isArray(raw.contacts) ? raw.contacts.length : 0;
-    const tCount = Array.isArray(raw.transactions) ? raw.transactions.length : 0;
-    const cbCount = Array.isArray(raw.cashbookEntries) ? raw.cashbookEntries.length : 0;
-    const stockCount = Array.isArray(raw.daybookItems) ? raw.daybookItems.length : 0;
-    const catCount = Array.isArray(raw.customItemCategories) ? raw.customItemCategories.length : 0;
+    const { rawCustomers, rawCustTx, rawStock, rawCats, rawSales } = getBackupModulesData(raw);
     const hasShopDetails = Boolean((raw.shopName || '').trim());
 
     return (
@@ -10177,7 +10203,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               <div>
                 <h3 className="font-bold text-sm">Import Backup (JSON)</h3>
                 <p className="text-[11px] text-slate-400">
-                  {raw.exportDate ? `Exported ${formatDisplayDate(String(raw.exportDate).slice(0, 10))}` : 'Restore ledger & stock data'}
+                  {raw.exportDate ? `Exported ${formatDisplayDate(String(raw.exportDate).slice(0, 10))}` : 'Restore Customers, Items & Stock, Sales Details'}
                 </p>
               </div>
             </div>
@@ -10195,32 +10221,62 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           </div>
 
           <div className="p-5 overflow-y-auto space-y-4 text-xs">
-            {/* Backup Summary */}
-            <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl p-3.5 space-y-2">
+            {/* Select Backup Sections (Customers, Items & Stock, Sales Details) */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl p-3.5 space-y-2.5">
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
-                <span className="font-bold text-slate-700 dark:text-slate-200">Backup Contents</span>
+                <span className="font-bold text-slate-700 dark:text-slate-200">Select Sections to Restore</span>
                 {hasShopDetails && (
                   <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 truncate max-w-[160px]">{raw.shopName}</span>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
-                  <span className="text-slate-500">Contacts:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">{cCount}</span>
+
+              <label className="flex items-center justify-between bg-white dark:bg-slate-900/70 px-3 py-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700 cursor-pointer">
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={importIncludeCustomers}
+                    onChange={e => setImportIncludeCustomers(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                  />
+                  <div>
+                    <span className="font-bold text-slate-900 dark:text-white block">Customers</span>
+                    <span className="text-[10px] text-slate-400">{rawCustTx.length} ledger transactions</span>
+                  </div>
                 </div>
-                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
-                  <span className="text-slate-500">Transactions:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">{tCount}</span>
+                <span className="font-bold text-blue-600 dark:text-blue-400">{rawCustomers.length}</span>
+              </label>
+
+              <label className="flex items-center justify-between bg-white dark:bg-slate-900/70 px-3 py-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700 cursor-pointer">
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={importIncludeStock}
+                    onChange={e => setImportIncludeStock(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                  />
+                  <div>
+                    <span className="font-bold text-slate-900 dark:text-white block">Items &amp; Stock</span>
+                    <span className="text-[10px] text-slate-400">{rawCats.length > 0 ? `${rawCats.length} categories` : 'Inventory catalog'}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
-                  <span className="text-slate-500">Sales Entries:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">{cbCount}</span>
+                <span className="font-bold text-blue-600 dark:text-blue-400">{rawStock.length}</span>
+              </label>
+
+              <label className="flex items-center justify-between bg-white dark:bg-slate-900/70 px-3 py-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700 cursor-pointer">
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={importIncludeSales}
+                    onChange={e => setImportIncludeSales(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                  />
+                  <div>
+                    <span className="font-bold text-slate-900 dark:text-white block">Sales Details</span>
+                    <span className="text-[10px] text-slate-400">Invoices &amp; sales history</span>
+                  </div>
                 </div>
-                <div className="flex justify-between bg-white dark:bg-slate-900/70 px-2.5 py-1.5 rounded-xl border border-slate-100 dark:border-slate-800">
-                  <span className="text-slate-500">Items & Stock:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">{stockCount}{catCount > 0 ? ` (${catCount} cat)` : ''}</span>
-                </div>
-              </div>
+                <span className="font-bold text-emerald-600 dark:text-emerald-400">{rawSales.length}</span>
+              </label>
             </div>
 
             {/* Import Mode */}
@@ -10242,7 +10298,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  Keeps your current records and adds/updates records from this backup file.
+                  Keeps your current records and adds/updates records from the selected sections.
                 </p>
               </button>
 
@@ -10256,13 +10312,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-rose-700 dark:text-rose-400">Replace All Existing Data</span>
+                  <span className="font-bold text-rose-700 dark:text-rose-400">Replace Selected Sections</span>
                   <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${importMode === 'REPLACE' ? 'border-rose-600' : 'border-slate-300'}`}>
                     {importMode === 'REPLACE' && <span className="w-2 h-2 rounded-full bg-rose-600" />}
                   </span>
                 </div>
                 <p className="text-[11px] text-rose-600/80 dark:text-rose-400/70 mt-1">
-                  Clears current data in this account and restores strictly from the backup file.
+                  Clears existing data in the selected sections and restores strictly from the backup file.
                 </p>
               </button>
             </div>
@@ -10276,7 +10332,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
                 />
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                  Also restore Store Name, Phone, Address & Logo
+                  Also restore Store Name, Phone, Address &amp; Logo
                 </span>
               </label>
             )}
@@ -11648,6 +11704,12 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                   <div className="flex justify-between py-1.5 border-b border-slate-100">
                     <span className="text-slate-400 font-medium">Backend Endpoint:</span>
                     <span className="font-mono text-slate-600 truncate max-w-[250px]">{SUPABASE_URL}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1.5">
+                    <span className="text-slate-400 font-medium">Backup Scope:</span>
+                    <span className="font-bold text-slate-700">
+                      Customers ({contacts.filter(c => c.type === 'CUSTOMER').length}) • Items &amp; Stock ({daybookItems.length}) • Sales Details ({cashbookEntries.length})
+                    </span>
                   </div>
                 </div>
 
