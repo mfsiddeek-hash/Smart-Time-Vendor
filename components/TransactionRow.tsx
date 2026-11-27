@@ -200,12 +200,14 @@ export const parsePaymentMethod = (
       result.chequeAmount = parseFloat(chqMatch[1].replace(/,/g, ''));
     }
 
-    const chqNumMatch = trimmed.match(/#([A-Za-z0-9-]+)/);
+    const chqNumMatch = Array.from(trimmed.matchAll(/#([A-Za-z0-9-]+)/g))
+      .map(m => m[1])
+      .find(code => !/^(INV|CUST|SO|RENT)-/i.test(code));
     if (chqNumMatch) {
-      result.chequeNumber = chqNumMatch[1];
+      result.chequeNumber = chqNumMatch;
     }
 
-    const dueDateMatch = trimmed.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+    const dueDateMatch = trimmed.match(/(?:Cheque\s+)?(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/i);
     if (dueDateMatch) {
       result.chequeDate = dueDateMatch[1];
     } else if (explicitChequeDate) {
@@ -214,8 +216,8 @@ export const parsePaymentMethod = (
 
     let notes = trimmed
       .replace(/^Cash\s*\+\s*Cheque\s*(\[(PENDING|PASSED|BOUNCED)\])?/i, '')
-      .replace(/•\s*#(?:[A-Za-z0-9-]+)/g, '')
-      .replace(/•\s*(?:Due|Date):\s*\d{4}-\d{2}-\d{2}/g, '')
+      .replace(/•\s*#(?!INV-|CUST-|SO-|RENT-)(?:[A-Za-z0-9-]+)/gi, '')
+      .replace(/•\s*(?:Cheque\s+)?(?:Due|Date):\s*\d{4}-\d{2}-\d{2}/gi, '')
       .replace(/^[•\s-]+|[•\s-]+$/g, '')
       .trim();
 
@@ -238,14 +240,16 @@ export const parsePaymentMethod = (
       }
     }
 
-    // Cheque Number: #12345
-    const chqNumMatch = trimmed.match(/#([A-Za-z0-9-]+)/);
+    // Cheque Number: #12345 (ignore #INV-..., #CUST-..., #SO-..., #RENT-...)
+    const chqNumMatch = Array.from(trimmed.matchAll(/#([A-Za-z0-9-]+)/g))
+      .map(m => m[1])
+      .find(code => !/^(INV|CUST|SO|RENT)-/i.test(code));
     if (chqNumMatch) {
-      result.chequeNumber = chqNumMatch[1];
+      result.chequeNumber = chqNumMatch;
     }
 
     // Due / Maturity Date: Due: 2026-11-15
-    const dueDateMatch = trimmed.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
+    const dueDateMatch = trimmed.match(/(?:Cheque\s+)?(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/i);
     if (dueDateMatch) {
       result.chequeDate = dueDateMatch[1];
     } else if (explicitChequeDate) {
@@ -255,8 +259,8 @@ export const parsePaymentMethod = (
     // Clean notes by removing technical prefixes
     let notes = trimmed
       .replace(/^Cheque\s*(\[(PENDING|PASSED|BOUNCED)\])?/i, '')
-      .replace(/•\s*#(?:[A-Za-z0-9-]+)/g, '')
-      .replace(/•\s*(?:Due|Date):\s*\d{4}-\d{2}-\d{2}/g, '')
+      .replace(/•\s*#(?!INV-|CUST-|SO-|RENT-)(?:[A-Za-z0-9-]+)/gi, '')
+      .replace(/•\s*(?:Cheque\s+)?(?:Due|Date):\s*\d{4}-\d{2}-\d{2}/gi, '')
       .replace(/^[•\s-]+|[•\s-]+$/g, '')
       .trim();
 
