@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye, Wallet } from 'lucide-react';
+import { FileText, Banknote, Building2, CreditCard, Clock, CheckCircle2, AlertCircle, Receipt, Image as ImageIcon, Eye, Wallet, RotateCcw } from 'lucide-react';
 import { Transaction, PaymentMethod, ChequeStatus, ContactType, CashbookEntryItem } from '../types';
 
 export interface ParsedTransactionMetadata {
@@ -12,11 +12,60 @@ export interface ParsedTransactionMetadata {
   attachmentUrl?: string;
   attachmentDocType?: 'Cheque' | 'Invoice';
   items?: CashbookEntryItem[];
+  isCancelled?: boolean;
+  cancelledDate?: string;
+  cancelledSummary?: string;
+  cancelReason?: string;
   cleanNotes: string;
+}
+
+export interface CancelledMetadata {
+  isCancelled: boolean;
+  cancelledDate?: string;
+  revertedSummary?: string;
+  reason?: string;
+  cleanDesc: string;
 }
 
 const ATT_TOKEN_REGEX = /\s*•?\s*\[ATT:(Cheque|Invoice)\|([^\]]+)\]/i;
 const ITEMS_TOKEN_REGEX = /\s*•?\s*\[ITEMS:([A-Za-z0-9+/=]+)\]/;
+const CANCELLED_TOKEN_REGEX = /\s*•?\s*\[CANCELLED(?:\|([^|\]]*)(?:\|([^|\]]*)(?:\|([^\]]*))?)?)?\]/i;
+
+export const encodeCancelledToken = (
+  cancelledDate: string,
+  revertedSummary: string,
+  reason?: string
+): string => {
+  const safeDate = (cancelledDate || new Date().toISOString().slice(0, 10)).replace(/[|\]]/g, '').trim();
+  const safeSummary = (revertedSummary || '').replace(/[|\]]/g, ' ').trim();
+  const safeReason = (reason || '').replace(/[|\]]/g, ' ').trim();
+  return `[CANCELLED|${safeDate}|${safeSummary}|${safeReason}]`;
+};
+
+export const extractCancelledToken = (desc?: string): CancelledMetadata => {
+  if (!desc) return { isCancelled: false, cleanDesc: '' };
+  const match = desc.match(CANCELLED_TOKEN_REGEX);
+  if (!match) return { isCancelled: false, cleanDesc: desc };
+  const cleanDesc = desc
+    .replace(CANCELLED_TOKEN_REGEX, '')
+    .replace(/^[•\s]+|[•\s]+$/g, '')
+    .trim();
+  return {
+    isCancelled: true,
+    cancelledDate: match[1]?.trim() || undefined,
+    revertedSummary: match[2]?.trim() || undefined,
+    reason: match[3]?.trim() || undefined,
+    cleanDesc,
+  };
+};
+
+export const stripCancelledToken = (desc?: string): string => {
+  return extractCancelledToken(desc).cleanDesc;
+};
+
+export const isCancelledTransaction = (t?: Partial<Transaction> | null): boolean => {
+  return extractCancelledToken(t?.description).isCancelled;
+};
 
 export const extractLinkedInvoiceNo = (itemOrDesc: any): string | null => {
   if (!itemOrDesc) return null;
@@ -109,6 +158,7 @@ export const isImageAttachment = (url?: string | null): boolean => {
 };
 
 export const isPendingCheque = (t: Transaction): boolean => {
+  if (isCancelledTransaction(t)) return false;
   if (t.chequeStatus === 'PASSED') return false;
   if (t.chequeStatus === 'BOUNCED') return false;
   if (t.chequeStatus === 'PENDING') return true;
@@ -161,7 +211,8 @@ export const parsePaymentMethod = (
   explicitStatus?: ChequeStatus,
   explicitChequeDate?: string
 ): ParsedTransactionMetadata => {
-  const { attachmentUrl, attachmentDocType, cleanDesc: descNoAtt } = extractAttachmentToken(desc);
+  const { isCancelled, cancelledDate, revertedSummary, reason, cleanDesc: descNoCancel } = extractCancelledToken(desc);
+  const { attachmentUrl, attachmentDocType, cleanDesc: descNoAtt } = extractAttachmentToken(descNoCancel);
   const { items, cleanDesc } = extractItemsToken(descNoAtt);
   const result: ParsedTransactionMetadata = {
     method: explicitMethod,
@@ -170,6 +221,10 @@ export const parsePaymentMethod = (
     attachmentUrl,
     attachmentDocType,
     items: items.length > 0 ? items : undefined,
+    isCancelled: isCancelled || undefined,
+    cancelledDate,
+    cancelledSummary: revertedSummary,
+    cancelReason: reason,
     cleanNotes: cleanDesc
   };
 
@@ -329,7 +384,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
     transaction.chequeStatus,
     transaction.chequeDate
   );
-  const pendingCheque = isPendingCheque(transaction);
+  const isCancelled = Boolean(parsed.isCancelled);
+  const pendingCheque = !isCancelled && isPendingCheque(transaction);
   const isCheque = parsed.method === 'Cheque' || transaction.paymentMethod === 'Cheque';
   const chqDueDate = parsed.chequeDate || transaction.chequeDate || transaction.date;
   const resolvedAttachmentUrl = transaction.attachmentUrl || parsed.attachmentUrl;
@@ -340,12 +396,22 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
     <div 
       onClick={() => onClick?.(transaction)}
       className={`p-4 border-b border-slate-100 dark:border-[#1e2a3c] flex flex-col gap-2 transition-colors cursor-pointer hover:bg-slate-50/70 dark:hover:bg-[#172235] ${
-        pendingCheque ? 'bg-amber-50/50 dark:bg-amber-950/25 ring-1 ring-inset ring-amber-300/60 dark:ring-amber-700/40' : 'bg-white dark:bg-[#131b2a]'
+        isCancelled
+          ? 'bg-rose-50/45 dark:bg-rose-950/20 ring-1 ring-inset ring-rose-300/60 dark:ring-rose-800/40'
+          : pendingCheque
+          ? 'bg-amber-50/50 dark:bg-amber-950/25 ring-1 ring-inset ring-amber-300/60 dark:ring-amber-700/40'
+          : 'bg-white dark:bg-[#131b2a]'
       }`}
     >
       <div className="flex justify-between items-start">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-bold text-base text-slate-800 dark:text-slate-100">{formatDisplayDate(transaction.date)}</span>
+          {isCancelled && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-600 text-white shadow-2xs">
+              <RotateCcw size={10} />
+              CANCELLED
+            </span>
+          )}
           {pendingCheque && (
             <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-400 border border-amber-300 dark:border-amber-800/50">
               <Clock size={11} />
@@ -355,7 +421,9 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
         </div>
         <div className="text-right tabular-nums">
           <span className={`font-bold text-base tabular-nums ${
-            pendingCheque 
+            isCancelled
+              ? 'line-through text-rose-500 dark:text-rose-400'
+              : pendingCheque 
               ? 'text-amber-800 dark:text-amber-400 font-extrabold' 
               : isPayment 
               ? 'text-emerald-700 dark:text-emerald-400' 
@@ -363,6 +431,11 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
           }`}>
             {pendingCheque ? '⏳ ' : (isPayment ? '+' : '-')} LKR {transaction.amount.toLocaleString()}
           </span>
+          {isCancelled && (
+            <p className="text-[10px] font-extrabold text-rose-600 dark:text-rose-400 uppercase tracking-wider">
+              Cancelled • No Due
+            </p>
+          )}
           {pendingCheque && (
             <div className="text-[10px] text-amber-800 dark:text-amber-400 font-bold tracking-wider space-y-0.5">
               {parsed.method === 'Cash + Cheque' ? (
@@ -448,7 +521,12 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                 <span className="inline-flex items-center gap-1 text-[10px] font-mono font-extrabold px-1.5 py-0.5 rounded border bg-slate-100 dark:bg-[#1a2538] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#26354d]">
                   #{invoicePaymentSummary.invoiceNo}
                 </span>
-                {invoicePaymentSummary.currentDue <= 0 ? (
+                {isCancelled ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded border bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50">
+                    <RotateCcw size={10} />
+                    Cancelled
+                  </span>
+                ) : invoicePaymentSummary.currentDue <= 0 ? (
                   <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded border bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50">
                     <CheckCircle2 size={10} />
                     Paid in Full
@@ -470,8 +548,8 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
 
             {parsed.cleanNotes ? (
               <span className="text-sm text-slate-600 dark:text-slate-300 font-medium truncate">{parsed.cleanNotes}</span>
-            ) : (!parsed.method && stripItemsToken(stripAttachmentToken(transaction.description)) ? (
-              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{stripItemsToken(stripAttachmentToken(transaction.description))}</span>
+            ) : (!parsed.method && stripCancelledToken(stripItemsToken(stripAttachmentToken(transaction.description))) ? (
+              <span className="text-sm text-slate-500 dark:text-slate-400 uppercase font-medium truncate">{stripCancelledToken(stripItemsToken(stripAttachmentToken(transaction.description)))}</span>
             ) : null)}
           </div>
 
@@ -488,7 +566,11 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                 return (
                   <div
                     key={it.id || idx}
-                    className="inline-flex items-center gap-1.5 flex-wrap px-2 py-0.5 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/50 text-[10px] font-semibold text-slate-700 dark:text-slate-200"
+                    className={`inline-flex items-center gap-1.5 flex-wrap px-2 py-0.5 rounded-lg border text-[10px] font-semibold ${
+                      isCancelled
+                        ? 'bg-rose-50/70 dark:bg-rose-950/30 border-rose-200/80 dark:border-rose-800/50 text-slate-600 dark:text-slate-300 line-through'
+                        : 'bg-indigo-50/80 dark:bg-indigo-950/40 border-indigo-200/80 dark:border-indigo-800/50 text-slate-700 dark:text-slate-200'
+                    }`}
                   >
                     <span className="font-extrabold text-slate-900 dark:text-white">{it.item || it.sku}</span>
                     {it.category && (
@@ -510,6 +592,25 @@ export const TransactionRow: React.FC<TransactionRowProps> = ({ transaction, con
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {isCancelled && (
+            <div className="mt-1 px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 flex items-center gap-2 flex-wrap text-[11px] font-bold text-rose-800 dark:text-rose-300 w-fit">
+              <RotateCcw size={12} className="text-rose-600 dark:text-rose-400 shrink-0" />
+              <span>
+                Cancelled{parsed.cancelledDate ? ` on ${formatDisplayDate(parsed.cancelledDate)}` : ''}
+              </span>
+              {parsed.cancelledSummary && (
+                <span className="px-1.5 py-0.5 rounded bg-emerald-100/80 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50 text-[10px] font-extrabold">
+                  {parsed.cancelledSummary}
+                </span>
+              )}
+              {parsed.cancelReason && (
+                <span className="text-rose-700 dark:text-rose-300 font-semibold">
+                  • Reason: {parsed.cancelReason}
+                </span>
+              )}
             </div>
           )}
 

@@ -15,7 +15,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Contact, ContactType, Transaction, TransactionType, PaymentMethod, ChequeStatus, AppUser, UserRole, StoreProfile, UserPermissions, CashbookEntry, CashbookEntryType, CashbookEntryItem, DaybookStockItem, UserProfile } from './types';
 import { BottomNav } from './components/BottomNav';
-import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount, extractLinkedInvoiceNo, InvoicePaymentSummary } from './components/TransactionRow';
+import { TransactionRow, parsePaymentMethod, isPendingCheque, extractAttachmentToken, stripAttachmentToken, isImageAttachment, getTransactionChequeAmount, getTransactionCashAmount, extractLinkedInvoiceNo, InvoicePaymentSummary, extractCancelledToken, stripCancelledToken, encodeCancelledToken, isCancelledTransaction } from './components/TransactionRow';
 import { supabase, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, loadUserProfile, saveUserProfileCloud } from './supabaseClient';
 import { AuthScreen, AuthMode } from './components/AuthScreen';
 import { ShopSetupScreen } from './components/ShopSetupScreen';
@@ -159,8 +159,9 @@ const encodeCashbookItemsToken = (items: CashbookEntryItem[]): string => {
 
 const extractCashbookItems = (desc?: string): { items: CashbookEntryItem[]; cleanDesc: string } => {
   if (!desc) return { items: [], cleanDesc: '' };
-  const match = desc.match(CASHBOOK_ITEMS_REGEX);
-  if (!match) return { items: [], cleanDesc: desc };
+  const descWithoutCancel = stripCancelledToken(desc);
+  const match = descWithoutCancel.match(CASHBOOK_ITEMS_REGEX);
+  if (!match) return { items: [], cleanDesc: descWithoutCancel };
   let items: CashbookEntryItem[] = [];
   try {
     const json = decodeURIComponent(escape(atob(match[1])));
@@ -179,7 +180,7 @@ const extractCashbookItems = (desc?: string): { items: CashbookEntryItem[]; clea
       })).filter(it => it.item || it.sku);
     }
   } catch {}
-  const cleanDesc = desc
+  const cleanDesc = descWithoutCancel
     .replace(CASHBOOK_ITEMS_REGEX, '')
     .replace(/^[•\s]+|[•\s]+$/g, '')
     .trim();
@@ -533,6 +534,15 @@ export default function App() {
   const [restockCost, setRestockCost] = useState('');
   const [restockWholesale, setRestockWholesale] = useState('');
   const [restockRetail, setRestockRetail] = useState('');
+
+  const [cancellingStockItem, setCancellingStockItem] = useState<DaybookStockItem | null>(null);
+  const [cancellingSaleEntry, setCancellingSaleEntry] = useState<CashbookEntry | null>(null);
+  const [cancelSelectedSaleKey, setCancelSelectedSaleKey] = useState<string>('');
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelAlsoCancelPayments, setCancelAlsoCancelPayments] = useState(true);
+  const [cancelManualQty, setCancelManualQty] = useState('1');
+  const [cancelManualContactId, setCancelManualContactId] = useState('');
+
   const [cashbookSearch, setCashbookSearch] = useState('');
   const cashbookDateInputRef = useRef<HTMLInputElement>(null);
   const cashbookCustomStartRef = useRef<HTMLInputElement>(null);
@@ -542,7 +552,7 @@ export default function App() {
   const [salesDetailsDateFilter, setSalesDetailsDateFilter] = useState<'TODAY' | 'YESTERDAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'ALL' | 'CUSTOM'>('TODAY');
   const [salesDetailsCustomStart, setSalesDetailsCustomStart] = useState(() => new Date().toISOString().slice(0, 10));
   const [salesDetailsCustomEnd, setSalesDetailsCustomEnd] = useState(() => new Date().toISOString().slice(0, 10));
-  const [salesDetailsPaymentFilter, setSalesDetailsPaymentFilter] = useState<'ALL' | PaymentMethod>('ALL');
+  const [salesDetailsPaymentFilter, setSalesDetailsPaymentFilter] = useState<'ALL' | PaymentMethod | 'CANCELLED'>('ALL');
   const [salesDetailsSearch, setSalesDetailsSearch] = useState('');
 
   const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'needs_tables' | 'error'>('checking');
@@ -1482,6 +1492,452 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     showProfileToast('Item deleted from inventory!');
   };
 
+  interface ActiveStockSaleOption {
+    key: string;
+    date: string;
+    createdAt?: string;
+    invoiceNo: string;
+    customerName: string;
+    contactId?: string;
+    paymentMethod: PaymentMethod;
+    amount: number;
+    items: CashbookEntryItem[];
+    matchedQty: number;
+    cashbookEntry?: CashbookEntry;
+    tx?: Transaction;
+    linkedPaymentsCount: number;
+    linkedPaymentsAmount: number;
+  }
+
+  const doesEntryItemMatchStock = (soldIt: CashbookEntryItem, stockItem: DaybookStockItem): boolean => {
+    if (soldIt.id && stockItem.id && soldIt.id === stockItem.id) return true;
+    if (soldIt.sku && stockItem.sku && soldIt.sku.trim().toLowerCase() === stockItem.sku.trim().toLowerCase()) return true;
+    if (soldIt.item && stockItem.item && soldIt.item.trim().toLowerCase() === stockItem.item.trim().toLowerCase()) return true;
+    return false;
+  };
+
+  const getActiveSalesForStockItem = (stockItem: DaybookStockItem): ActiveStockSaleOption[] => {
+    const results: ActiveStockSaleOption[] = [];
+    const coveredTxIds = new Set<string>();
+    const coveredInvNos = new Set<string>();
+
+    cashbookEntries.forEach(e => {
+      if ((e.type as string) === 'EXPENSE') return;
+      if (isBouncedCashbookEntry(e) || isCancelledCashbookEntry(e)) return;
+      if (isCustomerPaymentCashbookEntry(e)) return;
+
+      const items = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+      const matchingItems = items.filter(it => doesEntryItemMatchStock(it, stockItem));
+      if (matchingItems.length === 0) return;
+
+      const matchedQty = matchingItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
+      const invNo = getConsistentInvoiceNo(e);
+      const linkedTx =
+        transactions.find(t => t.id === e.id && !isCancelledTransaction(t)) ||
+        transactions.find(t =>
+          t.type === 'CREDIT' &&
+          !isCancelledTransaction(t) &&
+          (!e.contactId || t.contactId === e.contactId) &&
+          getConsistentInvoiceNo(t) === invNo
+        ) ||
+        undefined;
+
+      if (linkedTx) coveredTxIds.add(linkedTx.id);
+      if (invNo) coveredInvNos.add(invNo);
+
+      const resolvedContactId = e.contactId || linkedTx?.contactId;
+      const contactObj = resolvedContactId ? contacts.find(c => c.id === resolvedContactId) : undefined;
+      const ledger = resolvedContactId && invNo.startsWith('INV-')
+        ? getInvoicePaymentLedger(invNo, resolvedContactId)
+        : null;
+
+      results.push({
+        key: `CB:${e.id}`,
+        date: e.date,
+        createdAt: e.createdAt,
+        invoiceNo: invNo,
+        customerName: e.contactName || contactObj?.name || 'Walk-in / General Sale',
+        contactId: resolvedContactId,
+        paymentMethod: e.paymentMethod,
+        amount: Number(e.amount) || 0,
+        items,
+        matchedQty,
+        cashbookEntry: e,
+        tx: linkedTx,
+        linkedPaymentsCount: ledger?.paymentHistory.length || 0,
+        linkedPaymentsAmount: ledger?.totalPaid || 0
+      });
+    });
+
+    transactions.forEach(t => {
+      if (t.type !== 'CREDIT') return;
+      if (isCancelledTransaction(t) || t.chequeStatus === 'BOUNCED') return;
+      if (coveredTxIds.has(t.id)) return;
+      const invNo = getConsistentInvoiceNo(t);
+      if (invNo && coveredInvNos.has(invNo)) return;
+
+      const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
+      const items = parsed.items && parsed.items.length > 0 ? parsed.items : extractCashbookItems(t.description).items;
+      const matchingItems = items.filter(it => doesEntryItemMatchStock(it, stockItem));
+      if (matchingItems.length === 0) return;
+
+      const matchedQty = matchingItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
+      const contactObj = contacts.find(c => c.id === t.contactId);
+      const ledger = t.contactId && invNo.startsWith('INV-')
+        ? getInvoicePaymentLedger(invNo, t.contactId)
+        : null;
+
+      results.push({
+        key: `TX:${t.id}`,
+        date: t.date,
+        invoiceNo: invNo,
+        customerName: contactObj?.name || 'Customer',
+        contactId: t.contactId,
+        paymentMethod: parsed.method || t.paymentMethod || 'Credit',
+        amount: Number(t.amount) || 0,
+        items,
+        matchedQty,
+        tx: t,
+        linkedPaymentsCount: ledger?.paymentHistory.length || 0,
+        linkedPaymentsAmount: ledger?.totalPaid || 0
+      });
+    });
+
+    return results.sort((a, b) => {
+      const tA = new Date(a.date).getTime();
+      const tB = new Date(b.date).getTime();
+      if (!isNaN(tA) && !isNaN(tB) && tA !== tB) return tB - tA;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
+  };
+
+  const buildSaleOptionFromCashbookEntry = (e: CashbookEntry): ActiveStockSaleOption => {
+    const items = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
+    const invNo = getConsistentInvoiceNo(e);
+    const isSettlementEntry = isCustomerPaymentCashbookEntry(e);
+    const linkedTx =
+      transactions.find(t => t.id === e.id && !isCancelledTransaction(t)) ||
+      (!isSettlementEntry
+        ? transactions.find(t =>
+            t.type === 'CREDIT' &&
+            !isCancelledTransaction(t) &&
+            (!e.contactId || t.contactId === e.contactId) &&
+            getConsistentInvoiceNo(t) === invNo
+          )
+        : transactions.find(t =>
+            t.type === 'PAYMENT' &&
+            !isCancelledTransaction(t) &&
+            (!e.contactId || t.contactId === e.contactId) &&
+            extractLinkedInvoiceNo(t) === invNo &&
+            Math.abs(Number(t.amount) - Number(e.amount)) < 0.01 &&
+            t.date === e.date
+          )) ||
+      undefined;
+
+    const resolvedContactId = e.contactId || linkedTx?.contactId;
+    const contactObj = resolvedContactId ? contacts.find(c => c.id === resolvedContactId) : undefined;
+    const ledger = !isSettlementEntry && resolvedContactId && invNo.startsWith('INV-')
+      ? getInvoicePaymentLedger(invNo, resolvedContactId)
+      : null;
+
+    return {
+      key: `CB:${e.id}`,
+      date: e.date,
+      createdAt: e.createdAt,
+      invoiceNo: invNo,
+      customerName: e.contactName || contactObj?.name || 'Walk-in / General Sale',
+      contactId: resolvedContactId,
+      paymentMethod: e.paymentMethod,
+      amount: Number(e.amount) || 0,
+      items,
+      matchedQty: items.reduce((sum, it) => sum + (Number(it.qty) || 0), 0),
+      cashbookEntry: e,
+      tx: linkedTx,
+      linkedPaymentsCount: ledger?.paymentHistory.length || 0,
+      linkedPaymentsAmount: ledger?.totalPaid || 0
+    };
+  };
+
+  const handleOpenCancelSaleEntryModal = (entry: CashbookEntry) => {
+    if (isCancelledCashbookEntry(entry)) return;
+    setCancellingStockItem(null);
+    setCancellingSaleEntry(entry);
+    setCancelSelectedSaleKey(`CB:${entry.id}`);
+    setCancelReason('');
+    setCancelAlsoCancelPayments(true);
+    setCancelManualQty('1');
+    setCancelManualContactId('');
+  };
+
+  const handleConfirmCancelStockSale = async () => {
+    if ((!cancellingStockItem && !cancellingSaleEntry) || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const nowIso = new Date().toISOString();
+      const reasonTrimmed = cancelReason.trim();
+      const selectedSale = cancellingSaleEntry
+        ? buildSaleOptionFromCashbookEntry(cancellingSaleEntry)
+        : cancellingStockItem
+        ? (getActiveSalesForStockItem(cancellingStockItem).find(s => s.key === cancelSelectedSaleKey) || null)
+        : null;
+
+      if (selectedSale) {
+        // 1. Revert all items in this sale back to daybookItems stock (when items exist)
+        const nextStock = daybookItemsRef.current.map(s => ({ ...s }));
+        let revertedTotalQty = 0;
+        const revertedLabels: string[] = [];
+
+        selectedSale.items.forEach(soldIt => {
+          const soldQty = Number(soldIt.qty) || 0;
+          if (soldQty <= 0) return;
+          const idx = nextStock.findIndex(s => doesEntryItemMatchStock(soldIt, s));
+          if (idx >= 0) {
+            nextStock[idx] = {
+              ...nextStock[idx],
+              qty: (Number(nextStock[idx].qty) || 0) + soldQty,
+              updatedAt: nowIso
+            };
+          } else if (cancellingStockItem && doesEntryItemMatchStock(soldIt, cancellingStockItem)) {
+            const targetIdx = nextStock.findIndex(s => s.id === cancellingStockItem.id);
+            if (targetIdx >= 0) {
+              nextStock[targetIdx] = {
+                ...nextStock[targetIdx],
+                qty: (Number(nextStock[targetIdx].qty) || 0) + soldQty,
+                updatedAt: nowIso
+              };
+            }
+          }
+          revertedTotalQty += soldQty;
+          revertedLabels.push(`+${soldQty} ${soldIt.item || soldIt.sku || cancellingStockItem?.item || 'Item'}`);
+        });
+
+        if (revertedTotalQty === 0 && cancellingStockItem) {
+          const fallbackIdx = nextStock.findIndex(s => s.id === cancellingStockItem.id);
+          if (fallbackIdx >= 0) {
+            const q = selectedSale.matchedQty || 1;
+            nextStock[fallbackIdx] = {
+              ...nextStock[fallbackIdx],
+              qty: (Number(nextStock[fallbackIdx].qty) || 0) + q,
+              updatedAt: nowIso
+            };
+            revertedTotalQty = q;
+            revertedLabels.push(`+${q} ${cancellingStockItem.item}`);
+          }
+        }
+
+        if (revertedTotalQty > 0) {
+          await persistDaybookItems(nextStock);
+        }
+
+        const revertedSummary = revertedTotalQty > 0
+          ? (revertedLabels.length <= 2
+              ? `Stock Reverted: ${revertedLabels.join(', ')}`
+              : `Stock Reverted: +${revertedTotalQty} pcs (${revertedLabels.length} items)`)
+          : `Sale Cancelled (LKR ${selectedSale.amount.toLocaleString()})`;
+        const cancelToken = encodeCancelledToken(todayIso, revertedSummary, reasonTrimmed);
+
+        // Identify all CashbookEntry IDs & Transaction IDs to mark cancelled
+        const cbIdsToCancel = new Map<string, string>();
+        const txIdsToCancel = new Map<string, string>();
+
+        if (selectedSale.cashbookEntry) {
+          const base = stripCancelledToken(selectedSale.cashbookEntry.description);
+          cbIdsToCancel.set(selectedSale.cashbookEntry.id, base ? `${base} • ${cancelToken}` : cancelToken);
+        }
+        if (selectedSale.tx) {
+          const base = stripCancelledToken(selectedSale.tx.description);
+          txIdsToCancel.set(selectedSale.tx.id, base ? `${base} • ${cancelToken}` : cancelToken);
+        }
+
+        // Also cancel linked credit settlement payments if enabled
+        if (cancelAlsoCancelPayments && selectedSale.invoiceNo.startsWith('INV-') && selectedSale.linkedPaymentsCount > 0) {
+          const payToken = encodeCancelledToken(todayIso, `Cancelled with #${selectedSale.invoiceNo}`, reasonTrimmed);
+          transactions.forEach(t => {
+            if (t.type !== 'PAYMENT' || isCancelledTransaction(t)) return;
+            if (selectedSale.contactId && t.contactId !== selectedSale.contactId) return;
+            if (extractLinkedInvoiceNo(t) === selectedSale.invoiceNo) {
+              const base = stripCancelledToken(t.description);
+              txIdsToCancel.set(t.id, base ? `${base} • ${payToken}` : payToken);
+              const matchingCb = cashbookEntries.find(e => e.id === t.id && !isCancelledCashbookEntry(e));
+              if (matchingCb) {
+                const cbBase = stripCancelledToken(matchingCb.description);
+                cbIdsToCancel.set(matchingCb.id, cbBase ? `${cbBase} • ${payToken}` : payToken);
+              }
+            }
+          });
+          cashbookEntries.forEach(e => {
+            if (isCancelledCashbookEntry(e) || !isCustomerPaymentCashbookEntry(e)) return;
+            if (extractLinkedInvoiceNo(e) === selectedSale.invoiceNo && (!selectedSale.contactId || !e.contactId || e.contactId === selectedSale.contactId)) {
+              if (!cbIdsToCancel.has(e.id)) {
+                const cbBase = stripCancelledToken(e.description);
+                cbIdsToCancel.set(e.id, cbBase ? `${cbBase} • ${payToken}` : payToken);
+              }
+            }
+          });
+        }
+
+        // Apply updates to cashbookEntries
+        if (cbIdsToCancel.size > 0) {
+          const updatedCashbook = cashbookEntries.map(e =>
+            cbIdsToCancel.has(e.id) ? { ...e, description: cbIdsToCancel.get(e.id)! } : e
+          );
+          setCashbookEntries(updatedCashbook);
+          try {
+            const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+            localStorage.setItem(cacheKey, JSON.stringify(updatedCashbook));
+            localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedCashbook));
+          } catch {}
+          for (const [cbId, newDesc] of cbIdsToCancel.entries()) {
+            try {
+              let cbq = supabase.from('cashbook_entries').update({ description: newDesc }).eq('id', cbId);
+              if (authUser?.id) cbq = cbq.eq('user_id', authUser.id);
+              await cbq;
+            } catch (err) {
+              console.warn('Supabase cashbook cancel update warning:', err);
+            }
+          }
+        }
+
+        // Apply updates to transactions
+        if (txIdsToCancel.size > 0) {
+          const updatedTxs = transactions.map(t =>
+            txIdsToCancel.has(t.id) ? { ...t, description: txIdsToCancel.get(t.id)! } : t
+          );
+          setTransactions(updatedTxs);
+          try {
+            const txKey = authUser?.id ? `st_cached_transactions_${authUser.id}` : 'st_cached_transactions';
+            localStorage.setItem(txKey, JSON.stringify(updatedTxs));
+            localStorage.setItem('st_cached_transactions', JSON.stringify(updatedTxs));
+          } catch {}
+          for (const [txId, newDesc] of txIdsToCancel.entries()) {
+            try {
+              let tq = supabase.from('transactions').update({ description: newDesc }).eq('id', txId);
+              if (authUser?.id) tq = tq.eq('user_id', authUser.id);
+              await tq;
+            } catch (err) {
+              console.warn('Supabase transaction cancel update warning:', err);
+            }
+          }
+        }
+
+        showProfileToast(`Sale #${selectedSale.invoiceNo} cancelled! ${revertedSummary}`);
+      } else {
+        // Fallback: Manual stock return / cancel when no prior recorded sale exists
+        const qtyVal = Math.max(1, parseFloat(cancelManualQty) || 0);
+        const nextStock = daybookItemsRef.current.map(s =>
+          s.id === cancellingStockItem.id
+            ? { ...s, qty: (Number(s.qty) || 0) + qtyVal, updatedAt: nowIso }
+            : s
+        );
+        await persistDaybookItems(nextStock);
+
+        const matchedCustomer = cancelManualContactId
+          ? contacts.find(c => c.id === cancelManualContactId) || null
+          : null;
+        const returnedItem: CashbookEntryItem = {
+          id: cancellingStockItem.id,
+          item: cancellingStockItem.item,
+          sku: cancellingStockItem.sku,
+          category: cancellingStockItem.category,
+          qty: qtyVal,
+          cost: Number(cancellingStockItem.cost) || 0,
+          wholesalePrice: Number(cancellingStockItem.wholesalePrice) || 0,
+          retailPrice: Number(cancellingStockItem.retailPrice) || 0,
+        };
+        const itemsToken = encodeCashbookItemsToken([returnedItem]);
+        const revertedSummary = `Stock Reverted: +${qtyVal} ${cancellingStockItem.item}`;
+        const cancelToken = encodeCancelledToken(todayIso, revertedSummary, reasonTrimmed || 'Manual Stock Return');
+        const entryId = generateUUID();
+        const refNo = `INV-${entryId.slice(0, 6).toUpperCase()}`;
+        const desc = `Sale Cancelled (${cancellingStockItem.item} × ${qtyVal}) ${itemsToken} • ${cancelToken}`;
+
+        const newCbEntry: CashbookEntry = {
+          id: entryId,
+          userId: authUser?.id,
+          type: 'SALE',
+          amount: 0,
+          date: todayIso,
+          category: cancellingStockItem.category || 'Item Sale',
+          paymentMethod: 'Cash',
+          description: desc,
+          contactId: matchedCustomer?.id,
+          contactName: matchedCustomer?.name || 'Walk-in / Stock Return',
+          referenceNo: refNo,
+          items: [returnedItem],
+          createdAt: nowIso
+        };
+
+        const updatedCashbook = [newCbEntry, ...cashbookEntries];
+        setCashbookEntries(updatedCashbook);
+        try {
+          const cacheKey = authUser?.id ? `st_cashbook_entries_${authUser.id}` : 'st_cashbook_entries';
+          localStorage.setItem(cacheKey, JSON.stringify(updatedCashbook));
+          localStorage.setItem('st_cashbook_entries', JSON.stringify(updatedCashbook));
+        } catch {}
+        if (authUser?.id) {
+          try {
+            await supabase.from('cashbook_entries').insert([{
+              id: newCbEntry.id,
+              user_id: authUser.id,
+              type: newCbEntry.type,
+              amount: newCbEntry.amount,
+              date: newCbEntry.date,
+              category: newCbEntry.category,
+              payment_method: newCbEntry.paymentMethod,
+              description: newCbEntry.description,
+              contact_name: newCbEntry.contactName,
+              reference_no: newCbEntry.referenceNo
+            }]);
+          } catch (err) {
+            console.warn('Supabase manual cancel cashbook insert warning:', err);
+          }
+        }
+
+        if (matchedCustomer) {
+          const newTx: Transaction = {
+            id: entryId,
+            contactId: matchedCustomer.id,
+            amount: 0,
+            type: 'CREDIT',
+            date: todayIso,
+            description: `Sale Cancelled [INV:${refNo}] ${itemsToken} • ${cancelToken}`,
+            balanceAfter: 0
+          };
+          const updatedTxs = [...transactions, newTx];
+          setTransactions(updatedTxs);
+          try {
+            const txKey = authUser?.id ? `st_cached_transactions_${authUser.id}` : 'st_cached_transactions';
+            localStorage.setItem(txKey, JSON.stringify(updatedTxs));
+            localStorage.setItem('st_cached_transactions', JSON.stringify(updatedTxs));
+          } catch {}
+          if (authUser?.id) {
+            try {
+              await supabase.from('transactions').insert([{
+                id: newTx.id,
+                user_id: authUser.id,
+                contact_id: newTx.contactId,
+                amount: newTx.amount,
+                type: newTx.type,
+                date: newTx.date,
+                description: newTx.description
+              }]);
+            } catch (err) {
+              console.warn('Supabase manual cancel tx insert warning:', err);
+            }
+          }
+        }
+
+        showProfileToast(`Cancelled & reverted +${qtyVal} ${cancellingStockItem.item} back to stock!`);
+      }
+
+      setCancellingStockItem(null);
+      setCancellingSaleEntry(null);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const stopCameraStream = () => {
     if (cameraStreamRef.current) {
       cameraStreamRef.current.getTracks().forEach(track => track.stop());
@@ -1645,6 +2101,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     transactions.forEach(t => {
       if (!stats[t.contactId]) return;
+      if (isCancelledTransaction(t)) return;
       const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
       const cType = contactTypeMap.get(t.contactId);
 
@@ -1705,7 +2162,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     
     contacts.filter(c => c.type === 'RENT').forEach(c => {
       savings[c.id] = transactions
-        .filter(t => t.contactId === c.id && !isPendingCheque(t) && normalizeToLocalMidnight(t.date) >= cycleStart)
+        .filter(t => t.contactId === c.id && !isCancelledTransaction(t) && !isPendingCheque(t) && normalizeToLocalMidnight(t.date) >= cycleStart)
         .reduce((sum, t) => sum + (t.type === 'PAYMENT' ? t.amount : -t.amount), 0);
     });
     return savings;
@@ -1749,6 +2206,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     }
 
     const rangeTransactions = filteredTransactions.filter(t => {
+      if (isCancelledTransaction(t)) return false;
       const d = normalizeToLocalMidnight(t.date);
       return d >= start && d <= end;
     });
@@ -1764,8 +2222,18 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     return (entry.description || '').toUpperCase().includes('[BOUNCED]');
   };
 
+  // Helper to identify cancelled sales in cashbook entries
+  const isCancelledCashbookEntry = (entry: CashbookEntry): boolean => {
+    return extractCancelledToken(entry.description).isCancelled;
+  };
+
+  const getCashbookCancelMeta = (entry: CashbookEntry) => {
+    return extractCancelledToken(entry.description);
+  };
+
   // Helper to identify pending cheques in cashbook entries
   const isPendingCashbookEntry = (entry: CashbookEntry): boolean => {
+    if (isCancelledCashbookEntry(entry)) return false;
     if (entry.paymentMethod === 'Cheque' || entry.paymentMethod === 'Cash + Cheque') {
       const desc = entry.description || '';
       if (desc.includes('[PASSED]') || desc.includes('[CLEARED]') || desc.includes('Status: Passed')) return false;
@@ -1809,7 +2277,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const primarySaleInvoiceNos = useMemo(() => {
     const set = new Set<string>();
     cashbookEntries.forEach(e => {
-      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e)) return;
+      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e) || isCancelledCashbookEntry(e)) return;
       if (isCustomerPaymentCashbookEntry(e)) return;
       const inv = extractLinkedInvoiceNo(e) || (e.id ? `INV-${e.id.slice(0, 6).toUpperCase()}` : '');
       if (inv && inv.startsWith('INV-')) {
@@ -1828,7 +2296,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const settledAmountByInvoiceMap = useMemo(() => {
     const map: Record<string, number> = {};
     cashbookEntries.forEach(e => {
-      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e)) return;
+      if ((e.type as string) === 'EXPENSE' || isBouncedCashbookEntry(e) || isCancelledCashbookEntry(e)) return;
       if (!isLinkedCreditSettlementEntry(e)) return;
       const invNo = extractLinkedInvoiceNo(e);
       if (invNo) {
@@ -1851,6 +2319,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const settledByInvoiceInSet: Record<string, number> = {};
 
     entries.forEach(e => {
+      if (isBouncedCashbookEntry(e) || isCancelledCashbookEntry(e)) return;
       const isLinkedSettlement = isLinkedCreditSettlementEntry(e);
       const amt = Number(e.amount) || 0;
       const invNo = extractLinkedInvoiceNo(e);
@@ -1881,6 +2350,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
 
     let settledCreditInSet = 0;
     entries.forEach(e => {
+      if (isBouncedCashbookEntry(e) || isCancelledCashbookEntry(e)) return;
       if (isLinkedCreditSettlementEntry(e)) return;
       const split = getCashbookEntryPaymentSplit(e);
       if (split.credit > 0) {
@@ -1913,7 +2383,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
   const todayCashbookSnapshot = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const todayEntries = cashbookEntries.filter(
-      e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isBouncedCashbookEntry(e)
+      e => (e.type as string) !== 'EXPENSE' && e.date === todayStr && !isBouncedCashbookEntry(e) && !isCancelledCashbookEntry(e)
     );
     const summary = calcSalesBreakdown(todayEntries, false);
     return {
@@ -1933,6 +2403,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       end.setHours(23, 59, 59, 999);
 
       const rangeTransactions = transactions.filter(t => {
+        if (isCancelledTransaction(t)) return false;
         const d = normalizeToLocalMidnight(t.date);
         return d >= start && d <= end;
       });
@@ -2001,7 +2472,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       end.setHours(23, 59, 59, 999);
 
       const transactionsBefore = transactions
-        .filter(t => t.contactId === contact.id && normalizeToLocalMidnight(t.date) < start);
+        .filter(t => t.contactId === contact.id && !isCancelledTransaction(t) && normalizeToLocalMidnight(t.date) < start);
       
       let openingBalance = 0;
       transactionsBefore.forEach(t => {
@@ -2025,13 +2496,19 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       
       let runningBal = openingBalance;
       const tableRows = contactTransactions.map(t => {
-        if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
-        else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
-        const typeLabel = t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit');
-        const cleanDescText = stripCashbookItems(stripAttachmentToken(t.description));
+        const cancelMeta = extractCancelledToken(t.description);
+        if (!cancelMeta.isCancelled) {
+          if (isRent) { runningBal += (t.type === 'PAYMENT' ? t.amount : -t.amount); }
+          else { runningBal += (t.type === 'CREDIT' ? t.amount : -t.amount); }
+        }
+        const typeLabel = cancelMeta.isCancelled ? 'CANCELLED' : (t.type === 'PAYMENT' ? (isRent ? 'Deposit' : 'Paid') : (isRent ? 'Withdraw' : 'Credit'));
+        const cleanDescText = stripCashbookItems(stripAttachmentToken(cancelMeta.cleanDesc));
         const txItemsSummary = formatCashbookItemsSummary(extractCashbookItems(t.description).items);
-        const displayDesc = [cleanDescText, txItemsSummary].filter(Boolean).join(' • ') || '-';
-        return [t.date, displayDesc, typeLabel, `LKR ${t.amount.toLocaleString()}`, `LKR ${runningBal.toLocaleString()}`];
+        const cancelNote = cancelMeta.isCancelled
+          ? `[CANCELLED${cancelMeta.cancelledDate ? ` ${cancelMeta.cancelledDate}` : ''}${cancelMeta.revertedSummary ? ` • ${cancelMeta.revertedSummary}` : ''}${cancelMeta.reason ? ` • ${cancelMeta.reason}` : ''}]`
+          : '';
+        const displayDesc = [cleanDescText, txItemsSummary, cancelNote].filter(Boolean).join(' • ') || '-';
+        return [t.date, displayDesc, typeLabel, cancelMeta.isCancelled ? `LKR 0 (Was ${t.amount.toLocaleString()})` : `LKR ${t.amount.toLocaleString()}`, `LKR ${runningBal.toLocaleString()}`];
       });
 
       tableRows.unshift([reportRange.start, 'Opening Balance', '-', '-', `LKR ${openingBalance.toLocaleString()}`]);
@@ -2514,6 +2991,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const matchingPayments = transactions
       .filter(t => {
         if (t.type !== 'PAYMENT') return false;
+        if (isCancelledTransaction(t)) return false;
         if (excludeTxId && t.id === excludeTxId) return false;
         if (contactId && t.contactId !== contactId) return false;
         return extractLinkedInvoiceNo(t) === normalizedInv;
@@ -2559,8 +3037,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       };
     });
 
-    const billAmount = creditTx ? (Number(creditTx.amount) || 0) : 0;
-    const currentDue = Math.max(0, billAmount - totalPaid);
+    const isCreditCancelled = Boolean(creditTx && isCancelledTransaction(creditTx));
+    const billAmount = creditTx && !isCreditCancelled ? (Number(creditTx.amount) || 0) : 0;
+    const currentDue = isCreditCancelled ? 0 : Math.max(0, billAmount - totalPaid);
 
     return {
       invoiceNo: normalizedInv,
@@ -2569,7 +3048,8 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       billAmount,
       totalPaid,
       totalPendingCheque,
-      currentDue
+      currentDue,
+      isCancelled: isCreditCancelled
     };
   };
 
@@ -2628,6 +3108,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       chequeStatus: rawParsedTxMeta.chequeStatus || baseItem.chequeStatus || parsedLinkedTxMeta?.chequeStatus || matchedLinkedTx?.chequeStatus,
     };
     const categoryName = baseItem.category || (baseItem.type === 'SALE' ? 'Sale' : baseItem.type === 'PAYMENT' ? 'Customer Payment' : (matchedContact?.type === 'CUSTOMER' ? (entryItemsList[0]?.category || 'Item Sale') : 'Service Order'));
+    const cancelMeta = extractCancelledToken(baseItem.description || item.description);
+    const isCancelledInvoice = Boolean(cancelMeta.isCancelled || parsedTxMeta?.isCancelled);
+    const cancelledDate = cancelMeta.cancelledDate || parsedTxMeta?.cancelledDate;
+    const cancelledSummary = cancelMeta.revertedSummary || parsedTxMeta?.cancelledSummary;
+    const cancelReason = cancelMeta.reason || parsedTxMeta?.cancelReason;
     const cleanRawDesc = baseIsTx && parsedTxMeta
       ? parsedTxMeta.cleanNotes
       : stripCashbookItems(stripAttachmentToken(baseItem.description || baseItem.cleanNotes));
@@ -2641,11 +3126,13 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         ph => (ph.method === 'Cheque' || ph.method === 'Cash + Cheque') && (ph.chequeDate || ph.chequeNumber)
       );
       const effectiveChequeDate = parsedTxMeta?.chequeDate || chequeHistoryEntries.find(ch => ch.isPending && ch.chequeDate)?.chequeDate || chequeHistoryEntries.find(ch => ch.chequeDate)?.chequeDate;
-      const totalPaid = ledger.totalPaid;
-      const currentDue = Math.max(0, amount - totalPaid);
+      const totalPaid = isCancelledInvoice ? 0 : ledger.totalPaid;
+      const currentDue = isCancelledInvoice ? 0 : Math.max(0, amount - totalPaid);
       const hasPaymentHistory = paymentHistory.length > 0;
-      const isUnpaidCredit = currentDue > 0;
-      const paymentMethod = currentDue <= 0 && totalPaid > 0
+      const isUnpaidCredit = !isCancelledInvoice && currentDue > 0;
+      const paymentMethod = isCancelledInvoice
+        ? 'Credit (Cancelled)'
+        : currentDue <= 0 && totalPaid > 0
         ? 'Credit (Paid in Full)'
         : totalPaid > 0
         ? 'Credit (Partial Paid)'
@@ -2671,13 +3158,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         isSplit: false,
         splitCash: 0,
         splitCheque: 0,
-        isPending: ledger.totalPendingCheque > 0,
+        isPending: !isCancelledInvoice && ledger.totalPendingCheque > 0,
         isUnpaidCredit,
         totalDue: currentDue,
         totalPaid,
         hasPaymentHistory,
         paymentHistory,
-        isLinkedCreditInvoice: true
+        isLinkedCreditInvoice: true,
+        isCancelledInvoice,
+        cancelledDate,
+        cancelledSummary,
+        cancelReason
       };
     }
 
@@ -2685,9 +3176,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     const isSplit = parsedTxMeta?.method === 'Cash + Cheque' || item.paymentMethod === 'Cash + Cheque';
     const splitCash = isSplit ? (parsedTxMeta?.cashAmount ?? item.cashAmount ?? 0) : 0;
     const splitCheque = isSplit ? (parsedTxMeta?.chequeAmount ?? item.chequeAmount ?? Math.max(0, amount - splitCash)) : 0;
-    const isPending = isTx ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]'));
-    const isUnpaidCredit = (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
-    const totalDue = isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0));
+    const isPending = !isCancelledInvoice && (isTx ? isPendingCheque(item as Transaction) : (parsedTxMeta?.chequeStatus === 'PENDING' || (item.description || '').includes('[PENDING]')));
+    const isUnpaidCredit = !isCancelledInvoice && (item.type === 'CREDIT' || paymentMethod === 'Credit' || item.paymentMethod === 'Credit' || parsedTxMeta?.method === 'Credit') && paymentMethod !== 'Cash' && paymentMethod !== 'Bank Transfer' && paymentMethod !== 'Card' && paymentMethod !== 'Cheque' && paymentMethod !== 'Cash + Cheque';
+    const totalDue = isCancelledInvoice ? 0 : (isUnpaidCredit ? amount : (isSplit ? (isPending ? splitCheque : 0) : (parsedTxMeta?.method === 'Cheque' ? (isPending ? amount : 0) : 0)));
     const effectiveChequeDate = parsedTxMeta?.chequeDate || item.chequeDate || matchedLinkedTx?.chequeDate;
 
     return {
@@ -2713,10 +3204,14 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       isPending,
       isUnpaidCredit,
       totalDue,
-      totalPaid: isUnpaidCredit ? 0 : (isSplit ? (isPending ? splitCash : amount) : (parsedTxMeta?.method === 'Cheque' && isPending ? 0 : amount)),
+      totalPaid: isCancelledInvoice ? 0 : (isUnpaidCredit ? 0 : (isSplit ? (isPending ? splitCash : amount) : (parsedTxMeta?.method === 'Cheque' && isPending ? 0 : amount))),
       hasPaymentHistory: false,
       paymentHistory: [] as ReturnType<typeof getInvoicePaymentLedger>['paymentHistory'],
-      isLinkedCreditInvoice: false
+      isLinkedCreditInvoice: false,
+      isCancelledInvoice,
+      cancelledDate,
+      cancelledSummary,
+      cancelReason
     };
   };
 
@@ -2750,7 +3245,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       totalPaid,
       hasPaymentHistory,
       paymentHistory,
-      isLinkedCreditInvoice
+      isLinkedCreditInvoice,
+      isCancelledInvoice,
+      cancelledDate,
+      cancelledSummary,
+      cancelReason
     } = resolved;
 
     let doc: jsPDF;
@@ -3329,10 +3828,15 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
         `⚠️ *Total Balance Due: LKR ${totalDue.toLocaleString()}*`
       : `*Total Amount Paid: LKR ${amount.toLocaleString()}*`;
 
+    const cancelBannerText = isCancelledInvoice
+      ? `❌ *STATUS: CANCELLED*${cancelledDate ? ` (${formatDisplayDate(cancelledDate)})` : ''}${cancelledSummary ? `\n${cancelledSummary}` : ''}${cancelReason ? `\nReason: ${cancelReason}` : ''}\n`
+      : '';
+
     const shareText = `🧾 *${(shopName || 'LEDGER BOOK').toUpperCase()} - OFFICIAL RECEIPT*\n` +
       (shopAddress ? `📍 ${shopAddress}\n` : '') +
       (shopPhone ? `📞 ${shopPhone}\n` : '') +
       `-----------------------------------\n` +
+      cancelBannerText +
       `Ref #: #${invoiceNo}\n` +
       `Date: ${dateStr} ${timeStr}\n` +
       `Customer: ${customerName}` + (customerCity ? ` (${customerCity})` : '') + `\n` +
@@ -3343,7 +3847,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       itemsText +
       paymentHistoryText +
       `-----------------------------------\n` +
-      paymentSummaryText + `\n\n` +
+      (isCancelledInvoice ? `*STATUS: CANCELLED (DUE: LKR 0)*` : paymentSummaryText) + `\n\n` +
       (shopReceiptTerms || DEFAULT_RECEIPT_TERMS) + `\n\n` +
       `Thank you for your business!`;
 
@@ -3449,7 +3953,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
       totalPaid,
       hasPaymentHistory,
       paymentHistory,
-      isLinkedCreditInvoice
+      isLinkedCreditInvoice,
+      isCancelledInvoice,
+      cancelledDate,
+      cancelledSummary,
+      cancelReason
     } = resolved;
 
     const shareToWhatsApp = () => {
@@ -3472,7 +3980,10 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
             return `- ${formatDisplayDate(ph.date)} (${ph.method}${phMeta ? ` • ${phMeta}` : ''}): LKR ${ph.amount.toLocaleString()}`;
           }).join('\n') + `\nTotal Paid: LKR ${totalPaid.toLocaleString()}\nCurrent Due: LKR ${totalDue.toLocaleString()}`
         : '';
-      const text = `INVOICE #${invoiceNo}\nDate: ${dateStr}\nCustomer: ${customerName}\nTotal Bill: LKR ${amount.toLocaleString()}${chqCopyMeta}${splitText}${historyText}\nMethod: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
+      const cancelCopyLine = isCancelledInvoice
+        ? `\nSTATUS: CANCELLED${cancelledDate ? ` on ${formatDisplayDate(cancelledDate)}` : ''}${cancelledSummary ? ` (${cancelledSummary})` : ''}${cancelReason ? ` • Reason: ${cancelReason}` : ''}`
+        : '';
+      const text = `INVOICE #${invoiceNo}${cancelCopyLine}\nDate: ${dateStr}\nCustomer: ${customerName}\nTotal Bill: LKR ${amount.toLocaleString()}${chqCopyMeta}${splitText}${historyText}\nMethod: ${isSplit ? 'Cash + Cheque (Split)' : paymentMethod}\nStore: ${shopName || 'Store'}${shopAddress ? `\nAddress: ${shopAddress}` : ''}`;
       navigator.clipboard.writeText(text);
       showProfileToast('Invoice details copied to clipboard!');
     };
@@ -3488,6 +3999,11 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                 <span className="text-[11px] font-mono bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded-full font-bold">
                   #{invoiceNo}
                 </span>
+                {isCancelledInvoice && (
+                  <span className="text-[10px] font-black uppercase bg-rose-600 text-white px-2 py-0.5 rounded-full">
+                    CANCELLED
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">{customerName} • {dateStr}</p>
             </div>
@@ -3541,9 +4057,17 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
                   )}
                 </div>
 
-                <div className="text-center font-bold text-xs bg-slate-100 py-1 rounded">
-                  OFFICIAL RECEIPT / INVOICE
+                <div className={`text-center font-bold text-xs py-1 rounded ${isCancelledInvoice ? 'bg-rose-600 text-white' : 'bg-slate-100'}`}>
+                  {isCancelledInvoice ? 'CANCELLED RECEIPT / INVOICE' : 'OFFICIAL RECEIPT / INVOICE'}
                 </div>
+
+                {isCancelledInvoice && (
+                  <div className="p-2 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 text-[10px] font-bold space-y-0.5">
+                    <p className="font-black uppercase">Cancelled{cancelledDate ? ` on ${formatDisplayDate(cancelledDate)}` : ''}</p>
+                    {cancelledSummary && <p className="text-emerald-800">{cancelledSummary}</p>}
+                    {cancelReason && <p>Reason: {cancelReason}</p>}
+                  </div>
+                )}
 
                 <div className="space-y-1 text-[11px] font-bold text-slate-900 border-b border-dashed border-slate-300 pb-3">
                   <div className="flex justify-between"><span className="text-slate-600">Invoice #:</span> <span className="font-extrabold">#{invoiceNo}</span></div>
@@ -6485,7 +7009,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               const ordersWithPaymentTx = new Set<string>();
               transactions.forEach(t => {
                 if (!serviceContactIds.has(t.contactId)) return;
-                if (t.type !== 'PAYMENT' || isPendingCheque(t)) return;
+                if (t.type !== 'PAYMENT' || isCancelledTransaction(t) || isPendingCheque(t)) return;
                 ordersWithPaymentTx.add(t.contactId);
                 // If user has filtered by status/search, scope to matching orders when non-empty; otherwise all matching period
                 if ((serviceStatusFilter !== 'ALL' || searchQuery.trim()) && !filteredIds.has(t.contactId)) return;
@@ -7171,6 +7695,9 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
     
     let currentSum = 0;
     const computedWithBalance = contactTransactions.map(t => {
+      if (isCancelledTransaction(t)) {
+        return { ...t, balanceAfter: currentSum };
+      }
       const parsed = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
       const isSplit = parsed.method === 'Cash + Cheque' || t.paymentMethod === 'Cash + Cheque';
       const chqAmt = getTransactionChequeAmount(t, parsed);
@@ -7905,7 +8432,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
               <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
                 <span className="font-bold text-slate-500 uppercase text-[10px] tracking-wider">Total Paid to Date:</span>
                 <span className="font-black text-emerald-700">
-                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT').reduce((sum, p) => sum + (isPendingCheque(p) ? getTransactionCashAmount(p) : p.amount), 0).toLocaleString()}
+                  LKR {contactTransactions.filter(t => t.type === 'PAYMENT' && !isCancelledTransaction(t)).reduce((sum, p) => sum + (isPendingCheque(p) ? getTransactionCashAmount(p) : p.amount), 0).toLocaleString()}
                 </span>
               </div>
             </div>
@@ -8126,7 +8653,7 @@ const DEFAULT_RECEIPT_TERMS = `Please present this receipt upon pickup\n• Repa
           {/* Unpaid Credit Sales / Invoices Picker for Customer GOT MONEY */}
           {selectedContact.type === 'CUSTOMER' && transType === 'PAYMENT' && (() => {
             const customerCredits = transactions.filter(t => {
-              if (t.contactId !== selectedContact.id || t.type !== 'CREDIT') return false;
+              if (t.contactId !== selectedContact.id || t.type !== 'CREDIT' || isCancelledTransaction(t)) return false;
               const p = parsePaymentMethod(t.description, t.paymentMethod, t.chequeStatus, t.chequeDate);
               return !p.method || p.method === 'Credit';
             });
@@ -11997,6 +12524,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
     let totalItemProfit = 0;
 
     baseFilteredCashbookEntries.forEach(e => {
+      if (isCancelledCashbookEntry(e)) return;
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
         const q = Number(it.qty) || 0;
@@ -12569,9 +13097,13 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       doc.setTextColor(30, 41, 59);
 
       const rows = filteredCashbookEntries.map(e => {
+        const cancelMeta = getCashbookCancelMeta(e);
         const cleanDesc = stripCashbookItems(e.description);
         const itemsSum = formatCashbookItemsSummary(e.items || extractCashbookItems(e.description).items);
-        const fullDesc = [cleanDesc, itemsSum].filter(Boolean).join(' • ') || e.contactName || '-';
+        const cancelTag = cancelMeta.isCancelled
+          ? `[CANCELLED${cancelMeta.cancelledDate ? ` ${cancelMeta.cancelledDate}` : ''}${cancelMeta.revertedSummary ? ` • ${cancelMeta.revertedSummary}` : ''}${cancelMeta.reason ? ` • Reason: ${cancelMeta.reason}` : ''}]`
+          : '';
+        const fullDesc = [cleanDesc, itemsSum, cancelTag].filter(Boolean).join(' • ') || e.contactName || '-';
         return [
           e.date,
           e.category,
@@ -12579,7 +13111,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
           e.contactName || '-',
           e.paymentMethod,
           e.referenceNo || '-',
-          `+ LKR ${e.amount.toLocaleString()}`
+          cancelMeta.isCancelled ? 'LKR 0 (Cancelled)' : `+ LKR ${e.amount.toLocaleString()}`
         ];
       });
 
@@ -13147,31 +13679,47 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                   <div className="divide-y divide-slate-100 dark:divide-[#1e2a3c]">
                     {group.entries.map(entry => {
                       const isCheque = entry.paymentMethod === 'Cheque';
-                      const isPendingChequeEntry = isCheque && (
-                        entry.description?.includes('[PENDING]') ||
-                        entry.description?.toLowerCase().includes('pending') ||
-                        (!entry.description?.includes('[PASSED]') && !entry.description?.includes('[CLEARED]'))
-                      );
+                      const isPendingChequeEntry = isPendingCashbookEntry(entry);
                       const entryDueDateMatch = entry.description?.match(/(?:Due|Date):\s*(\d{4}-\d{2}-\d{2})/);
                       const chequeDueDate = entryDueDateMatch ? entryDueDateMatch[1] : entry.date;
                       const isChequeMatured = isPendingChequeEntry && chequeDueDate <= todayDateStr;
                       const isLinkedSettlement = isLinkedCreditSettlementEntry(entry);
+                      const cancelMeta = getCashbookCancelMeta(entry);
+                      const isCancelledEntry = cancelMeta.isCancelled;
 
                       return (
                         <div
                           key={entry.id}
-                          className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 dark:hover:bg-[#182235] transition-colors group"
+                          className={`p-3.5 flex items-center justify-between gap-3 transition-colors group ${
+                            isCancelledEntry
+                              ? 'bg-rose-50/40 dark:bg-rose-950/15 hover:bg-rose-50/70 dark:hover:bg-rose-950/25'
+                              : 'hover:bg-slate-50/60 dark:hover:bg-[#182235]'
+                          }`}
                         >
                           {/* Left: Sale Icon & Details */}
                           <div className="flex items-center gap-3 overflow-hidden">
-                            <div className="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 shadow-xs bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400">
-                              <ArrowUpRight size={20} className="stroke-[2.5]" />
+                            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 shadow-xs ${
+                              isCancelledEntry
+                                ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400'
+                                : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400'
+                            }`}>
+                              {isCancelledEntry ? <RotateCcw size={18} className="stroke-[2.5]" /> : <ArrowUpRight size={20} className="stroke-[2.5]" />}
                             </div>
 
                             <div className="overflow-hidden">
                               <div className="flex items-center gap-1.5 flex-wrap">
+                                {isCancelledEntry && (
+                                  <span className="text-[10px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider bg-rose-600 text-white shadow-2xs inline-flex items-center gap-1">
+                                    <RotateCcw size={10} />
+                                    CANCELLED
+                                  </span>
+                                )}
                                 {entry.category && (
-                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider border ${
+                                    isCancelledEntry
+                                      ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
+                                      : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50'
+                                  }`}>
                                     {entry.category}
                                   </span>
                                 )}
@@ -13210,7 +13758,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                     {isChequeMatured ? `Maturity Reached (Due: ${formatDisplayDate(chequeDueDate)})` : `On Hold (Due: ${formatDisplayDate(chequeDueDate)})`}
                                   </span>
                                 )}
-                                {isCheque && entry.description?.includes('[PASSED]') && (
+                                {!isCancelledEntry && isCheque && entry.description?.includes('[PASSED]') && (
                                   <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 inline-flex items-center gap-1">
                                     <CheckCircle2 size={10} /> Cleared ({formatDisplayDate(entry.date)})
                                   </span>
@@ -13240,12 +13788,23 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                 const entryItems = entry.items && entry.items.length > 0 ? entry.items : extracted.items;
                                 return (
                                   <>
-                                    <p className="font-bold text-xs text-slate-900 dark:text-white mt-1 truncate">
+                                    <p className={`font-bold text-xs mt-1 truncate ${
+                                      isCancelledEntry ? 'text-slate-500 dark:text-slate-400 line-through' : 'text-slate-900 dark:text-white'
+                                    }`}>
                                       {cleanDesc || (entryItems.length > 0 ? formatCashbookItemsSummary(entryItems) : (entry.contactName || 'General Sale'))}
                                     </p>
 
+                                    {isCancelledEntry && (
+                                      <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 px-2.5 py-1 rounded-lg bg-rose-100/80 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60 text-[10px] text-rose-800 dark:text-rose-200 font-semibold">
+                                        <span className="font-extrabold uppercase tracking-wider">Cancel Details:</span>
+                                        {cancelMeta.cancelledDate && <span>Date: {formatDisplayDate(cancelMeta.cancelledDate)}</span>}
+                                        {cancelMeta.revertedSummary && <span>• {cancelMeta.revertedSummary}</span>}
+                                        {cancelMeta.reason && <span>• Reason: {cancelMeta.reason}</span>}
+                                      </div>
+                                    )}
+
                                     {entryItems.length > 0 && (
-                                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                      <div className={`mt-1.5 flex flex-wrap gap-1.5 ${isCancelledEntry ? 'opacity-70' : ''}`}>
                                         {entryItems.map(it => {
                                           const salePrice = getItemUnitSalePrice(it);
                                           const profit = (salePrice - (it.cost || 0)) * (it.qty || 0);
@@ -13254,7 +13813,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                               key={it.id}
                                               className="inline-flex items-center gap-1.5 flex-wrap px-2 py-1 rounded-lg bg-slate-50 dark:bg-[#1a2538] border border-slate-200/90 dark:border-[#26354d] text-[10px] font-semibold text-slate-700 dark:text-slate-300"
                                             >
-                                              <span className="font-extrabold text-slate-900 dark:text-white">{it.item || 'Item'}</span>
+                                              <span className={`font-extrabold text-slate-900 dark:text-white ${isCancelledEntry ? 'line-through' : ''}`}>{it.item || 'Item'}</span>
                                               {it.category && (
                                                 <span className="text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 px-1.5 py-0.2 rounded font-bold">
                                                   {it.category}
@@ -13295,9 +13854,20 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
 
                           {/* Right: Amount & Actions */}
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
-                              + LKR {entry.amount.toLocaleString()}
-                            </span>
+                            <div className="text-right">
+                              <span className={`font-black text-sm sm:text-base tabular-nums block ${
+                                isCancelledEntry
+                                  ? 'text-rose-600 dark:text-rose-400 line-through'
+                                  : 'text-emerald-700 dark:text-emerald-400'
+                              }`}>
+                                + LKR {entry.amount.toLocaleString()}
+                              </span>
+                              {isCancelledEntry && (
+                                <span className="text-[9px] font-extrabold text-rose-600 dark:text-rose-400 uppercase block">
+                                  Cancelled
+                                </span>
+                              )}
+                            </div>
 
                             <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
                               <button
@@ -13335,6 +13905,18 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                               >
                                 <Pencil size={14} />
                               </button>
+
+                              {!isCancelledEntry && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenCancelSaleEntryModal(entry)}
+                                  className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800/50 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors active:scale-95"
+                                  title="Cancel Sale & Revert Stock"
+                                >
+                                  <RotateCcw size={12} />
+                                  <span className="hidden sm:inline">Cancel</span>
+                                </button>
+                              )}
 
                               {userCanDelete && (
                                 <button
@@ -14416,8 +14998,12 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const allCompletedSales = cashbookEntries.filter(
+      e => e.type === 'SALE' && !isBouncedCashbookEntry(e) && !isCancelledCashbookEntry(e)
+    );
+    const allSalesForList = cashbookEntries.filter(
       e => e.type === 'SALE' && !isBouncedCashbookEntry(e)
     );
+    const cancelledSalesCount = allSalesForList.filter(e => isCancelledCashbookEntry(e)).length;
     const pendingSaleCheques = allCompletedSales.filter(
       e => isPendingCashbookEntry(e)
     );
@@ -14469,7 +15055,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       });
     });
 
-    const dateFilteredSales = allCompletedSales.filter(entry => {
+    const dateFilteredSales = allSalesForList.filter(entry => {
       const entryD = normalizeToLocalMidnight(entry.date);
       if (salesDetailsDateFilter === 'TODAY') return entry.date === todayStr;
       if (salesDetailsDateFilter === 'YESTERDAY') return entry.date === yesterdayStr;
@@ -14486,7 +15072,11 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
 
     const filteredSales = dateFilteredSales
       .filter(entry => {
-        if (salesDetailsPaymentFilter !== 'ALL') {
+        const isCancelledEntry = isCancelledCashbookEntry(entry);
+        if (salesDetailsPaymentFilter === 'CANCELLED') {
+          if (!isCancelledEntry) return false;
+        } else if (salesDetailsPaymentFilter !== 'ALL') {
+          if (isCancelledEntry) return false;
           if (salesDetailsPaymentFilter === 'Cheque') {
             if (entry.paymentMethod !== 'Cheque' && entry.paymentMethod !== 'Cash + Cheque') return false;
           } else if (entry.paymentMethod !== salesDetailsPaymentFilter) {
@@ -14495,16 +15085,20 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
         }
         if (salesDetailsSearch.trim()) {
           const q = salesDetailsSearch.toLowerCase();
+          const cancelMeta = getCashbookCancelMeta(entry);
           const matchesCat = entry.category?.toLowerCase().includes(q);
           const matchesDesc = stripCashbookItems(entry.description)?.toLowerCase().includes(q);
           const matchesParty = entry.contactName?.toLowerCase().includes(q);
           const matchesRef = entry.referenceNo?.toLowerCase().includes(q);
           const matchesAmt = entry.amount.toString().includes(q);
+          const matchesCancel =
+            (cancelMeta.reason && cancelMeta.reason.toLowerCase().includes(q)) ||
+            (cancelMeta.revertedSummary && cancelMeta.revertedSummary.toLowerCase().includes(q));
           const entryItems = entry.items || extractCashbookItems(entry.description).items;
           const matchesItems = entryItems.some(
             it => it.item?.toLowerCase().includes(q) || it.sku?.toLowerCase().includes(q) || it.category?.toLowerCase().includes(q)
           );
-          if (!matchesCat && !matchesDesc && !matchesParty && !matchesRef && !matchesAmt && !matchesItems) return false;
+          if (!matchesCat && !matchesDesc && !matchesParty && !matchesRef && !matchesAmt && !matchesItems && !matchesCancel) return false;
         }
         return true;
       })
@@ -14515,7 +15109,10 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
         return (b.createdAt || '').localeCompare(a.createdAt || '');
       });
 
-    const includeLinkedSettlementInFilter = salesDetailsPaymentFilter !== 'ALL' && salesDetailsPaymentFilter !== 'Credit';
+    const includeLinkedSettlementInFilter =
+      salesDetailsPaymentFilter !== 'ALL' &&
+      salesDetailsPaymentFilter !== 'Credit' &&
+      salesDetailsPaymentFilter !== 'CANCELLED';
     const periodSummary = calcSalesBreakdown(filteredSales, includeLinkedSettlementInFilter);
     const periodTotalAmount = periodSummary.totalAmount;
     const cashSales = periodSummary.cash;
@@ -14532,6 +15129,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
     let totalItemProfit = 0;
 
     filteredSales.forEach(e => {
+      if (isCancelledCashbookEntry(e)) return;
       const entryItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       entryItems.forEach(it => {
         const qty = Number(it.qty) || 0;
@@ -14608,10 +15206,14 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
         doc.setTextColor(30, 41, 59);
 
         const rows = filteredSales.map(e => {
+          const cancelMeta = getCashbookCancelMeta(e);
           const cleanDesc = stripCashbookItems(e.description);
           const itemsSum = formatCashbookItemsSummary(e.items || extractCashbookItems(e.description).items);
           const isSettlement = isLinkedCreditSettlementEntry(e);
-          const fullDesc = [cleanDesc, itemsSum, isSettlement ? '[Credit Settlement - Included in Original Invoice]' : ''].filter(Boolean).join(' • ') || e.contactName || '-';
+          const cancelTag = cancelMeta.isCancelled
+            ? `[CANCELLED${cancelMeta.cancelledDate ? ` ${cancelMeta.cancelledDate}` : ''}${cancelMeta.revertedSummary ? ` • ${cancelMeta.revertedSummary}` : ''}${cancelMeta.reason ? ` • Reason: ${cancelMeta.reason}` : ''}]`
+            : '';
+          const fullDesc = [cleanDesc, itemsSum, cancelTag, !cancelMeta.isCancelled && isSettlement ? '[Credit Settlement - Included in Original Invoice]' : ''].filter(Boolean).join(' • ') || e.contactName || '-';
           return [
             e.date,
             e.category || 'Sale',
@@ -14619,7 +15221,9 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
             e.contactName || '-',
             e.paymentMethod,
             e.referenceNo || '-',
-            isSettlement && !includeLinkedSettlementInFilter
+            cancelMeta.isCancelled
+              ? 'LKR 0 (Cancelled)'
+              : isSettlement && !includeLinkedSettlementInFilter
               ? `LKR ${(Number(e.amount) || 0).toLocaleString()} (Settled)`
               : `LKR ${(Number(e.amount) || 0).toLocaleString()}`
           ];
@@ -14886,18 +15490,26 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque', 'Credit'] as const).map(pm => (
+            {(['ALL', 'Cash', 'Bank Transfer', 'Card', 'Cheque', 'Cash + Cheque', 'Credit', 'CANCELLED'] as const).map(pm => (
               <button
                 key={pm}
                 type="button"
                 onClick={() => setSalesDetailsPaymentFilter(pm as any)}
                 className={`py-1 px-2.5 rounded-xl text-[11px] font-bold transition-all shrink-0 border ${
                   salesDetailsPaymentFilter === pm
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                    ? pm === 'CANCELLED'
+                      ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
+                      : 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                    : pm === 'CANCELLED'
+                    ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50 hover:bg-rose-100'
                     : 'bg-slate-50 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-100'
                 }`}
               >
-                {pm === 'ALL' ? 'All Methods' : pm}
+                {pm === 'ALL'
+                  ? 'All Methods'
+                  : pm === 'CANCELLED'
+                  ? `Cancelled${cancelledSalesCount > 0 ? ` (${cancelledSalesCount})` : ''}`
+                  : pm}
               </button>
             ))}
           </div>
@@ -14927,13 +15539,13 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                   View Yesterday (LKR {yesterdayTotalAmount.toLocaleString()})
                 </button>
               )}
-              {salesDetailsDateFilter !== 'ALL' && allCompletedSales.length > 0 && (
+              {salesDetailsDateFilter !== 'ALL' && allSalesForList.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setSalesDetailsDateFilter('ALL')}
                   className="px-3.5 py-2 bg-slate-100 dark:bg-[#1a2538] hover:bg-slate-200 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold transition-all"
                 >
-                  View All Time ({allCompletedSales.length})
+                  View All Time ({allSalesForList.length})
                 </button>
               )}
               <button
@@ -14978,20 +15590,40 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                     const entryInvNo = extractLinkedInvoiceNo(entry);
                     const settledForEntry = entry.paymentMethod === 'Credit' && entryInvNo ? (settledAmountByInvoiceMap[entryInvNo] || 0) : 0;
                     const remainingDueForEntry = entry.paymentMethod === 'Credit' ? Math.max(0, (Number(entry.amount) || 0) - settledForEntry) : 0;
+                    const cancelMeta = getCashbookCancelMeta(entry);
+                    const isCancelledEntry = cancelMeta.isCancelled;
 
                     return (
                       <div
                         key={entry.id}
-                        className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/60 dark:hover:bg-[#182235] transition-colors"
+                        className={`p-3.5 flex items-center justify-between gap-3 transition-colors ${
+                          isCancelledEntry
+                            ? 'bg-rose-50/40 dark:bg-rose-950/15 hover:bg-rose-50/70 dark:hover:bg-rose-950/25'
+                            : 'hover:bg-slate-50/60 dark:hover:bg-[#182235]'
+                        }`}
                       >
                         <div className="flex items-center gap-3 overflow-hidden">
-                          <div className="w-10 h-10 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                            <ArrowUpRight size={20} className="stroke-[2.5]" />
+                          <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                            isCancelledEntry
+                              ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400'
+                              : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400'
+                          }`}>
+                            {isCancelledEntry ? <RotateCcw size={18} className="stroke-[2.5]" /> : <ArrowUpRight size={20} className="stroke-[2.5]" />}
                           </div>
                           <div className="overflow-hidden">
                             <div className="flex items-center gap-1.5 flex-wrap">
+                              {isCancelledEntry && (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider bg-rose-600 text-white shadow-2xs inline-flex items-center gap-1">
+                                  <RotateCcw size={10} />
+                                  CANCELLED
+                                </span>
+                              )}
                               {entry.category && (
-                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50">
+                                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase tracking-wider border ${
+                                  isCancelledEntry
+                                    ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/50'
+                                    : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50'
+                                }`}>
                                   {entry.category}
                                 </span>
                               )}
@@ -15020,7 +15652,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                   Credit Settlement
                                 </span>
                               )}
-                              {entry.paymentMethod === 'Credit' && settledForEntry > 0 && (
+                              {!isCancelledEntry && entry.paymentMethod === 'Credit' && settledForEntry > 0 && (
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
                                   remainingDueForEntry <= 0
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800/50'
@@ -15031,7 +15663,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                     : `Paid: LKR ${settledForEntry.toLocaleString()} • Due: LKR ${remainingDueForEntry.toLocaleString()}`}
                                 </span>
                               )}
-                              {isChequeLike && (
+                              {!isCancelledEntry && isChequeLike && (
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                                   isPendingChqEntry
                                     ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800/50'
@@ -15048,12 +15680,23 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                               )}
                             </div>
 
-                            <p className="font-bold text-xs text-slate-900 dark:text-white mt-1 truncate">
+                            <p className={`font-bold text-xs mt-1 truncate ${
+                              isCancelledEntry ? 'text-slate-500 dark:text-slate-400 line-through' : 'text-slate-900 dark:text-white'
+                            }`}>
                               {cleanDesc || (entryItems.length > 0 ? formatCashbookItemsSummary(entryItems) : (entry.contactName || 'General Sale'))}
                             </p>
 
+                            {isCancelledEntry && (
+                              <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 px-2.5 py-1 rounded-lg bg-rose-100/80 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60 text-[10px] text-rose-800 dark:text-rose-200 font-semibold">
+                                <span className="font-extrabold uppercase tracking-wider">Cancel Details:</span>
+                                {cancelMeta.cancelledDate && <span>Date: {formatDisplayDate(cancelMeta.cancelledDate)}</span>}
+                                {cancelMeta.revertedSummary && <span>• {cancelMeta.revertedSummary}</span>}
+                                {cancelMeta.reason && <span>• Reason: {cancelMeta.reason}</span>}
+                              </div>
+                            )}
+
                             {entryItems.length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              <div className={`mt-1.5 flex flex-wrap gap-1.5 ${isCancelledEntry ? 'opacity-70' : ''}`}>
                                 {entryItems.map(it => {
                                   const salePrice = getItemUnitSalePrice(it);
                                   const profit = (salePrice - (it.cost || 0)) * (it.qty || 0);
@@ -15062,7 +15705,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                                       key={it.id}
                                       className="inline-flex items-center gap-1.5 flex-wrap px-2 py-1 rounded-lg bg-slate-50 dark:bg-[#1a2538] border border-slate-200/90 dark:border-[#26354d] text-[10px] font-semibold text-slate-700 dark:text-slate-300"
                                     >
-                                      <span className="font-extrabold text-slate-900 dark:text-white">{it.item || 'Item'}</span>
+                                      <span className={`font-extrabold text-slate-900 dark:text-white ${isCancelledEntry ? 'line-through' : ''}`}>{it.item || 'Item'}</span>
                                       {it.category && (
                                         <span className="text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 px-1.5 py-0.2 rounded font-bold">
                                           {it.category}
@@ -15103,17 +15746,23 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                         <div className="flex items-center gap-2 shrink-0">
                           <div className="text-right">
                             <span className={`font-black text-sm sm:text-base tabular-nums block ${
-                              isLinkedSettlement && !includeLinkedSettlementInFilter
+                              isCancelledEntry
+                                ? 'text-rose-600 dark:text-rose-400 line-through'
+                                : isLinkedSettlement && !includeLinkedSettlementInFilter
                                 ? 'text-teal-700 dark:text-teal-300'
                                 : 'text-emerald-700 dark:text-emerald-400'
                             }`}>
                               + LKR {(Number(entry.amount) || 0).toLocaleString()}
                             </span>
-                            {isLinkedSettlement && !includeLinkedSettlementInFilter && entryInvNo && (
+                            {isCancelledEntry ? (
+                              <span className="text-[9px] font-extrabold text-rose-600 dark:text-rose-400 uppercase block">
+                                Cancelled • Reverted
+                              </span>
+                            ) : isLinkedSettlement && !includeLinkedSettlementInFilter && entryInvNo ? (
                               <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 block">
                                 Paid toward #{entryInvNo}
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           <div className="flex items-center gap-1">
                             {isPendingChqEntry && (
@@ -15144,6 +15793,17 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                             >
                               <Pencil size={14} />
                             </button>
+                            {!isCancelledEntry && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenCancelSaleEntryModal(entry)}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800/50 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors active:scale-95"
+                                title="Cancel Sale & Revert Stock"
+                              >
+                                <RotateCcw size={12} />
+                                <span className="hidden sm:inline">Cancel</span>
+                              </button>
+                            )}
                             {userCanDelete && (
                               <button
                                 type="button"
@@ -16784,6 +17444,451 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
     );
   };
 
+  const renderCancelStockSaleModal = () => {
+    if (!cancellingStockItem && !cancellingSaleEntry) return null;
+
+    if (cancellingSaleEntry) {
+      const directSale = buildSaleOptionFromCashbookEntry(cancellingSaleEntry);
+      const totalRevertQty = directSale.matchedQty;
+
+      return (
+        <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-[#131b2a] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[92vh]">
+            <div className="p-4 bg-rose-600 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
+                  <RotateCcw size={18} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base leading-tight">
+                    {totalRevertQty > 0 ? 'Cancel Sale & Revert Stock' : 'Cancel Sale'}
+                  </h3>
+                  <p className="text-[11px] text-white/85 truncate max-w-[280px]">
+                    #{directSale.invoiceNo} • {directSale.customerName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCancellingSaleEntry(null)}
+                className="p-1.5 text-white/80 hover:text-white rounded-lg hover:bg-white/10"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 space-y-4 text-slate-800 dark:text-slate-100 overflow-y-auto flex-1">
+              <div className="bg-rose-50/70 dark:bg-rose-950/25 p-3.5 rounded-2xl border border-rose-200 dark:border-rose-800/50 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-mono text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-white dark:bg-[#131b2a] border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300">
+                      #{directSale.invoiceNo}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                      {formatDisplayDate(directSale.date)}
+                    </span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white dark:bg-[#131b2a] text-slate-700 dark:text-slate-300">
+                      {directSale.paymentMethod}
+                    </span>
+                  </div>
+                  <p className="font-extrabold text-xs text-slate-900 dark:text-white mt-1 truncate">
+                    {directSale.customerName}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="font-black text-base text-rose-600 dark:text-rose-400 tabular-nums block">
+                    LKR {directSale.amount.toLocaleString()}
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                    {totalRevertQty > 0 ? `+${totalRevertQty} pcs back to stock` : 'Will be marked Cancelled'}
+                  </span>
+                </div>
+              </div>
+
+              {directSale.items.length > 0 ? (
+                <div className="bg-slate-50 dark:bg-[#1a2538] rounded-2xl p-3 border border-slate-200 dark:border-[#26354d] space-y-2">
+                  <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase block">
+                    Items Reverting Back to Stock ({directSale.items.length})
+                  </span>
+                  <div className="space-y-1.5">
+                    {directSale.items.map((it, idx) => {
+                      const matchedStock = daybookItems.find(s => doesEntryItemMatchStock(it, s));
+                      const curStockQty = matchedStock ? (Number(matchedStock.qty) || 0) : null;
+                      const soldQty = Number(it.qty) || 0;
+                      return (
+                        <div
+                          key={`${it.id}-${idx}`}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#131b2a] border border-emerald-200 dark:border-emerald-800/50 text-xs"
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <RotateCcw size={12} className="text-emerald-600 shrink-0" />
+                            <span className="font-bold text-slate-800 dark:text-slate-100 truncate">{it.item}</span>
+                          </div>
+                          <div className="text-right shrink-0 font-bold text-[11px] tabular-nums">
+                            <span className="text-emerald-600 dark:text-emerald-400">+{soldQty}</span>
+                            {curStockQty !== null && (
+                              <span className="text-slate-400 ml-1.5">
+                                ({curStockQty} → <strong className="text-emerald-600 dark:text-emerald-400">{curStockQty + soldQty}</strong>)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-[#1a2538] p-3 rounded-2xl border border-slate-200 dark:border-[#26354d]">
+                  This sale will be marked <strong>CANCELLED</strong> in Sales Details, Customers, Cashbook, and Invoices without deleting the record.
+                </p>
+              )}
+
+              {directSale.linkedPaymentsCount > 0 && (
+                <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cancelAlsoCancelPayments}
+                    onChange={e => setCancelAlsoCancelPayments(e.target.checked)}
+                    className="mt-0.5 accent-rose-600 rounded"
+                  />
+                  <div className="text-xs">
+                    <span className="font-bold text-amber-900 dark:text-amber-200 block">
+                      Also cancel {directSale.linkedPaymentsCount} linked payment{directSale.linkedPaymentsCount > 1 ? 's' : ''} (LKR {directSale.linkedPaymentsAmount.toLocaleString()})
+                    </span>
+                    <span className="text-[10px] text-amber-700 dark:text-amber-300">
+                      Resets customer balance and marks linked GOT MONEY / settlement entries as Cancelled.
+                    </span>
+                  </div>
+                </label>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                  Cancel Reason (Shown in Customers &amp; Sales Details)
+                </label>
+                <input
+                  type="text"
+                  value={cancelReason}
+                  onChange={e => setCancelReason(e.target.value)}
+                  placeholder="e.g. Customer returned item, Order cancelled..."
+                  className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-rose-500"
+                />
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {['Customer Returned', 'Order Cancelled', 'Wrong Item Billed', 'Damaged / Defective'].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setCancelReason(preset)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors ${
+                        cancelReason === preset
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-200'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 dark:bg-[#0e1626] border-t border-slate-200 dark:border-[#1e2a3c] flex gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setCancellingSaleEntry(null)}
+                className="flex-1 py-2.5 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={handleConfirmCancelStockSale}
+                className="flex-[1.5] py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+              >
+                <RotateCcw size={15} />
+                <span>{totalRevertQty > 0 ? 'Cancel Sale & Revert Stock' : 'Cancel Sale'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (!cancellingStockItem) return null;
+    const activeSales = getActiveSalesForStockItem(cancellingStockItem);
+    const selectedSale = activeSales.find(s => s.key === cancelSelectedSaleKey) || null;
+    const customerContacts = contacts.filter(c => c.type === 'CUSTOMER' || c.type === 'SERVICE');
+
+    const currentQty = Number(cancellingStockItem.qty) || 0;
+    const revertQtyForThisItem = selectedSale
+      ? selectedSale.matchedQty
+      : Math.max(1, parseFloat(cancelManualQty) || 0);
+    const afterRevertQty = currentQty + revertQtyForThisItem;
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[130] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-150">
+        <div className="bg-white dark:bg-[#131b2a] w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border border-slate-200 dark:border-[#1e2a3c] flex flex-col max-h-[92vh]">
+          <div className="p-4 bg-rose-600 text-white flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
+                <RotateCcw size={18} />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-base leading-tight">Cancel Sale &amp; Revert Stock</h3>
+                <p className="text-[11px] text-white/85 truncate max-w-[260px]">
+                  {cancellingStockItem.item}
+                  {cancellingStockItem.sku ? ` • SKU: ${cancellingStockItem.sku}` : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCancellingStockItem(null)}
+              className="p-1.5 text-white/80 hover:text-white rounded-lg hover:bg-white/10"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="p-4 sm:p-5 space-y-4 text-slate-800 dark:text-slate-100 overflow-y-auto flex-1">
+            {/* Stock Revert Preview */}
+            <div className="flex items-center justify-between bg-rose-50/70 dark:bg-rose-950/25 p-3 rounded-2xl border border-rose-200 dark:border-rose-800/50 text-xs">
+              <div>
+                <span className="text-slate-500 dark:text-slate-400 font-bold block text-[10px] uppercase">Current Stock</span>
+                <span className="font-black text-base text-slate-800 dark:text-white tabular-nums">{currentQty}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-extrabold text-[11px]">
+                <RotateCcw size={14} />
+                <span>+{revertQtyForThisItem} Reverted</span>
+              </div>
+              <div className="text-right">
+                <span className="text-emerald-600 dark:text-emerald-400 font-bold block text-[10px] uppercase">After Cancel</span>
+                <span className="font-black text-base text-emerald-600 dark:text-emerald-400 tabular-nums">{afterRevertQty}</span>
+              </div>
+            </div>
+
+            {activeSales.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Select Sale / Invoice to Cancel ({activeSales.length})
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setCancelSelectedSaleKey(cancelSelectedSaleKey ? '' : activeSales[0].key)}
+                    className="text-[10px] font-bold text-rose-600 dark:text-rose-400 hover:underline"
+                  >
+                    {cancelSelectedSaleKey ? 'Or enter manual return' : 'Pick from recorded sales'}
+                  </button>
+                </div>
+
+                {cancelSelectedSaleKey ? (
+                  <>
+                    <div className="space-y-2 max-h-52 overflow-y-auto pr-0.5">
+                      {activeSales.map(sale => {
+                        const isSelected = sale.key === cancelSelectedSaleKey;
+                        return (
+                          <button
+                            key={sale.key}
+                            type="button"
+                            onClick={() => setCancelSelectedSaleKey(sale.key)}
+                            className={`w-full text-left p-3 rounded-2xl border transition-all flex items-start justify-between gap-2 ${
+                              isSelected
+                                ? 'bg-rose-50 dark:bg-rose-950/35 border-rose-500 ring-2 ring-rose-500/20'
+                                : 'bg-slate-50 dark:bg-[#1a2538] border-slate-200 dark:border-[#26354d] hover:border-rose-300'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-mono text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] text-slate-800 dark:text-slate-200">
+                                  #{sale.invoiceNo}
+                                </span>
+                                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                                  {formatDisplayDate(sale.date)}
+                                </span>
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-[#0e1626] text-slate-700 dark:text-slate-300">
+                                  {sale.paymentMethod}
+                                </span>
+                              </div>
+                              <p className="font-extrabold text-xs text-slate-900 dark:text-white mt-1 truncate">
+                                {sale.customerName}
+                              </p>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                                Sold Qty: <strong>{sale.matchedQty}</strong>
+                                {sale.items.length > 1 ? ` (${sale.items.length} total items in bill)` : ''}
+                                {sale.linkedPaymentsCount > 0 ? ` • Paid: LKR ${sale.linkedPaymentsAmount.toLocaleString()}` : ''}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-black text-xs text-slate-900 dark:text-white tabular-nums block">
+                                LKR {sale.amount.toLocaleString()}
+                              </span>
+                              <span className={`text-[9px] font-extrabold uppercase mt-0.5 inline-block ${
+                                isSelected ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'
+                              }`}>
+                                {isSelected ? 'Selected' : 'Select'}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedSale && selectedSale.items.length > 0 && (
+                      <div className="bg-slate-50 dark:bg-[#1a2538] rounded-2xl p-3 border border-slate-200 dark:border-[#26354d] space-y-1.5">
+                        <span className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase block">
+                          Items Reverting Back to Stock
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedSale.items.map((it, idx) => (
+                            <span
+                              key={`${it.id}-${idx}`}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white dark:bg-[#131b2a] border border-emerald-200 dark:border-emerald-800/50 text-[10px] font-bold text-emerald-700 dark:text-emerald-300"
+                            >
+                              <RotateCcw size={10} />
+                              <span>+{it.qty} × {it.item}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedSale && selectedSale.linkedPaymentsCount > 0 && (
+                      <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cancelAlsoCancelPayments}
+                          onChange={e => setCancelAlsoCancelPayments(e.target.checked)}
+                          className="mt-0.5 accent-rose-600 rounded"
+                        />
+                        <div className="text-xs">
+                          <span className="font-bold text-amber-900 dark:text-amber-200 block">
+                            Also cancel {selectedSale.linkedPaymentsCount} linked payment{selectedSale.linkedPaymentsCount > 1 ? 's' : ''} (LKR {selectedSale.linkedPaymentsAmount.toLocaleString()})
+                          </span>
+                          <span className="text-[10px] text-amber-700 dark:text-amber-300">
+                            Resets customer balance and marks linked GOT MONEY / settlement entries as Cancelled.
+                          </span>
+                        </div>
+                      </label>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-3 bg-slate-50 dark:bg-[#1a2538] p-3.5 rounded-2xl border border-slate-200 dark:border-[#26354d]">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Return Quantity *</label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="1"
+                        value={cancelManualQty}
+                        onChange={e => setCancelManualQty(e.target.value)}
+                        className="w-full bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-sm font-black outline-none focus:border-rose-500 tabular-nums"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Customer (Optional)</label>
+                      <select
+                        value={cancelManualContactId}
+                        onChange={e => setCancelManualContactId(e.target.value)}
+                        className="w-full bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-rose-500"
+                      >
+                        <option value="">Walk-in / General Return</option>
+                        {customerContacts.map(c => (
+                          <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3 bg-slate-50 dark:bg-[#1a2538] p-3.5 rounded-2xl border border-slate-200 dark:border-[#26354d]">
+                <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  No active sales invoice found for this item. Enter the returned quantity below to revert stock and log cancel details in Sales &amp; Customers.
+                </p>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Return Quantity *</label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="1"
+                    autoFocus
+                    value={cancelManualQty}
+                    onChange={e => setCancelManualQty(e.target.value)}
+                    className="w-full bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-sm font-black outline-none focus:border-rose-500 tabular-nums"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">Customer (Optional)</label>
+                  <select
+                    value={cancelManualContactId}
+                    onChange={e => setCancelManualContactId(e.target.value)}
+                    className="w-full bg-white dark:bg-[#131b2a] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-rose-500"
+                  >
+                    <option value="">Walk-in / General Return</option>
+                    {customerContacts.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* Cancel Reason & Quick Presets */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                Cancel Reason (Shown in Customers &amp; Sales Details)
+              </label>
+              <input
+                type="text"
+                value={cancelReason}
+                onChange={e => setCancelReason(e.target.value)}
+                placeholder="e.g. Customer returned item, Order cancelled..."
+                className="w-full bg-slate-50 dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-rose-500"
+              />
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {['Customer Returned', 'Order Cancelled', 'Wrong Item Billed', 'Damaged / Defective'].map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setCancelReason(preset)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors ${
+                      cancelReason === preset
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-slate-100 dark:bg-[#1a2538] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-[#26354d] hover:bg-slate-200'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 dark:bg-[#0e1626] border-t border-slate-200 dark:border-[#1e2a3c] flex gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setCancellingStockItem(null)}
+              className="flex-1 py-2.5 bg-white dark:bg-[#1a2538] border border-slate-200 dark:border-[#26354d] text-slate-700 dark:text-slate-200 font-bold text-xs rounded-xl"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={handleConfirmCancelStockSale}
+              className="flex-[1.5] py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              <RotateCcw size={15} />
+              <span>Cancel Sale &amp; Revert Stock</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderInstantInvoiceModal = () => {
     if (!isInstantInvoiceModalOpen) return null;
 
@@ -17128,13 +18233,15 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       // Search query
       if (invSearchQuery.trim()) {
         const q = invSearchQuery.toLowerCase();
+        const cancelMeta = getCashbookCancelMeta(inv);
         const refMatch = (inv.referenceNo || '').toLowerCase().includes(q);
         const nameMatch = (inv.contactName || '').toLowerCase().includes(q);
         const descMatch = stripCashbookItems(inv.description || '').toLowerCase().includes(q);
         const catMatch = (inv.category || '').toLowerCase().includes(q);
+        const cancelMatch = (cancelMeta.reason || '').toLowerCase().includes(q) || (cancelMeta.revertedSummary || '').toLowerCase().includes(q);
         const invItems = inv.items || extractCashbookItems(inv.description).items;
         const itemMatch = invItems.some(it => it.item?.toLowerCase().includes(q) || it.sku?.toLowerCase().includes(q));
-        if (!refMatch && !nameMatch && !descMatch && !catMatch && !itemMatch) return false;
+        if (!refMatch && !nameMatch && !descMatch && !catMatch && !itemMatch && !cancelMatch) return false;
       }
       return true;
     }).sort((a, b) => {
@@ -17144,8 +18251,8 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 
-    // Compute Today, Yesterday, and Items Sold & Profit (including Cheque payments, without double-counting linked credit settlements)
-    const todaySales = salesInvoices.filter(e => e.date === todayStr);
+    // Compute Today, Yesterday, and Items Sold & Profit (excluding cancelled sales, without double-counting linked credit settlements)
+    const todaySales = salesInvoices.filter(e => e.date === todayStr && !isCancelledCashbookEntry(e));
     const todayInvSummary = calcSalesBreakdown(todaySales, false);
     const todayTotal = todayInvSummary.totalAmount;
     const todayChequeTotal = todayInvSummary.cheque;
@@ -17166,7 +18273,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       });
     });
 
-    const yesterdaySales = salesInvoices.filter(e => e.date === yesterdayStr);
+    const yesterdaySales = salesInvoices.filter(e => e.date === yesterdayStr && !isCancelledCashbookEntry(e));
     const yesterdayInvSummary = calcSalesBreakdown(yesterdaySales, false);
     const yesterdayTotal = yesterdayInvSummary.totalAmount;
     const yesterdayChequeTotal = yesterdayInvSummary.cheque;
@@ -17191,6 +18298,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
     let filteredItemCost = 0;
     let filteredItemProfit = 0;
     filteredInvoices.forEach(e => {
+      if (isCancelledCashbookEntry(e)) return;
       const eItems = e.items && e.items.length > 0 ? e.items : extractCashbookItems(e.description).items;
       eItems.forEach(it => {
         const qty = Number(it.qty) || 0;
@@ -17645,25 +18753,45 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                 const isChequeLike = inv.paymentMethod === 'Cheque' || inv.paymentMethod === 'Cash + Cheque';
                 const isPendingChq = isPendingCashbookEntry(inv);
                 const refDisplay = getConsistentInvoiceNo(inv);
+                const cancelMeta = getCashbookCancelMeta(inv);
+                const isCancelledInv = cancelMeta.isCancelled;
 
                 return (
                   <div
                     key={inv.id}
-                    className="bg-white dark:bg-[#131b2a] p-3.5 rounded-2xl border border-slate-200/90 dark:border-[#1e2a3c] flex items-center justify-between gap-3 shadow-xs hover:border-blue-300 dark:hover:border-blue-700 transition-all"
+                    className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 shadow-xs transition-all ${
+                      isCancelledInv
+                        ? 'bg-rose-50/50 dark:bg-rose-950/15 border-rose-200 dark:border-rose-800/50'
+                        : 'bg-white dark:bg-[#131b2a] border-slate-200/90 dark:border-[#1e2a3c] hover:border-blue-300 dark:hover:border-blue-700'
+                    }`}
                   >
                     <div className="flex items-center gap-3 overflow-hidden">
-                      <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-500 to-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                        <Receipt size={20} />
+                      <div className={`w-10 h-10 rounded-2xl text-white flex items-center justify-center shrink-0 shadow-xs ${
+                        isCancelledInv
+                          ? 'bg-rose-600'
+                          : 'bg-gradient-to-tr from-blue-500 to-indigo-600'
+                      }`}>
+                        {isCancelledInv ? <RotateCcw size={18} /> : <Receipt size={20} />}
                       </div>
 
                       <div className="overflow-hidden">
                         <div className="flex items-center gap-1.5 flex-wrap">
+                          {isCancelledInv && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider bg-rose-600 text-white inline-flex items-center gap-1">
+                              <RotateCcw size={10} />
+                              CANCELLED
+                            </span>
+                          )}
                           <span className="font-mono text-[10px] font-extrabold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 px-2 py-0.5 rounded-md">
                             #{refDisplay}
                           </span>
 
                           {inv.category && (
-                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md uppercase border ${
+                              isCancelledInv
+                                ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                                : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                            }`}>
                               {inv.category}
                             </span>
                           )}
@@ -17686,7 +18814,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                             {inv.paymentMethod}
                           </span>
 
-                          {isChequeLike && (
+                          {!isCancelledInv && isChequeLike && (
                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                               isPendingChq
                                 ? 'bg-amber-50 text-amber-800 border-amber-200'
@@ -17702,7 +18830,9 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                           </span>
                         </div>
 
-                        <p className="font-bold text-xs text-slate-900 dark:text-slate-100 mt-1 truncate">
+                        <p className={`font-bold text-xs mt-1 truncate ${
+                          isCancelledInv ? 'text-slate-500 dark:text-slate-400 line-through' : 'text-slate-900 dark:text-slate-100'
+                        }`}>
                           {inv.contactName ? `${inv.contactName} • ` : ''}
                           {(() => {
                             const ex = extractCashbookItems(inv.description);
@@ -17710,13 +18840,33 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                             return [ex.cleanDesc, itemsText].filter(Boolean).join(' • ') || inv.category;
                           })()}
                         </p>
+
+                        {isCancelledInv && (
+                          <div className="mt-1 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 px-2 py-0.5 rounded-lg bg-rose-100/80 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60 text-[10px] text-rose-800 dark:text-rose-200 font-semibold">
+                            <span className="font-extrabold uppercase">Cancel Details:</span>
+                            {cancelMeta.cancelledDate && <span>{formatDisplayDate(cancelMeta.cancelledDate)}</span>}
+                            {cancelMeta.revertedSummary && <span>• {cancelMeta.revertedSummary}</span>}
+                            {cancelMeta.reason && <span>• {cancelMeta.reason}</span>}
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="font-black text-sm sm:text-base text-emerald-700 dark:text-emerald-400 tabular-nums">
-                        + LKR {inv.amount.toLocaleString()}
-                      </span>
+                      <div className="text-right">
+                        <span className={`font-black text-sm sm:text-base tabular-nums block ${
+                          isCancelledInv
+                            ? 'text-rose-600 dark:text-rose-400 line-through'
+                            : 'text-emerald-700 dark:text-emerald-400'
+                        }`}>
+                          + LKR {inv.amount.toLocaleString()}
+                        </span>
+                        {isCancelledInv && (
+                          <span className="text-[9px] font-extrabold text-rose-600 dark:text-rose-400 uppercase block">
+                            Cancelled
+                          </span>
+                        )}
+                      </div>
 
                       <div className="flex items-center gap-1">
                         {isPendingChq && (
@@ -17779,6 +18929,18 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
                           <Share2 size={12} />
                           <span className="hidden sm:inline">WhatsApp</span>
                         </button>
+
+                        {!isCancelledInv && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCancelSaleEntryModal(inv)}
+                            className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 border border-rose-200 dark:border-rose-800/50 rounded-lg text-xs font-bold transition-all active:scale-95 flex items-center gap-1"
+                            title="Cancel Sale & Revert Stock"
+                          >
+                            <RotateCcw size={12} />
+                            <span className="hidden sm:inline">Cancel</span>
+                          </button>
+                        )}
 
                         {userCanDelete && (
                           <button
@@ -17974,6 +19136,7 @@ CREATE POLICY "Users delete own shop-logos" ON storage.objects FOR DELETE TO aut
       {renderDaybookItemModal()}
       {renderSellStockModal()}
       {renderRestockModal()}
+      {renderCancelStockSaleModal()}
 
       {/* Live Camera Capture Modal for Cheque / Invoice */}
       {isCameraModalOpen && (
